@@ -141,7 +141,24 @@ prerequisite for going past it.
 - **Widen frontend coverage beyond the theme layer.** The suite that exists is
   thorough about theme resolution, the anti-flash script, and contrast. The
   feed, the filter model, the cursor-pagination hook, and the API client have
-  no tests, and between them they are most of the client.
+  no tests, and between them they are most of the client. This is really two
+  jobs of very different cost, and taking them in the wrong order is how it
+  stalls:
+
+  `src/feed/filters.ts` and `src/feed/volume.ts` come first and need no new
+  tooling at all — both import types only, so they are the same shape as what
+  Vitest already covers. `filters.ts` is the higher value of the two because
+  it encodes a distinction that breaks silently: `null` means "no override,
+  use my saved selection" and `[]` means "the user deselected everything, so
+  nothing can match and the request is skipped". They look alike and
+  `hasOverride`, `selectsNothing`, `effectiveSelection`, and `filterKey` all
+  turn on telling them apart. `volume.ts` is the 35% dominance threshold and
+  the share arithmetic behind the composition panel.
+
+  `usePagedResource` and `src/api/client.ts` are the expensive half: hooks and
+  `fetch` mean a DOM environment and request mocking, which is real setup and
+  probably a dependency or two. Worth doing, but not the thing to pick up
+  first.
 
 ## Things that are true but unproven
 
