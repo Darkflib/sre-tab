@@ -3,6 +3,66 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-17 — Phase 3 security remediation
+
+Six reproduced findings from the adversarial review. The SSRF guard and
+the address pinning withstood the whole campaign — ~40 redirect `Location`
+forms, NAT64/6to4/Teredo, split DNS answer sets, obfuscated literals,
+socket-level checks that `Host` and SNI survive to the wire, TOCTOU, XXE
+— and cross-user isolation held completely. Neither was touched beyond
+the one line noted below.
+
+- **The fetch deadline did not bound the body.** `httpx.Timeout` is
+  per-operation and the deadline was only re-checked between redirect
+  hops, so a dribbling server was limited by max-bytes ÷ dribble-rate
+  rather than by time. Measured at twenty minutes for a "0.3 second"
+  fetch. The scheduler ticks sources serially under `max_instances=1`, so
+  the cost was every source's refresh, then readiness, then a restart
+  loop. `_read_capped` now takes the deadline and re-checks it per chunk.
+- **The CSRF token was not bound to the session.** The signature proved
+  the server minted the token, not who for — a token minted with no
+  session in existence was accepted on another user's session. It now
+  commits to `sha256(session_token)`, verified with no extra query. The
+  cookie stays script-readable, because it has to be; the binding is what
+  adds the security, not secrecy. Rotation falls out for free.
+- **`hmac.compare_digest` raises on non-ASCII `str`** rather than
+  returning false, and headers arrive latin-1 decoded, so one 0x80-0xff
+  byte was an unauthenticated 500. Three call sites, not the two
+  reported: the third is `StateStore.consume`, reached with a three-part
+  state token. `compare_secret` compares bytes instead. The OAuth variant
+  now also reaches the failure limiter it used to crash in front of.
+- **Traceback rendering bypassed redaction entirely.** `redact_sensitive`
+  ran *before* `dict_tracebacks`, so it inspected an event that did not
+  yet contain what it exists to remove — and structlog 26.1.0 defaults
+  `show_locals=True`. Latent only because the sole `exc_info` call sites
+  are in the scheduler; `code` and `client_secret` are live locals on the
+  OAuth path, so the first `log.exception` there would have written both
+  in cleartext. Ordering reversed, locals off.
+- **`OverflowError` on an absurd cursor integer** answered 500 rather
+  than the documented 400.
+- **`copy_with` could raise `httpx.InvalidURL` out of the guard**, which
+  was classified as `error_class="InvalidURL"` instead of an unsafe
+  target. Wrapped — the only change made to `urlguard.py`.
+
+Two hardening items, both wider than reported:
+
+- `validate_feed_url` ran `check_static` once, and `check_static` judges
+  IP literals *before* normalising the host. A host can only become an
+  obfuscated literal after normalisation, so `https://0x7f.0.0.1./rss`,
+  `https://127.1./rss`, `https://0177.1./rss`, and `https://0.0.0.0./rss`
+  were all stored at `source add` time and refused hours later at fetch
+  time — the exact failure the function exists to prevent. Config-time
+  validation is now required to be a fixpoint, which catches the family
+  rather than the instance. No SSRF was reachable: `validate` re-judges
+  the normalised host as a literal before resolving, and always did.
+- `tests/conftest.py` overrides `get_current_user`, so `authed_client`
+  never sends a session cookie and `CSRFMiddleware` never fired: the
+  whole of `tests/api/` ran with CSRF unenforced. Confirmed by neutering
+  `require_csrf` and watching the suite stay green. The override stays —
+  it is the right trade for tests about what routes do — and
+  `tests/api/test_csrf_enforcement.py` covers one mutating endpoint per
+  module against a real session instead.
+
 ## 2026-08-17 — Phase 2 integration
 
 - **Scheduler wired.** `create_app` calls `install_scheduler`, so the
