@@ -11,6 +11,15 @@
 
 set -eu
 
+# A dump is a complete copy of every user record, every session-linked row,
+# and every bookmark in the instance. It is created 0600, not left to the
+# default 0644, because the directory mode must not be the only thing standing
+# between it and another account: /srv/sre-tab/backups is group 999, and on
+# Debian 13 gid 999 is `systemd-journal` — a group operators genuinely do add
+# people to so they can read the journal. Anyone in it could otherwise read
+# every dump on the host. The sha256 sidecars are written under the same mask.
+umask 077
+
 : "${BACKUP_DIR:=/backups}"
 : "${BACKUP_KEEP_DAYS:=14}"
 : "${PGDATABASE:?PGDATABASE must be set}"
