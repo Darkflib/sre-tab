@@ -317,7 +317,16 @@ class UrlGuard:
         else:
             host = _normalise_host(raw_host, url=raw_url)
 
-        normalised = url.copy_with(host=host, port=None)
+        try:
+            # copy_with re-parses, so a host that survived httpx's parser
+            # in its original form can be refused in its normalised one —
+            # `https://0177.0.0.1./rss` does exactly that, the trailing
+            # dot getting it past the first parse. Still a rejection, but
+            # httpx.InvalidURL is not an IngestError and was recorded as
+            # error_class="InvalidURL" rather than a classified target.
+            normalised = url.copy_with(host=host, port=None)
+        except (httpx.InvalidURL, ValueError) as exc:
+            raise UnsafeTargetError(raw_url[:120], "host", str(exc)) from exc
         assert_supported_endpoint(normalised)
         return normalised
 

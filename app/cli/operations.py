@@ -86,9 +86,21 @@ def validate_feed_url(raw_url: str) -> str:
     explicitly as well as through ``check_static``: GraphQL and sitemap
     endpoints are the v2 deferral an operator is most likely to trip
     over, and naming it here is what makes the refusal legible.
+
+    ``check_static`` is applied to its own output, which is not
+    belt-and-braces. It normalises the host — trailing dot stripped, case
+    folded — and a host can *become* an obfuscated IP literal only once
+    that has happened: ``https://0x7f.0.0.1./rss`` is an ordinary-looking
+    name on the first pass and ``0x7f.0.0.1`` on the second, which is
+    127.0.0.1. Fetch time catches these anyway, because ``validate``
+    re-judges the normalised host as a literal before resolving — but
+    catching it hours earlier, at ``source add``, is the entire point of
+    this function, and demanding that validation be a fixpoint is what
+    makes that true for the whole family rather than one URL at a time.
     """
     try:
         url = _GUARD.check_static(raw_url)
+        url = _GUARD.check_static(str(url))
         assert_supported_endpoint(url)
     except Exception as exc:
         raise OperatorError(f"refused feed URL: {exc}") from exc

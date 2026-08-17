@@ -85,6 +85,16 @@ HOSTILE_URLS: list[tuple[str, str | None]] = [
     ("https://0x7f.0.0.1/rss", "loopback"),
     ("https://0xa9fea9fe/rss", "link-local"),
     ("https://017700000001/rss", "loopback"),
+    # The same forms with a trailing dot. The dot is what carries them
+    # past httpx's parser, and the guard strips it when normalising the
+    # host — so the obfuscated literal only exists after normalisation.
+    # Every one still lands on an IngestError with an honest reason.
+    ("https://0x7f.0.0.1./rss", "loopback"),
+    ("https://127.1./rss", "loopback"),
+    ("https://0177.1./rss", "loopback"),
+    ("https://0.0.0.0./rss", "unspecified"),
+    ("https://0177.0.0.1./rss", "host"),
+    ("https://010.010.010.010./rss", "host"),
     # Not RSS/Atom — a configuration error, deferred to v2.
     ("https://feeds.example.com/graphql", None),
     ("https://feeds.example.com/sitemap.xml", None),
@@ -116,6 +126,28 @@ def test_hostile_urls_never_reach_a_resolved_address() -> None:
     for raw_url, _ in HOSTILE_URLS:
         with pytest.raises(IngestError):
             guard.validate(raw_url)
+
+
+def test_rejection_is_always_an_ingest_error() -> None:
+    """The module's declared error type is the *only* way out.
+
+    ``copy_with`` re-parses the normalised host, so a URL that httpx
+    accepted in its original form could be refused in its normalised one
+    — ``https://0177.0.0.1./rss`` did exactly that, raising
+    ``httpx.InvalidURL`` straight through the guard and being recorded as
+    error_class="InvalidURL" instead of a classified unsafe target.
+    """
+    guard = UrlGuard(resolver=RecordingResolver())
+    for raw_url in (
+        "https://0177.0.0.1./rss",
+        "https://010.010.010.010./rss",
+        "https://192.168.001.001./rss",
+        "https://0177.0.0.1.:443/rss",
+    ):
+        with pytest.raises(IngestError) as excinfo:
+            guard.validate(raw_url)
+        assert isinstance(excinfo.value, UnsafeTargetError)
+        assert excinfo.value.error_class == "UnsafeTargetError"
 
 
 # --- Allow-list ---------------------------------------------------------

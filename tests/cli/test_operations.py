@@ -134,6 +134,17 @@ def test_add_source_stores_the_normalised_url(seeded: Session) -> None:
         "https://intranet.local/rss",  # non-public suffix
         "https://api.example.com/graphql",  # v2 deferral
         "https://example.com/sitemap.xml",  # v2 deferral
+        # A trailing dot is enough to get an obfuscated literal past
+        # httpx's parser; the host only *becomes* one after the guard
+        # normalises it away. The fetcher refuses all of these, so
+        # configuration time must too — that is what this function is
+        # for, and accepting them here means a source that fails hours
+        # later with a reason no one is reading.
+        "https://0x7f.0.0.1./rss",  # loopback, after normalisation
+        "https://127.1./rss",  # loopback short form
+        "https://0177.1./rss",  # loopback, octal short form
+        "https://0.0.0.0./rss",  # unspecified
+        "https://0177.0.0.1./rss",  # octal dotted-quad
     ],
 )
 def test_add_source_refuses_a_url_the_fetcher_would_refuse(seeded: Session, feed_url: str) -> None:
@@ -148,6 +159,23 @@ def test_add_source_refuses_a_url_the_fetcher_would_refuse(seeded: Session, feed
             website_url="https://example.com/",
             refresh_minutes=30,
         )
+
+
+def test_configuration_time_validation_is_a_fixpoint() -> None:
+    """Validating the stored URL again must never change or refuse it.
+
+    The property this rests on: what ``add`` stores is what ``fetch``
+    later validates, so any URL whose *normalised* form would be refused
+    has to be refused now rather than accepted and stored.
+    """
+    for feed_url in (
+        "https://www.phoronix.com/rss.php",
+        "https://feeds.bbci.co.uk/news/rss.xml",
+        "https://EXAMPLE.com/Feed?x=1",
+        "https://example.com./rss",
+    ):
+        stored = ops.validate_feed_url(feed_url)
+        assert ops.validate_feed_url(stored) == stored
 
 
 def test_add_source_rejects_a_duplicate_slug(seeded: Session) -> None:
