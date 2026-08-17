@@ -101,17 +101,48 @@ is about the pipeline, not the code.
   `.env.example` still sets `DOCS_ENABLED=true`, since that file is the
   development template. `/api/v1/openapi.json` is unaffected and served
   either way: the flag governs the UI, not the contract.
-- **Serve a static OpenAPI document in production** rather than generating it
-  from the live app. Publishing the schema at `/api/v1/openapi.json` is a v1
+- **Serve a static OpenAPI document in production** — **the drift check has
+  landed; the serving change has not, and the ownership problem was
+  overstated.** Publishing the schema at `/api/v1/openapi.json` is a v1
   requirement and stays; the change is decoupling it from the running
-  application so the served artefact is a reviewed, versioned file. It is
-  parked rather than merely unstarted, and the reason is ownership rather than
-  difficulty: `app/main.py` mounts no static files and is frozen Phase 0
-  property, the only place the served artefact could be decoupled from the
-  live app is `deploy/Caddyfile`, and a committed artefact needs a drift check
-  against the live schema whose natural home is `frontend/openapi.json`. The
-  cheap version — CI asserting the live schema matches a reviewed committed
-  file — is worth doing, and wants one owner across those three files.
+  application so the served artefact is a reviewed, versioned file.
+
+  This was parked on ownership rather than difficulty: `app/main.py` mounts
+  no static files and is frozen Phase 0 property, the only place the served
+  artefact could be decoupled from the live app is `deploy/Caddyfile`, and a
+  committed artefact needs a drift check whose natural home is
+  `frontend/openapi.json`. The cheap version turned out to touch neither of
+  the contentious files, because a drift check is not a serving change: it is
+  a property of the application, and it went in the test suite.
+
+  It also had one more link than the entry accounted for. The contract
+  reaches the client through *two* committed artefacts —
+  `frontend/openapi.json`, and the `src/api/schema.d.ts` generated from it —
+  and the regeneration of both was held together by a sentence in
+  frontend/README.md asking for discipline. Both links are now checked, each
+  in the job that already has the toolchain for it, so neither job gained a
+  dependency and no new job was created: `tests/test_openapi.py` compares the
+  committed document against the served schema byte for byte, and the
+  `frontend` job regenerates the types and fails on a diff. Both were green
+  on the first run and both were mutation-tested — a field added to
+  `HealthResponse` with no regeneration fails the first, and a regenerated
+  `openapi.json` with stale types fails the second.
+
+  The interesting half is the one `tsc` could never have caught: stale types
+  stay internally consistent with a document that has stopped describing the
+  server, so the typecheck passes faithfully against the wrong contract.
+
+  The `frontend` job was renamed to say so — `Frontend lint, types, contract,
+  tests, build` — and the required context updated with it. Dodging the
+  settings edit by keeping a name that no longer described the job was the
+  first instinct and the wrong one: it optimises for whoever makes the change
+  over whoever next reads a red cross, which is the same least-surprise
+  argument the preceding three fixes turned on.
+
+  What remains is the serving change itself — `deploy/Caddyfile` answering
+  `/api/v1/openapi.json` from the committed file rather than from the
+  application. That still wants an owner, and now has a trustworthy artefact
+  to serve, which was the prerequisite it was really waiting on.
 
 ## Scaling
 
@@ -158,7 +189,7 @@ prerequisite for going past it.
   resolution, the anti-flash script, and contrast, and covered none of the
   client's actual logic.
 
-  `src/feed/filters.ts` and `src/feed/volume.ts` now have 72 tests, and they
+  `src/feed/filters.ts` and `src/feed/volume.ts` now have 73 tests, and they
   needed no new tooling — both modules import types only, so they are the same
   shape as what Vitest already covered. They were mutation-tested rather than
   merely run: thirteen behavioural mutations, each the plausible version of

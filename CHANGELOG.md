@@ -37,7 +37,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   first tests the client has had — and they run in CI.
 - 73 further Vitest tests over the feed's filter model
   (`src/feed/filters.ts`) and volume signals (`src/feed/volume.ts`),
-  taking the suite to 186. They pin the distinction between "no override"
+  taking the suite to 187. They pin the distinction between "no override"
   (`null`) and "nothing selected" (`[]`), including its survival through
   the URL, and the thresholds behind the high-volume flag and the
   dominance notice.
@@ -49,6 +49,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cache key, and the feed query, and those consumers disagree about what
   punctuation means — a slug containing a comma produced a source that
   listed correctly and filtered to nothing.
+- The API contract is checked against the two committed artefacts the
+  client is built from. `tests/test_openapi.py` compares
+  `frontend/openapi.json` against the schema the application serves, byte
+  for byte, and the `frontend` CI job regenerates `src/api/schema.d.ts`
+  and fails on a diff. Regenerating both was previously a manual step
+  held together by a sentence in `frontend/README.md`; a contract change
+  that skipped it left the client typed against a server that no longer
+  existed, with `tsc` still passing because it was checking the client
+  against the stale copy.
 - `LICENSE` (MIT), matching the declaration that was already in
   `pyproject.toml` but had no corresponding grant in the repository.
 - `CONTRIBUTING.md`, and a `Docs` workflow that extracts the README's

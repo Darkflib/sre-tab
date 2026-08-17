@@ -3,6 +3,91 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-17 — The contract, gated at both links
+
+The roadmap's cheap version of the static-OpenAPI item: CI asserting the
+live schema matches the reviewed committed file. It came out smaller than
+the entry costed it and one link larger than the entry described, and both
+differences are the interesting part.
+
+**Smaller, because a drift check is not a serving change.** The item was
+parked on ownership across three files — `app/main.py` is frozen Phase 0
+property, `deploy/Caddyfile` is the only place the served artefact could
+be decoupled from the live app, and the committed artefact lives in
+`frontend/openapi.json`. The check touched neither of the contentious
+two. What the committed document matches the served schema is a property
+of the application, so it belongs in the test suite, next to the
+assertions about the endpoint table that were already there. No CI wiring
+at all for that half.
+
+**One link larger, because there are two committed artefacts, not one.**
+`src/api/schema.d.ts` is generated from `openapi.json`, so the contract
+reaches the client through a two-step chain, and frontend/README.md held
+it together with "regenerate both files in one commit". That sentence was
+the entire enforcement mechanism.
+
+The second link is the one worth having. Skip the first regeneration and
+the committed document is visibly stale. Skip the second and nothing
+looks wrong anywhere: the types stay internally consistent with a
+document that has stopped describing the server, so `tsc` passes —
+faithfully, against the wrong contract. Neither the typecheck nor the
+Python suite could have caught it, because each is correct about the
+thing it can see.
+
+Split by toolchain, so each link is checked where the toolchain for it
+already exists: `tests/test_openapi.py` for the document, a step in the
+`frontend` job for the types. Neither job gained a dependency and no new
+job was created — deliberate, a week after learning that protection lives
+in GitHub's settings and not in a file anyone reviews.
+
+**Avoiding the protection change entirely was the wrong instinct, though,
+and it took saying it out loud to see why.** The job was still called
+`Frontend lint, types, tests, build` while doing something the name did
+not mention, which is the same least-surprise argument the last three
+fixes turned on, pointed at whoever next reads a red cross and tries to
+work out what failed. Keeping a stale name to dodge a settings edit
+optimises for the person making the change over the person debugging it.
+
+So it is `Frontend lint, types, contract, tests, build` now, and the
+required context was updated in the same change, following the procedure
+CONTRIBUTING.md was given for exactly this. Order matters and is worth
+recording: rename, push, let the new context report, *then* rewrite the
+required set. Protection then never names a context that has not
+reported, and the only intermediate state is a pull request waiting —
+which is the safe direction, and the one the broken rule already proved
+the repository survives. Verified afterwards by set-differencing the
+required contexts against the reported ones, not by rereading the rule.
+
+Two smaller things fell out. The old name appeared in CONTRIBUTING.md
+three times, once as a third copy of the whole context table inside the
+narrative about the broken rule; that copy is now a pointer to the table,
+because a list repeated three times is two opportunities to drift. And
+the rename is annotated in `ci.yml` itself, next to the `name:` — the one
+place someone editing it will actually be looking.
+
+Both were green on the first run, which is the outcome to want: the gate
+pins a property that is true rather than repairing one that is not.
+Mutation-tested on the theme suite's precedent, one per link — a field
+added to `HealthResponse` with no regeneration fails the document test
+and, tellingly, fails nothing else, because the existing endpoint-table
+assertion is about which operations exist and not about their shape; a
+regenerated `openapi.json` with stale types fails the CI step. The first
+mutation attempt was malformed and worth recording: hand-editing
+`schema.d.ts` and then running the check passes, because regeneration
+simply overwrites the edit. That is correct behaviour and a bad test of
+it — the check is for a stale *input*, not a tampered output.
+
+One documentation claim was falsified in passing. CONTRIBUTING.md said
+`npm run check` was the local equivalent of the `frontend` job, and it no
+longer is: the job now regenerates and diffs, and `check` deliberately
+does not, because a command called `check` should not write to the
+working tree. Amended rather than papered over, along with the asymmetry
+it creates — a response-model change fails locally under `uv run pytest`,
+while forgetting `generate:api` is caught only in CI.
+
+The serving change itself stays on the roadmap. It now has a trustworthy
+artefact to serve, which is the prerequisite it was actually waiting on.
+
 ## 2026-08-17 — Least surprise, applied to two audiences
 
 Three fixes that came out of the filter-model work below, decided by
@@ -70,11 +155,11 @@ rather than left to infer — which is the mistake the entry below records.
 
 ## 2026-08-17 — The filter model under test, and what it exposed
 
-72 Vitest tests over `src/feed/filters.ts` and `src/feed/volume.ts`, the
+73 Vitest tests over `src/feed/filters.ts` and `src/feed/volume.ts`, the
 cheap half of the frontend-coverage item and the half the roadmap said to
 take first. It was right about the ordering for the stated reason — both
 modules import types only, so they needed no DOM, no request mocking, and
-no new dependency — and the suite goes from 114 to 186 tests still running
+no new dependency — and the suite goes from 114 to 187 tests still running
 in under half a second.
 
 The subject is one distinction with three meanings. `null` is "no
