@@ -41,6 +41,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`null`) and "nothing selected" (`[]`), including its survival through
   the URL, and the thresholds behind the high-volume flag and the
   dominance notice.
+- Source and topic slugs are validated when they are added. `sre-tab
+  sources add` and `sre-tab topics add` require lower-case letters and
+  digits joined by single hyphens, within the column's 64 characters, and
+  `sre-tab status` reports any slug that predates the check and exits
+  non-zero. A slug goes into the browser's query string, the client's
+  cache key, and the feed query, and those consumers disagree about what
+  punctuation means — a slug containing a comma produced a source that
+  listed correctly and filtered to nothing.
 - `LICENSE` (MIT), matching the declaration that was already in
   `pyproject.toml` but had no corresponding grant in the repository.
 - `CONTRIBUTING.md`, and a `Docs` workflow that extracts the README's
@@ -130,6 +138,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **"Save as my default" no longer inverts an empty selection.** It wrote
+  the resolved chip state into preferences, so deselecting every source
+  and saving stored an empty saved selection — which the server reads as
+  "no preference, use the instance defaults". The user's "show me
+  nothing" became "show me everything" in two clicks. An empty selection
+  is a step towards a filter rather than a filter, so the control is now
+  unavailable while nothing is selected and the filter bar says why.
+- **"Save as my default" no longer pins a snapshot of today's
+  catalogue.** It wrote both dimensions from the resolved chip state, so
+  a dimension the user had not overridden was saved as an explicit list
+  of everything currently in the catalogue — after which a source added
+  later never appeared for that user. Only the dimensions the user
+  actually changed are sent.
 - The feed's cache key can no longer alias two different filters onto one
   entry. `filterKey` joined the selection with `+` and wrote `*` for "no
   override", so a source slug of `*`, or the pair `a`/`b` against a single

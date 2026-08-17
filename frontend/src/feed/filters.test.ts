@@ -181,19 +181,23 @@ describe('the URL round trip', () => {
     expect(parseFilters(params)).toEqual({ topics: null, sources: [] });
   });
 
-  // Marked `.fails`: this asserts the behaviour we want and records that we
-  // do not have it. A slug containing a comma is split in two by the round
-  // trip, because the comma is the separator and nothing escapes it, so the
-  // user lands on a filter naming two slugs that do not exist and an empty
-  // feed. It is reachable — `add_source` and `add_topic` enforce uniqueness
-  // but not shape, and the columns are plain `String(64)` — so this is a
-  // defect, not a documented assumption.
+  // Marked `.fails`: this asserts the behaviour we want and records that
+  // the client does not have it. A slug containing a comma is split in two
+  // by the round trip, because the comma is the separator and nothing
+  // escapes it.
   //
-  // Asserting the *current* behaviour instead would pin the defect as
-  // correct and fail whoever fixes it. `.fails` inverts that: the day
-  // serialisation preserves arbitrary slugs, or the creation paths enforce
-  // a slug format, this test errors with "expected to fail but passed" and
-  // whoever did it deletes the marker. See ROADMAP.md for the two options.
+  // It is *contained* rather than fixed. `add_source` and `add_topic` now
+  // refuse a slug that is not lower-case alphanumerics with single
+  // hyphens, so no such slug can be created, and `sre-tab status` reports
+  // any that predate the check. That is enforcement at the point the
+  // operator chooses the value rather than tolerance three components
+  // downstream — but it is a constraint held elsewhere, so the client
+  // stays fragile to a slug it will now never see.
+  //
+  // Asserting the current behaviour instead would pin the defect as
+  // correct and fail whoever hardens the client. `.fails` inverts that:
+  // the day serialisation preserves arbitrary slugs, this errors with
+  // "expected to fail but passed" and whoever did it deletes the marker.
   it.fails('preserves a slug containing a comma', () => {
     const params = applyFiltersToParams(new URLSearchParams(''), {
       topics: null,

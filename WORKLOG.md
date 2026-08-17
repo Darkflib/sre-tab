@@ -3,6 +3,71 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-17 — Least surprise, applied to two audiences
+
+Three fixes that came out of the filter-model work below, decided by
+asking who is surprised and where.
+
+**An empty selection is a step, not a destination.** "Save as my default"
+wrote the resolved chip state into preferences, so deselecting every
+source and saving stored an empty saved selection — which the server
+reads as "no preference, use the instance defaults". Two clicks turned
+"show me nothing" into "show me everything", and specifically into the
+state `preferences.py`'s default-selection comment exists to argue
+against, where general news drowns the low-volume sources the product is
+for.
+
+The store has no way to represent "my default is nothing", so the honest
+answer was to stop offering it rather than to make it representable. That
+was considered — a sentinel, or an explicit "has a selection" flag — and
+rejected: a schema change and a server-logic ripple to persist a state
+whose only value is as a transient editing step. You clear the chips so
+you can pick two, not so you can keep none. The control is disabled while
+nothing is selected, with the reason stated in the filter bar; a dead
+button with no explanation is its own small surprise.
+
+**A second fault shared the root and is fixed with it.** `saveAsDefault`
+wrote *both* dimensions from `effectiveSelection`, which resolves an
+un-overridden dimension into the whole catalogue so chips can render.
+Writing that back converts "follow the instance" into a pinned snapshot
+of today's catalogue, after which a source added later never appears for
+that user and nothing says why. It only bites once saved preferences are
+empty — which is what the inversion above caused, so the two compounded:
+invert, then freeze. The patch now carries only the dimensions the user
+actually overrode.
+
+The generalisation is the part worth keeping. `effectiveSelection`
+returns a **display** value, lossy by design because it resolves *unset*
+into a concrete list for rendering. Persisting a display value into a
+store with a different vocabulary is what inverted the meaning. Persist
+intent, not appearance.
+
+**The slug question resolved the other way, because the audience is
+different.** That surprise belongs to an operator at a terminal:
+`sre-tab sources add --slug 'a,b'` succeeded, and the consequence
+appeared later, in another component, as a source that lists correctly
+and filters to nothing. For a CLI, least surprise means failing at the
+point of the mistake — the same trade `validate_feed_url` already makes
+one field along, and the same conclusion the SSRF work reached about
+config-time validation. So the fix is enforcement at creation rather than
+tolerance in the client: `add_source` and `add_topic` refuse anything but
+lower-case alphanumerics with single hyphens, reusing the pattern that
+already guarded the Medium tag, and `sre-tab status` reports rows that
+predate the check and exits non-zero. Existing slugs are reported rather
+than migrated, because rewriting one in place breaks every saved
+selection naming it.
+
+Writing that down turned up a dialect divergence: `medium_source` capped
+the *tag* at 64 characters and then prefixed `medium-`, so a 60-character
+tag made a 67-character slug — accepted by SQLite in development and
+refused by PostgreSQL, where `String(64)` is real. The composed slug is
+checked now, not just the tag.
+
+The client is left fragile on purpose, and the `it.fails` marker stays to
+say so. Its comma limitation is contained by a constraint held somewhere
+else entirely, and that is exactly the kind of thing a reader needs told
+rather than left to infer — which is the mistake the entry below records.
+
 ## 2026-08-17 — The filter model under test, and what it exposed
 
 72 Vitest tests over `src/feed/filters.ts` and `src/feed/volume.ts`, the

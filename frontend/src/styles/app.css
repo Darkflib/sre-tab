@@ -318,6 +318,15 @@
   margin-left: auto;
 }
 
+/* Why "Save as my default" is unavailable. A disabled control with no
+   stated reason is its own small surprise, and this one is not obvious:
+   an empty selection is a step towards a filter, not a filter. */
+.filters__note {
+  margin: 0 0 0.6rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
 .filter-group {
   margin-top: 0.6rem;
 }

@@ -184,6 +184,28 @@ prerequisite for going past it.
   mocking, which is real setup and probably a dependency or two. Still worth
   doing, and still not the thing to pick up first.
 
+- **Nothing constrains a slug's format at any creation path** — **landed.**
+  Resolved towards enforcement, on least-surprise grounds: the surprise here
+  belongs to the operator at a terminal, and for a CLI that means failing at
+  the point of the mistake rather than three components downstream.
+  `add_source` and `add_topic` now refuse anything that is not lower-case
+  alphanumerics joined by single hyphens, within the column's 64 characters,
+  reusing the pattern that already guarded the Medium tag. `sre-tab status`
+  reports rows that predate the check and exits non-zero, because
+  enforcement at add time binds only what is added after it and a slug cannot
+  be rewritten in place without breaking every saved selection naming it.
+
+  One dialect divergence fell out of writing it down: `medium_source` capped
+  the *tag* at 64 characters and then prefixed `medium-`, so a 60-character
+  tag made a 67-character slug — accepted by SQLite in development and
+  refused by PostgreSQL in production. The composed slug is now checked too.
+
+  The client was deliberately left as it is. Its fragility is contained
+  rather than fixed, which is why the `it.fails` marker stays: the constraint
+  now lives somewhere else, and a reader should be able to find that out.
+
+  The original entry follows, because the reasoning is what made the choice.
+
 - **Nothing constrains a slug's format at any creation path.** The catalogue
   is operator-seeded and every slug in it is kebab-case, which is why this
   read as a rule and got asserted as one. It is not enforced anywhere:
@@ -217,22 +239,41 @@ prerequisite for going past it.
   way: `fetchFeed` sends arrays through openapi-fetch, so this is purely the
   browser URL.
 
-- **"Save as my default" inverts an empty selection.** Found by the tests
-  above rather than fixed by them, because the fix is a product decision
-  rather than a correction. `FilterBar`'s `saveAsDefault` writes
-  `effectiveSelection`'s result straight into preferences, which moves `[]`
-  from the override side of the distinction to the saved side — where it
-  means the opposite. Deselect every source, click **Save as my default**, and
-  the override is cleared, the server sees an empty saved selection, and
-  `_effective_sources` returns `None`: the user's "show me nothing" is stored
-  as "show me everything", and the feed goes from empty to the full
-  catalogue in one click.
+- **"Save as my default" inverts an empty selection** — **landed.** Found by
+  the tests above, then decided rather than merely patched. `saveAsDefault`
+  wrote `effectiveSelection`'s result straight into preferences, moving `[]`
+  from the override side of the distinction to the saved side, where it means
+  the opposite: the user's "show me nothing" was stored as "show me
+  everything", two clicks from the feed, with no error. Worse than it sounds
+  — it landed the user in precisely the state
+  [preferences.py](app/services/preferences.py)'s default-selection rationale
+  exists to prevent, where general news drowns the low-volume sources the
+  product is for.
 
-  It is reachable in two clicks from the feed (**None**, then **Save as my
-  default**), and it fails silently — a fuller feed is not obviously an
-  error. The narrow fix is to disable the control while `selectsNothing`, but
-  the question underneath it is what saving an empty selection *should* mean,
-  and that wants deciding before it is coded.
+  Resolved by treating an empty selection as what it is: **a step, not a
+  destination.** It exists so you can clear the chips and pick two rather
+  than deselecting sixteen. The store has no way to say "my default is
+  nothing" — an empty saved selection is how the server spells "no
+  preference" — so the control no longer offers to save it, and says why in
+  the filter bar rather than presenting a dead button. Making the state
+  representable was considered and rejected: it is a schema change and a
+  server-logic ripple to persist a state whose only value is transient.
+
+  A second fault fell out of the same root, and is fixed with it.
+  `saveAsDefault` wrote *both* dimensions from `effective`, which resolves an
+  un-overridden dimension into the whole catalogue for rendering. Writing
+  that back converts "follow the instance" into a pinned snapshot of today's
+  catalogue, after which a source added later never appears for that user and
+  nothing indicates why. It only bites once saved preferences are empty —
+  which is exactly what the inversion above caused, so the two compounded.
+  The patch now carries only the dimensions the user actually overrode;
+  `PreferencesPatch` already treats an absent field as "leave alone".
+
+  The general lesson is worth more than the fix: `effectiveSelection` returns
+  a **display** value, lossy by design because it resolves *unset* into a
+  concrete list so chips can render. Persisting a display value into a store
+  with a different vocabulary is what inverted the meaning. Persist intent,
+  not appearance.
 
 ## Things that are true but unproven
 
