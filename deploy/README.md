@@ -184,10 +184,46 @@ database restarting underneath an already correctly ordered migration.
 
 ## Upgrading
 
-The units track `ghcr.io/darkflib/sre-tab:latest` with `Pull=newer`, so a
-restart adopts the current build:
+An upgrade is a commit, not a restart. The three application units pin
+`ghcr.io/darkflib/sre-tab:sha-<commit>@sha256:<digest>` with `Pull=missing`,
+so restarting them re-runs the build that is already pinned and nothing else.
+Changing which build runs happens in the repository, where it can be reviewed
+and reverted.
+
+They used to track `:latest` with `Pull=newer`, which meant `systemctl
+restart` — a reboot, an OOM kill, a routine restart to clear a stuck
+connection — silently adopted whatever CI had last pushed to main. The
+running version was decided by whoever merged most recently.
+
+### Promote a build
+
+From a checkout, on any machine with `curl`, `cosign`, and `git`:
 
 ```bash
+git fetch origin
+deploy/scripts/promote.sh                 # the build published for origin/main
+deploy/scripts/promote.sh 1a2b3c4         # or a specific commit
+```
+
+It resolves the commit to the digest the registry actually serves, verifies
+that digest, and only then rewrites all three units. If verification fails it
+writes nothing:
+
+```
+==> cosign verify ghcr.io/darkflib/sre-tab@sha256:…
+Error: no signatures found
+```
+
+Review and commit the result — the diff is three `Image=` lines, and they
+must always move together, because migrations, the application, and the
+frontend assets ship in one image so they cannot skew. CI enforces both that
+they agree and that the digest they name is signed.
+
+### Apply it on the host
+
+```bash
+git pull
+sudo deploy/install.sh
 sudo systemctl restart \
   sre-tab-migrate.service \
   sre-tab-assets.service \
@@ -196,18 +232,65 @@ sudo systemctl restart \
 ```
 
 One `systemctl` invocation, not four: systemd builds a single transaction and
-honours the `After=` ordering inside it.
+honours the `After=` ordering inside it. The first start after a promotion
+pulls the new digest; later restarts do not touch the network, because a
+digest names immutable content and the local copy is by definition the right
+one.
 
-For deliberate, reviewable upgrades, pin `Image=` in
-`deploy/quadlet/sre-tab.container`, `sre-tab-migrate.container`, and
-`sre-tab-assets.container` to a `:sha-<commit>` tag instead of `:latest`, and
-change the pin as a commit. Take a backup before any upgrade that carries a
-migration; `alembic downgrade` is not a substitute for a restore.
+Take a backup before any upgrade that carries a migration; `alembic
+downgrade` is not a substitute for a restore.
 
 A deploy causes a sub-second blip while Caddy restarts and the assets volume
 is replaced. That is expected for a single-instance self-hosted service. If it
 ever needs to be zero-downtime, the pattern to reach for is orbit-data's
 atomic release symlink rather than a destructive copy.
+
+### What actually verifies what
+
+Every published image is signed with cosign using GitHub's OIDC identity —
+no key to store or rotate — and carries SLSA build provenance and an SPDX
+SBOM. Verify any of it by hand:
+
+```bash
+deploy/scripts/verify-image.sh                    # the pinned digest
+deploy/scripts/verify-image.sh ghcr.io/darkflib/sre-tab@sha256:…
+```
+
+Be clear about where that check runs, because the honest answer is "not at
+container start":
+
+| Point | Runs | Catches |
+| --- | --- | --- |
+| Publish (CI) | every push to main | a signature or attestation that cannot be verified from outside the step that made it |
+| Promotion (`promote.sh`) | when a digest is chosen | pinning a build that is not ours |
+| CI, every push and PR | always | a pin that was hand-edited, or that has stopped verifying |
+| Operator, before a restart | when run | the above, on the host, at the moment of deploying |
+| **Container start** | **never** | **nothing** |
+
+That last row is not an oversight. Podman *can* enforce signatures at pull
+time through `containers-policy.json`, but its `sigstoreSigned` requirement
+expresses a keyless identity only as `fulcio.oidcIssuer` plus
+`fulcio.subjectEmail`, and **both are mandatory**. A GitHub Actions
+certificate has no email: its subject is a URI,
+`https://github.com/Darkflib/sre-tab/.github/workflows/ci.yml@refs/heads/main`.
+There is no field to put that in, so this identity cannot be written into a
+podman signature policy at all — checked on Debian 13 with podman 5.4.2, not
+merely read in the man page.
+
+What the pin gives you without it is still worth having: podman will refuse
+content that does not hash to the pinned digest, so the *wrong version* case
+is closed by the digest and the *wrong image* case is closed at promotion,
+once, by a human running a script that refuses to be talked out of it. What
+remains uncovered is a host whose local image store was tampered with after
+a verified pull.
+
+If that matters more than availability does, `verify-image.sh` can be wired
+into the start path as a drop-in — `sudo systemctl edit sre-tab.service`,
+then `ExecStartPre=/usr/local/bin/verify-image.sh`. Understand the trade
+before doing it: the application then needs cosign, reachable Fulcio and
+Rekor endpoints, and a working network *to start at all*, so a registry
+outage during a reboot becomes an outage of this service. That is why it is
+not the default.
 
 ### Changes to `sre-tab.network` need the network removed
 
