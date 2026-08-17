@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker as SessionMaker
 
 from app.api.v1.router import router as v1_router
+from app.auth.csrf_middleware import CSRFMiddleware
 from app.db.engine import create_db_engine
 from app.db.session import build_session_factory
 from app.health import ProbeResult, probes
@@ -48,8 +49,11 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     probes.register_liveness("app", lambda: True)
     probes.register_readiness("database", lambda: _database_probe(session_factory))
 
-    # Outermost first: headers apply to every response, including errors
-    # raised inside the request-ID middleware.
+    # Added innermost-first (Starlette wraps in reverse). CSRF sits closest
+    # to the router so a rejection still travels back out through the
+    # request-ID and security-header layers; headers therefore apply to
+    # every response, including errors raised inside them.
+    application.add_middleware(CSRFMiddleware)
     application.add_middleware(RequestIDMiddleware)
     application.add_middleware(SecurityHeadersMiddleware)
 
