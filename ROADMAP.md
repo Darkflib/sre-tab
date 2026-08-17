@@ -76,6 +76,21 @@ is about the pipeline, not the code.
   verified against a canary. Registry coverage of JS/TS taint flow is still
   thinner than the Python equivalent. ShellCheck covers the shell scripts
   (7 files, clean).
+- **The build path now depends on `codeload.github.com` being up.** New, and
+  a consequence of the work above rather than a defect in it. Every action is
+  pinned to a commit SHA, which guarantees the *right* bytes and says nothing
+  about getting them *at all* — and the signing, SBOM, and attestation steps
+  each add another tarball to fetch over that CDN. During GitHub's incident on
+  17 August, `anchore/sbom-action` and `astral-sh/setup-uv` both failed to
+  download with 429/502/503 after three retries, failing `publish` and
+  `postgres` on commits that could not have broken either; reruns were green.
+  The fix is emphatically **not** to unpin, which would trade the integrity
+  property for an availability one. The options worth costing are vendoring
+  the two or three actions that matter into the repository, or replacing
+  `download-syft` with a digest-pinned syft container image so the fetch goes
+  to a registry rather than to codeload. Until then, a red supply-chain job
+  deserves a look at *which* step failed before anyone concludes the change
+  broke something.
 
 ## API surface
 
