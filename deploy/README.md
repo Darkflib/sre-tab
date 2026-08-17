@@ -274,10 +274,57 @@ one.
 Take a backup before any upgrade that carries a migration; `alembic
 downgrade` is not a substitute for a restore.
 
-A deploy causes a sub-second blip while Caddy restarts and the assets volume
-is replaced. That is expected for a single-instance self-hosted service. If it
-ever needs to be zero-downtime, the pattern to reach for is orbit-data's
-atomic release symlink rather than a destructive copy.
+### How long a deploy actually takes
+
+This used to say "a sub-second blip while Caddy restarts". That was wrong by
+a factor of about forty, and wrong about the mechanism, which is the part
+worth reading. Measured on Debian 13 with podman 5.4.2, polling
+`/api/v1/healthz` every 100ms across the four-unit restart above:
+
+| | Before | After |
+| --- | --- | --- |
+| `systemctl restart` returns | 35.6s | 15.4s |
+| Service unreachable | 43.7s | 36.1s |
+| …of which is *after* `systemctl` returned | 8.3s | 20.9s |
+
+The application itself is not the slow part: it stops answering for **0.5s**
+and is serving again **2.8s** after the restart begins. Restarting
+`sre-tab.service` alone showed systemd waiting a further **32s** after the
+application was already answering.
+
+That wait was `Notify=healthy` gating on the image's healthcheck, whose first
+run comes one whole interval after start regardless of `--start-period`. The
+interval was 30s in the image while `sre-tab-db.container` had used
+`HealthInterval=10s` in its unit all along — the two definitions live in
+different files, which is how they drifted apart unnoticed. The image is now
+10s too, which is what moves the first row of that table.
+
+**A deploy is not over when `systemctl` returns.** It is the second row that
+matters to anyone watching, and lowering the healthcheck interval does not
+address it: the service stays unreachable for roughly 20s *after* the command
+comes back. During that window a TCP connection to the published port is
+**black-holed rather than refused**, while Caddy's own log shows it serving
+50ms after its container started. So this is not Caddy being slow to boot,
+and it is not the application: something between the published port and the
+container is not carrying traffic yet. It has not been root-caused.
+
+Two caveats on those numbers. Every measurement was taken from the host's own
+loopback, through podman's published-port DNAT; whether a client on another
+machine sees the same tail is **unmeasured**, and the black-holing is
+suggestive of a NAT-layer effect that might not apply identically off-host.
+And this is a 4-core cloud instance, so the absolute figures are that host's,
+not a constant.
+
+The practical consequence is unchanged by any of it: **wait for `healthz` to
+answer rather than treating the prompt returning as the all-clear.** The
+verification step under *First start* is the right check to run, and running
+it immediately after `systemctl restart` will fail.
+
+None of this is a defect for a single-instance self-hosted service, which
+takes downtime on deploy by design. If it ever needs to be zero-downtime, the
+pattern to reach for is orbit-data's atomic release symlink rather than a
+destructive copy — and the tail above would need root-causing first, because
+it is the larger half.
 
 ### What actually verifies what
 

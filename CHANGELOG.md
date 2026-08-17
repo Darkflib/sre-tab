@@ -74,6 +74,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `:sha-<commit>@sha256:<digest>` with `Pull=missing`; upgrading is a
   reviewed commit produced by `promote.sh`, not a side effect of
   restarting. See the upgrade procedure in `deploy/README.md`.
+- **The application image's healthcheck interval is 10s, was 30s.**
+  `sre-tab.container` gates on `Notify=healthy` and Caddy is ordered
+  after it, so the interval set the deploy window rather than just the
+  monitoring cadence: the first check runs one whole interval after
+  start, whatever `--start-period` says. `systemctl restart` of the four
+  application units returns in 15.4s rather than 35.6s. It does not fix
+  the full outage — see `deploy/README.md`, which now carries the
+  measurements and the ~20s tail that remains unexplained.
 - **`DOCS_ENABLED` now defaults to false.** A deployment that inherits
   the defaults no longer serves Swagger UI at `/docs`; set
   `DOCS_ENABLED=true` to opt in. `/api/v1/openapi.json` is unaffected and

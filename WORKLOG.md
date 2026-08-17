@@ -3,6 +3,79 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-18 — The deploy documents, executed on a real host
+
+A second Debian 13 host with podman 5.4.2, and a hand-run of the four
+`deploy/README.md` sequences that nothing has ever executed: host
+preparation, secrets, first start, and network replacement. Hand-run
+rather than harnessed first, on the reasoning that a real host is the
+scarce resource and the extraction harness can be written anywhere
+afterwards.
+
+**Four of the four procedures are correct as written**, which is worth
+saying as plainly as the failures. `install.sh` is idempotent, seeds
+`app.env` once and preserves it while replacing everything else,
+and creates `/srv/sre-tab/backups` `999:999` mode `0700` — with gid 999
+confirmed as `systemd-journal` on the host the claim is about, which is
+the whole reason for the mode. `create-secrets.sh` takes the secret on
+stdin and the documented invariant holds: the password inside
+`sre-tab-database-url` matches `sre-tab-postgres-password`. First start
+resolves the ordering correctly from cold. The network-replacement
+sequence works including its subtle claim — with the network removed,
+`sre-tab-network.service` still reports `active`, which is exactly why
+the document says to use `podman network rm` rather than stopping the
+unit — and the recreated network puts the range at `.32–.254`, leaving
+Caddy's pinned `.20` outside the pool, so the Phase 3 collision fix is
+intact. `systemctl --failed` stayed empty throughout, which is the
+`NoNewPrivileges` reasoning holding somewhere other than where it was
+written.
+
+**The one wrong claim was the deploy window, and the error was in the
+mechanism rather than the number.** "A sub-second blip while Caddy
+restarts" measured 43.7 seconds. The application was never the slow
+part: it stops answering for 0.5s and is serving again 2.8s in.
+`Notify=healthy` gates on the image's healthcheck, whose first run comes
+one whole interval after start whatever `--start-period` says, and the
+interval was 30s — so systemd waited 32s for a unit that was ready in
+under three, holding Caddy down behind it because Caddy is ordered after
+the application.
+
+The interval had drifted for a structural reason worth recording:
+`sre-tab-db.container` has carried `HealthInterval=10s` in its unit all
+along, while the application's lives in the image. Two definitions in two
+files, and only one of them got tuned. Bringing the image to 10s cuts the
+`systemctl` wait from 35.6s to 15.4s, and was verified by building the
+image on the host and re-measuring rather than by reasoning about it.
+
+**It did not fix the outage, and that is the more useful finding.**
+Total unreachability went only 43.7s → 36.1s, because roughly 20s of it
+happens *after* `systemctl` returns — and that portion grew as the
+healthcheck wait shrank. During it a TCP connect to the published port is
+**black-holed rather than refused**, while Caddy's own log shows it
+serving 50ms after its container starts. So it is neither Caddy booting
+nor the application: something between the published port and the
+container is not carrying traffic yet. Not root-caused, and written down
+as unexplained rather than guessed at.
+
+Two honest limits on all of it. The polling was from the host's own
+loopback through podman's DNAT, so whether an off-host client sees the
+same tail is unmeasured — and the black-holing hints at a NAT-layer
+effect that might not. And the box is a 4-core cloud instance, so the
+absolute numbers are that host's.
+
+The operational conclusion survives every one of those caveats, and is
+now in the document: a deploy is not over when `systemctl` returns, so
+wait for `healthz` rather than the prompt. The documented verification
+step run immediately after a restart fails — which is how this was found,
+because it failed on me.
+
+One contradiction fell out alongside. The Containerfile's header claimed
+`sre-tab.container` sets `HealthCmd=` explicitly and that the deployment
+therefore did not depend on the image's `HEALTHCHECK` surviving an
+OCI-format build. The unit sets no `HealthCmd=`, deliberately, and its own
+comment and CI's both say so. The dependency is total, and the comment
+was reassurance pointing the wrong way.
+
 ## 2026-08-17 — The contract, gated at both links
 
 The roadmap's cheap version of the static-OpenAPI item: CI asserting the

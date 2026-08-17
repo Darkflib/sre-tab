@@ -327,11 +327,50 @@ during an incident.
   all. The refusal branches are the ones with a real example behind them —
   `https://www.theguardian.com/uk/rss/` answers `301` to `http://`, which is
   where that whole class of trap was found.
-- **Quadlet runtime behaviour beyond one Linux pass.** CI machine-checks unit
-  *generation* with `podman-system-generator --dryrun`, which catches a
-  malformed key and nothing else. The `After=`/`Requires=` ordering holding at
-  boot, `Notify=healthy`, and the Podman secret plumbing have had a single
-  validation pass on a real host, not a soak.
+- **Quadlet runtime behaviour beyond one Linux pass** — **a second host has
+  now run it, and `Notify=healthy` was doing something nobody had measured.**
+  CI machine-checks unit *generation* with `podman-system-generator --dryrun`,
+  which catches a malformed key and nothing else.
+
+  A full pass on a second Debian 13 host with podman 5.4.2 confirmed the
+  ordering (`db` → `migrate` → `app` → `web`, in that order, from a cold
+  install), the Podman secret plumbing, and `systemctl --failed` staying empty
+  across stops — which is the `NoNewPrivileges` reasoning holding up somewhere
+  other than where it was written.
+
+  What it also found is that `Notify=healthy` was setting the deploy window,
+  not merely gating readiness. The application's healthcheck lived in the
+  image at a 30-second interval while the database's lived in its unit at 10;
+  the first check runs one whole interval after start, so systemd held Caddy —
+  ordered after the application — down for the entire wait. A documented
+  "sub-second blip" measured 43.7 seconds on an application that was answering
+  2.8 seconds in. The image is 10s now, which takes the `systemctl` wait from
+  35.6s to 15.4s. See the deploy-window table in
+  [deploy/README.md](deploy/README.md).
+
+  Still not a soak: this is two cold installs and a handful of restarts, not
+  weeks of uptime, and the backup timer's catch-up is still unproven above.
+
+- **~20s of the deploy outage happens after `systemctl` returns, and nothing
+  explains it yet.** New, and separated from the healthcheck item above
+  because fixing that one did not touch this and in fact made it the majority
+  of the window: total unreachability moved only 43.7s → 36.1s.
+
+  What is known. During the tail a TCP connect to the published port is
+  **black-holed rather than refused**, so it is not "no listener yet". Caddy's
+  own log has it serving 50ms after its container starts, so it is not Caddy
+  booting. The application is answering 2.8s in, so it is not that either.
+  Something between the published port and the container is not carrying
+  traffic, and the shape — silent drops after a container is recreated — points
+  at the NAT layer rather than at any of the three services.
+
+  What is not known, and would need measuring before anyone acts. Every
+  observation was taken from the host's own loopback through podman's DNAT, so
+  whether an off-host client sees this at all is unmeasured; a NAT-layer effect
+  is exactly the kind that might not reproduce from outside. Testing that needs
+  the published port reachable from another machine, which it was not on the
+  validation host. Worth doing before assuming users experience a 36-second
+  deploy rather than a 15-second one.
 
 ## Documentation
 
