@@ -39,7 +39,12 @@ def test_forged_and_malformed_state_is_rejected() -> None:
     nonce, expires_at, signature = token.split(".")
 
     assert store.consume(token, "another-secret") is False
-    assert store.consume(f"{nonce}.{expires_at}.{signature[:-1]}0", SECRET) is False
+    # Flip the last hex digit to something it demonstrably is not. Hard-coding
+    # a digit here is a 1-in-16 flake: when the real signature already ends in
+    # it, the "tampered" token is the genuine one and redemption rightly
+    # succeeds.
+    tampered = signature[:-1] + ("1" if signature[-1] == "0" else "0")
+    assert store.consume(f"{nonce}.{expires_at}.{tampered}", SECRET) is False
     # Extending the deadline invalidates the signature over it.
     assert store.consume(f"{nonce}.{int(expires_at) + 3600}.{signature}", SECRET) is False
     assert store.consume("nonsense", SECRET) is False
