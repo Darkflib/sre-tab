@@ -41,9 +41,9 @@ and for the client:
 cd frontend && npm run check           # eslint, tsc, vitest, vite build
 ```
 
-Run that one by hand until CI catches up: the `frontend` job still runs lint,
-typecheck, and build separately and does not yet invoke `npm test`, so the
-Vitest suite is currently enforced by contributors rather than by the gate.
+`npm test` is `vitest run` — one shot, not the watcher; `npm run test:watch`
+is the watcher. CI runs all four as separate steps, so `npm run check` is the
+local equivalent of the `frontend` job.
 
 Three further checks run in CI and are worth knowing about before a change
 that touches their subject matter:
@@ -152,7 +152,7 @@ parts have been run and which have not.
 | `python` | format, lint, mypy, Bandit, the header and env-example parity scripts, pytest |
 | `postgres` | the PostgreSQL-only suite against a service container |
 | `audit` | `pip-audit` over the locked dependency set, and `npm audit` over the client's |
-| `frontend` | eslint, tsc, vite build — not yet the Vitest suite |
+| `frontend` | eslint, tsc, the Vitest suite, vite build |
 | `container` | image build, Caddyfile validation, Quadlet generation, the deployment smoke test |
 
 `audit` is a separate job on purpose, and so is `sast`: both reach the network

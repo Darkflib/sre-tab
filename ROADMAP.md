@@ -134,10 +134,14 @@ prerequisite for going past it.
   button, input, and inactive-chip borders sat at 1.80:1 against 1.4.11's 3:1,
   and read-card summary text at 3.22:1 in light against 1.4.3's 4.5:1. All
   fixed at the token layer.
-- **Run the frontend tests in CI.** `npm test` exists and `npm run check` now
-  runs lint, typecheck, tests, and build in that order, but the `frontend` job
-  in `ci.yml` still runs the three it always did. A test suite nothing enforces
-  decays; switching that job to `npm run check` is the whole change.
+- **Run the frontend tests in CI** — **landed.** The `frontend` job runs
+  `npm test` between the typecheck and the build: the suite is pure logic with
+  no build dependency and finishes in well under a second, so failing early
+  costs nothing.
+- **Widen frontend coverage beyond the theme layer.** The suite that exists is
+  thorough about theme resolution, the anti-flash script, and contrast. The
+  feed, the filter model, the cursor-pagination hook, and the API client have
+  no tests, and between them they are most of the client.
 
 ## Things that are true but unproven
 

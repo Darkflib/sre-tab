@@ -235,11 +235,12 @@ not been demonstrated, which is a different thing from being tested.
   surveyed redirects at all. The refusal branches — downgrade to `http`, a
   private or link-local destination, a `file:` URL, a loop, a `Location`-less
   `302` — are the ones with real-world provenance.
-- **The frontend tests exist but CI does not run them yet.** There is a Vitest
-  suite under `frontend/` — theme resolution, the anti-flash script, and WCAG
-  contrast recomputed from `tokens.css` — and `npm run check` runs it. The
-  `frontend` job in CI still runs only lint, typecheck, and build, so nothing
-  currently enforces the suite. A test suite nothing enforces decays.
+- **Frontend coverage is narrow, though no longer absent.** The Vitest suite
+  under `frontend/` is gated in CI and covers the theme layer thoroughly —
+  resolution and its storage fallbacks, the anti-flash script executed in a
+  VM context, and WCAG contrast recomputed from `tokens.css` for both themes.
+  Nothing yet covers the feed, the filters, or the API client, which are the
+  larger surfaces.
 - **Backups sit on the same host as the database.** That is a backup, not
   disaster recovery. The `.sha256` sidecars exist so a copy taken off-host
   can be verified at the far end.
