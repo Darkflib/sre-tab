@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import timedelta
 from typing import Any
 
@@ -237,6 +238,11 @@ def test_maximum_page_size_is_accepted(authed_client: TestClient, catalogue: Cat
     assert response.status_code == 200
 
 
+def _absurd_cursor() -> str:
+    """A cursor whose microsecond field is far outside timedelta's range."""
+    return base64.urlsafe_b64encode(f"1:{'9' * 400}:1".encode()).decode().rstrip("=")
+
+
 @pytest.mark.parametrize(
     "cursor",
     [
@@ -246,6 +252,10 @@ def test_maximum_page_size_is_accepted(authed_client: TestClient, catalogue: Cat
         "OTk5OTk5",  # base64 of "999999" — one field, not three
         "Mjo4OTox",  # base64 of "2:89:1" — version we never issued
         "MTpub3QtYS1udW1iZXI6MQ",  # base64 of "1:not-a-number:1"
+        # "1:999…:1" with 400 digits. int() parses it happily; the
+        # timedelta multiplication that follows raises OverflowError,
+        # which was not in the caught tuple and answered 500.
+        _absurd_cursor(),
     ],
 )
 def test_malformed_cursor_is_rejected_cleanly(

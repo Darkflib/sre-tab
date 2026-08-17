@@ -65,7 +65,11 @@ def decode_cursor(cursor: str) -> tuple[datetime, int]:
         payload = base64.urlsafe_b64decode(cursor + padding).decode()
         version, micros, row_id = payload.split(":")
         position = (_EPOCH + int(micros) * _MICROSECOND, int(row_id))
-    except (ValueError, binascii.Error, UnicodeDecodeError) as exc:
+    # OverflowError is in the tuple because `int(micros)` is unbounded
+    # while timedelta is not: a few hundred digits of nines parses fine
+    # and then overflows the multiplication. Decoding is total, so that
+    # is a malformed cursor like any other, not a 500.
+    except (ValueError, binascii.Error, UnicodeDecodeError, OverflowError) as exc:
         raise InvalidCursorError("malformed cursor") from exc
     if version != _VERSION:
         raise InvalidCursorError("unrecognised cursor version")

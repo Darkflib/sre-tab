@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime
 from typing import Any
 
@@ -195,7 +196,17 @@ def test_bookmark_state_is_visible_in_the_feed(
     assert card["bookmarked"] is True
 
 
-@pytest.mark.parametrize("cursor", ["nonsense!!", "Zm9v", "Mjo4OTox"])
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        "nonsense!!",
+        "Zm9v",
+        "Mjo4OTox",
+        # Both listings share decode_cursor, so both inherited the
+        # unhandled OverflowError on an absurd microsecond field.
+        base64.urlsafe_b64encode(f"1:{'9' * 400}:1".encode()).decode().rstrip("="),
+    ],
+)
 def test_malformed_cursor_is_rejected_cleanly(
     authed_client: TestClient, catalogue: Catalogue, cursor: str
 ) -> None:
