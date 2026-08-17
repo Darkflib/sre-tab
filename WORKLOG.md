@@ -3,6 +3,63 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-17 — Phase 2 integration
+
+- **Scheduler wired.** `create_app` calls `install_scheduler`, so the
+  refresh loop starts with the application and `/api/v1/healthz` carries
+  its readiness probe. Root test settings disable source refresh;
+  without that every test using the `app` fixture would spawn a real
+  APScheduler thread and fetch live feeds.
+- **One transaction convention**, recorded in AGENTS.md: whoever opens
+  the session commits it. The tree had three — routes committing,
+  mutation services self-committing, and `preferences` flushing while
+  its docstring claimed `get_db` owned the boundary, which it never did.
+  Chosen for composability: the OAuth callback already needs four writes
+  in one transaction, and a self-committing service cannot be called
+  twice in one unit of work.
+- **Bookmarked items are never pruned.** A bookmark is an explicit "keep
+  this" and must not evaporate on a retention schedule the user never
+  set. Needed no DDL — a `NOT EXISTS` predicate on the delete. Read
+  marks still cascade; only bookmarks confer immunity, and immunity ends
+  when the bookmark does.
+- **`source_status`** (revision `29038199b328`): scheduler-written
+  refresh state, 1:1 with `sources` and deliberately not columns on it,
+  so the operator and the refresh loop never contend and
+  `sources.updated_at` keeps its meaning. The in-process registry writes
+  through to it, which is what lets a separate CLI process read status,
+  and persisting `last_fetched_at` stops a restart treating the whole
+  catalogue as due at once.
+- Migration verified `upgrade`/`downgrade` on SQLite and on a real
+  PostgreSQL 18 (Docker; podman is not installed on this machine),
+  against both an empty and a populated database.
+- **Seed catalogue and operator CLI** (`sre-tab`, argparse, no new
+  dependency): the PLAN catalogue and taxonomy, source and topic
+  management, `add-medium-tag`, and a refresh-status view that exits
+  non-zero when a source is failing. Feed URLs are validated by the SSRF
+  guard's DNS-free half at *add* time.
+- **`tests/postgres/`**, opt-in on `SRE_TAB_POSTGRES_URL` and gated in
+  CI: `pg_try_advisory_lock` against a live server, the PostgreSQL
+  `ON CONFLICT` branches, and the migration on the engine it will
+  actually run on.
+- **The client-address chain was broken**, and the fix was not where the
+  documentation said. Caddy 2.7+ refuses an `X-Forwarded-For` from an
+  untrusted peer and *replaces* it, so the outer TLS proxy setting the
+  header bought nothing: every request reached uvicorn as one address
+  and per-IP rate limiting was global with no symptom. Fixed at both
+  ends — `trusted_proxies` in the Caddyfile so Caddy appends, and
+  `FORWARDED_ALLOW_IPS` naming both hops so uvicorn's right-to-left walk
+  reaches the real client. Verified end to end against real uvicorn and
+  real Caddy under Docker.
+- `GET /auth/github/callback` no longer 422s on GitHub's user-denial
+  redirect; `COOKIE_SECURE` added for plain-http dev on a non-localhost
+  host; 429 documented and `frontend/openapi.json` regenerated;
+  `ALLOWED_GITHUB_IDS` seeded with the three verified operator IDs and
+  documented as the fail-closed trap it is on first deploy.
+- `deploy/scripts/smoke.sh` extended: it now asserts the scheduler probe
+  is present and on `postgres-advisory`, seeds through the CLI, checks
+  the CLI refuses hostile targets, and demonstrates that liveness and
+  readiness are different answers by taking the database away.
+
 ## 2026-08-17 — Phase 0 foundation
 
 - Repo initialised (`main`), baseline docs, `.gitignore`.

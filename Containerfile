@@ -117,4 +117,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 # Exec form: uvicorn becomes PID 1 and receives SIGTERM directly, so podman
 # stop drains connections and exits cleanly instead of waiting out the
 # kill timeout.
+#
+# No --proxy-headers or --forwarded-allow-ips here on purpose. uvicorn enables
+# proxy-header handling by default and reads the trusted-peer list from
+# FORWARDED_ALLOW_IPS, which deploy/app.env.example sets — so the trust
+# boundary is configuration an operator can see and change, not a flag baked
+# into the image. tests/test_proxy_headers.py pins both of those uvicorn
+# behaviours, because per-IP rate limiting silently becomes global if either
+# changes underneath us.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

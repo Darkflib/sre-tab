@@ -133,18 +133,27 @@ step "Publishing frontend assets"
     "$IMAGE" \
     sh -ec 'find /srv/www -mindepth 1 -delete; cp -a /opt/sre-tab/web/. /srv/www/'
 
-step "Starting the application"
-"$ENGINE" run --detach --name sre-tab-app --network "$NET" \
-    --env "DATABASE_URL=$DATABASE_URL" \
-    --env "SESSION_SECRET=smoke-only-not-a-secret" \
-    --env "APP_BASE_URL=http://127.0.0.1:$PORT" \
-    --env "LOG_JSON=true" \
-    --env "DOCS_ENABLED=false" \
-    --env "SOURCE_REFRESH_ENABLED=false" \
-    --read-only --tmpfs /tmp:rw,nosuid,nodev,size=64M \
-    --security-opt=no-new-privileges --cap-drop all \
-    --user 10001:10001 --pids-limit 256 \
-    "$IMAGE" >/dev/null
+start_app() {
+    "$ENGINE" rm --force sre-tab-app >/dev/null 2>&1 || true
+    "$ENGINE" run --detach --name sre-tab-app --network "$NET" \
+        --env "DATABASE_URL=$DATABASE_URL" \
+        --env "SESSION_SECRET=smoke-only-not-a-secret" \
+        --env "APP_BASE_URL=http://127.0.0.1:$PORT" \
+        --env "LOG_JSON=true" \
+        --env "DOCS_ENABLED=false" \
+        --env "SOURCE_REFRESH_ENABLED=$1" \
+        --read-only --tmpfs /tmp:rw,nosuid,nodev,size=64M \
+        --security-opt=no-new-privileges --cap-drop all \
+        --user 10001:10001 --pids-limit 256 \
+        "$IMAGE" >/dev/null
+}
+
+# Refresh enabled, deliberately, and while the catalogue is still empty:
+# the scheduler starts, takes its leader strategy from the live PostgreSQL
+# dialect, and finds nothing due, so no feed is fetched. That is what makes
+# the readiness assertion below meaningful without any outbound network.
+step "Starting the application with the scheduler enabled"
+start_app true
 
 step "Starting Caddy in front of it"
 "$ENGINE" run --detach --name sre-tab-web --network "$NET" \
@@ -167,8 +176,85 @@ until curl --fail --silent "http://127.0.0.1:$PORT/api/v1/healthz" >/dev/null 2>
     [ "$attempt" -ge 60 ] && fail "/api/v1/healthz never returned 200 through Caddy"
     sleep 1
 done
-curl --silent "http://127.0.0.1:$PORT/api/v1/healthz"
-echo
+health=$(curl --silent "http://127.0.0.1:$PORT/api/v1/healthz")
+printf '%s\n' "$health"
+
+# The endpoint has to name its probes, not merely answer 200: a 503 that
+# does not say which dependency is unhappy costs an operator the whole
+# diagnosis. Criterion 6's "passes health checks" is this, not a status code.
+printf '%s' "$health" | grep -q '"live":true' || fail "healthz does not report liveness"
+printf '%s' "$health" | grep -q '"ready":true' || fail "healthz does not report readiness"
+printf '%s' "$health" | grep -q '"database"' || fail "no database readiness probe"
+printf '%s' "$health" | grep -q '"scheduler"' \
+    || fail "no scheduler readiness probe: install_scheduler is not wired into create_app"
+
+# The advisory-lock strategy is chosen from the live dialect, so seeing it
+# here is the deployed configuration proving what unit tests can only assert
+# about a fake engine.
+printf '%s' "$health" | grep -q 'postgres-advisory' \
+    || fail "the scheduler did not select the PostgreSQL advisory lock"
+echo "  liveness, database readiness, and a running scheduler on postgres-advisory"
+
+step "Restarting with the scheduler disabled for the rest of the run"
+# Everything below seeds a catalogue of real feed URLs, and a smoke test has
+# no business fetching them.
+start_app false
+attempt=0
+until curl --fail --silent "http://127.0.0.1:$PORT/api/v1/healthz" >/dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -ge 60 ] && fail "the app did not come back with refresh disabled"
+    sleep 1
+done
+curl --silent "http://127.0.0.1:$PORT/api/v1/healthz" | grep -q 'disabled' \
+    || fail "the scheduler probe does not report the disabled posture"
+echo "  scheduler probe reports ready-and-disabled"
+
+step "Seeding the catalogue with the operator CLI"
+"$ENGINE" exec sre-tab-app sre-tab seed
+"$ENGINE" exec sre-tab-app sre-tab sources list
+"$ENGINE" exec sre-tab-app sre-tab status
+
+seeded=$(psql_db --command "SELECT count(*) FROM sources" | tr -d ' ')
+[ "$seeded" -eq 7 ] || fail "expected 7 seeded sources, found $seeded"
+topics=$(psql_db --command "SELECT count(*) FROM topics" | tr -d ' ')
+[ "$topics" -eq 11 ] || fail "expected 11 seeded topics, found $topics"
+# Every seeded source must carry default topics, or its items would be
+# invisible under an explicit ?topics= filter.
+untopiced=$(psql_db --command \
+    "SELECT count(*) FROM sources s WHERE NOT EXISTS \
+     (SELECT 1 FROM source_topics t WHERE t.source_id = s.id)" | tr -d ' ')
+[ "$untopiced" -eq 0 ] || fail "$untopiced seeded sources have no default topics"
+
+# The four slugs app/services/preferences.py defaults new users to. A
+# mismatch here empties every new user's source selection, silently.
+defaults=$(psql_db --command \
+    "SELECT count(*) FROM sources \
+     WHERE slug IN ('hacker-news','lobsters','dev-to','lwn')" | tr -d ' ')
+[ "$defaults" -eq 4 ] || fail "the default source slugs are not all seeded"
+
+# Idempotent: an operator re-running it after an upgrade must not double
+# anything or undo a local change.
+"$ENGINE" exec sre-tab-app sre-tab seed
+reseeded=$(psql_db --command "SELECT count(*) FROM sources" | tr -d ' ')
+[ "$reseeded" -eq 7 ] || fail "re-seeding changed the source count to $reseeded"
+echo "  7 sources, 11 topics, all topiced, seed is idempotent"
+
+step "Operator CLI refuses a target the fetcher would refuse"
+# Acceptance criterion 5 at configuration time: no DNS, no socket, and the
+# reason reaches the operator now rather than as a failing source later.
+if "$ENGINE" exec sre-tab-app sre-tab sources add \
+        --slug metadata --name Metadata \
+        --feed-url http://169.254.169.254/latest/meta-data/ \
+        --website-url https://example.com/ >/dev/null 2>&1; then
+    fail "the CLI accepted a link-local plain-http feed URL"
+fi
+if "$ENGINE" exec sre-tab-app sre-tab sources add-medium-tag ../../etc/passwd \
+        >/dev/null 2>&1; then
+    fail "the CLI accepted a path-traversal Medium tag"
+fi
+still=$(psql_db --command "SELECT count(*) FROM sources" | tr -d ' ')
+[ "$still" -eq 7 ] || fail "a refused source was written anyway"
+echo "  hostile feed URL and hostile Medium tag both refused, nothing written"
 
 step "Front-door behaviour"
 check_status() {
@@ -260,5 +346,34 @@ until curl --fail --silent "http://127.0.0.1:$PORT/api/v1/healthz" >/dev/null 2>
     sleep 1
 done
 echo "  /api/v1/healthz is 200 again"
+
+step "Liveness and readiness are genuinely different answers"
+# Last, because it takes the database away. A process that is alive but
+# cannot reach its database must say so precisely: 503, live true, and the
+# name of the probe that failed. Answering 200 would keep a useless replica
+# in the load balancer; answering an unnamed 503 would cost the diagnosis.
+"$ENGINE" stop sre-tab-db >/dev/null
+degraded_status=$(curl --silent --output /tmp/sre-tab-smoke-health.json \
+    --write-out '%{http_code}' "http://127.0.0.1:$PORT/api/v1/healthz")
+degraded=$(cat /tmp/sre-tab-smoke-health.json)
+rm -f /tmp/sre-tab-smoke-health.json
+"$ENGINE" start sre-tab-db >/dev/null
+
+[ "$degraded_status" = "503" ] || fail "healthz returned $degraded_status with no database"
+printf '%s' "$degraded" | grep -q '"live":true' \
+    || fail "the process reported itself not live when only the database was gone"
+printf '%s' "$degraded" | grep -q '"ready":false' || fail "healthz stayed ready without a database"
+printf '%s' "$degraded" | grep -q '"status":"degraded"' || fail "healthz did not report degraded"
+printf '%s' "$degraded" | grep -q '"database":{"ok":false' \
+    || fail "healthz did not name the database probe as the failure"
+echo "  503 degraded, live true, database probe named"
+
+attempt=0
+until curl --fail --silent "http://127.0.0.1:$PORT/api/v1/healthz" >/dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -ge 60 ] && fail "the app did not recover after the database came back"
+    sleep 1
+done
+echo "  and 200 again once the database is back"
 
 printf '\nDeployment smoke test passed.\n'

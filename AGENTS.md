@@ -67,6 +67,11 @@ mode; this table is what prevents it.
 | D — Frontend | `frontend/` |
 | E — Build, deploy, CI | `Containerfile`, `deploy/`, `.github/workflows/`, `.env.example` |
 
+Phase 2 added `app/cli/` (operator CLI and the seed catalogue),
+`tests/cli/`, and `tests/postgres/`, and lifted the freeze on the
+shared-contract files below for integration work only. Phase 3 is
+read-only against the integrated tree.
+
 Shared-contract files owned by Phase 0 and frozen for Phase 1:
 
 | File | Resolution |
