@@ -1,0 +1,19 @@
+# Worklog
+
+Newest entries first. One entry per meaningful unit of work; note decisions
+and deviations, not just activity.
+
+## 2026-08-17 — Phase 0 foundation
+
+- Repo initialised (`main`), baseline docs, `.gitignore`.
+- `uv` project with the complete pinned dependency set; Ruff, mypy, pytest,
+  Bandit, and pre-commit configured.
+- Settings (`app/settings.py`) and structlog JSON logging with request-ID
+  middleware and secret redaction (`app/logging.py`).
+- Full ORM layer for all twelve PRD entities, sync SQLAlchemy 2.x, single
+  initial Alembic revision; upgrade/downgrade verified on SQLite.
+- App factory, security-headers middleware, CSRF primitive (double-submit
+  cookie, HMAC-signed), health probe registry, `get_current_user` stub.
+- Complete Pydantic schemas and 501 stub routes for all twelve endpoints;
+  `/api/v1/openapi.json` complete.
+- Smoke test suite and root fixtures.

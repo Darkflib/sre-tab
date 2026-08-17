@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# uv
+# (uv.lock is committed; only caches are ignored)
+.uv-cache/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local databases
+*.db
+*.sqlite3
+
+# Node (frontend/ arrives in Phase 1)
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
