@@ -41,6 +41,8 @@ jobs:
         run: uv run bandit -c pyproject.toml -q -r app
       - name: Security headers match the reverse proxy
         run: deploy/scripts/check-header-parity.sh
+      - name: .env.example documents every setting
+        run: deploy/scripts/check-env-example.sh
       - name: pytest
         run: uv run pytest
 

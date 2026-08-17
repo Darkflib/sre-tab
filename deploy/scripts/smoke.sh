@@ -181,6 +181,17 @@ check_status /feed        200
 check_status /theme-init.js 200
 check_status /assets/definitely-not-here.js 404
 
+# The document is only useful if the bundle it names actually resolves.
+# Status codes alone would pass with an empty assets directory.
+bundle=$(curl --silent "http://127.0.0.1:$PORT/" \
+    | grep -o '/assets/[A-Za-z0-9._-]*\.js' | head -1)
+[ -n "$bundle" ] || fail "index.html references no /assets/*.js bundle"
+check_status "$bundle" 200
+stylesheet=$(curl --silent "http://127.0.0.1:$PORT/" \
+    | grep -o '/assets/[A-Za-z0-9._-]*\.css' | head -1)
+[ -n "$stylesheet" ] || fail "index.html references no /assets/*.css stylesheet"
+check_status "$stylesheet" 200
+
 # The security headers the app cannot set on statically served files.
 headers=$(curl --silent --dump-header - --output /dev/null "http://127.0.0.1:$PORT/")
 for want in 'Content-Security-Policy' 'X-Content-Type-Options' 'X-Frame-Options' \
