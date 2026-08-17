@@ -291,6 +291,28 @@ def test_reserved_addresses_are_refused(address: str) -> None:
     assert classify_address(ipaddress.ip_address(address)) is not None
 
 
+# --- the catalogue must still be fetchable ------------------------------
+
+
+@pytest.mark.parametrize(
+    "feed_url",
+    [
+        "https://news.ycombinator.com/rss",
+        "https://lobste.rs/rss",
+        "https://dev.to/feed",
+        "https://lwn.net/headlines/newrss",
+        "https://feeds.arstechnica.com/arstechnica/index/",
+        "https://feeds.bbci.co.uk/news/rss.xml",
+        "https://www.theguardian.com/uk/rss",
+        "https://medium.com/feed/tag/python",
+    ],
+)
+def test_the_initial_catalogue_passes_the_static_checks(feed_url: str) -> None:
+    """A guard rule that breaks the shipped catalogue is too strict."""
+    guard = UrlGuard(resolver=RecordingResolver())
+    assert str(guard.check_static(feed_url)) == feed_url
+
+
 def test_default_resolver_resolves_a_known_literal() -> None:
     """The default resolver is exercised without depending on real DNS."""
     assert default_resolver("93.184.216.34", 443) == ["93.184.216.34"]
