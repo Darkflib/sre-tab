@@ -58,6 +58,23 @@ which is the safe direction, and the one the broken rule already proved
 the repository survives. Verified afterwards by set-differencing the
 required contexts against the reported ones, not by rereading the rule.
 
+Doing that turned up a limitation in the documented verification command
+itself. It set-differences the required contexts against the check-runs
+on `origin/main`, and while a rename is unmerged `main` has not reported
+the new context — so the command lists it and reads exactly like the
+failure it exists to detect. Comparing against the pull request's head
+instead is empty, which is the true answer; both are now in
+CONTRIBUTING.md, along with why the ordering has to be this way round.
+Rewriting the rule first would leave the required set naming a check
+nothing had ever reported, which is indistinguishable from the broken
+rule until CI next runs.
+
+Measured end to end on #5: all eight required contexts reported and
+passed under the new name, and the request came back `MERGEABLE`.
+`mergeStateStatus` was `UNSTABLE` again, and again it is CodeRabbit
+posting a check outside the required set rather than a protection
+failure.
+
 Two smaller things fell out. The old name appeared in CONTRIBUTING.md
 three times, once as a third copy of the whole context table inside the
 narrative about the broken rule; that copy is now a pointer to the table,

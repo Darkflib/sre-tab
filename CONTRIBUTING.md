@@ -271,6 +271,26 @@ Anything listed is a context waiting on a check that will never arrive — which
 is the failure this section exists to describe, and the only way to be sure it
 is absent is to look for it.
 
+**While a rename is still in flight, compare against the pull request's head
+instead.** `main` has not reported the new context yet — that is the whole
+point of the change being unmerged — so the command above lists it and reads
+exactly like the failure it is meant to detect. Substituting the head commit
+distinguishes the two:
+
+```sh
+sha=$(gh pr view <number> --json headRefOid --jq .headRefOid)
+```
+
+This is also the ordering to follow, because it never leaves protection
+naming a context that has not reported anywhere: rename the job, push, let
+the new context report on the pull request, *then* rewrite the required set,
+*then* verify against that head. The intermediate state is a pull request
+waiting on a context that will never arrive, which is safe — it blocks a
+merge rather than allowing an unchecked one — and it clears the moment the
+required set is rewritten. Doing it the other way round, rewriting the rule
+first, leaves the required set naming a check nothing has ever reported,
+which is indistinguishable from the broken rule until CI next runs.
+
 ## Commits and pull requests
 
 - **Conventional Commits**, with a scope where one helps:
