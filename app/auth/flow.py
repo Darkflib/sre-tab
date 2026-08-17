@@ -10,7 +10,6 @@ half-created account behind.
 
 from __future__ import annotations
 
-import hmac
 from dataclasses import dataclass
 
 import structlog
@@ -25,6 +24,7 @@ from app.auth.sessions import create_session, revoke_session
 from app.auth.state import DEFAULT_TTL_SECONDS, state_store
 from app.auth.users import upsert_user
 from app.db.models import User
+from app.security.tokens import compare_secret
 from app.services import preferences
 from app.settings import Settings
 
@@ -62,7 +62,12 @@ def _validate_state(settings: Settings, state: str, state_cookie: str | None) ->
     # The cookie binds the redemption to the browser that began the flow;
     # the store makes redemption single-use; the signature and embedded
     # expiry make the token unforgeable and short-lived.
-    if not state_cookie or not hmac.compare_digest(state_cookie, state):
+    #
+    # compare_secret rather than hmac.compare_digest: both operands are
+    # attacker-chosen strings off the wire, and compare_digest raises on
+    # non-ASCII rather than returning False — which here would 500 the
+    # callback *before* the failure limiter counted the attempt.
+    if not state_cookie or not compare_secret(state_cookie, state):
         raise SignInDenied("state_unbound", "Sign-in request could not be verified.")
     if not state_store.consume(state, settings.session_secret.get_secret_value()):
         raise SignInDenied("state_invalid", "Sign-in request expired or was already used.")

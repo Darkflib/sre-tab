@@ -20,6 +20,8 @@ import secrets
 import threading
 import time
 
+from app.security.tokens import compare_secret
+
 _SEPARATOR = "."
 DEFAULT_TTL_SECONDS = 600
 STATE_COOKIE_NAME = "oauth_state"
@@ -62,7 +64,11 @@ class StateStore:
         if len(parts) != 3:
             return False
         nonce, expires_raw, signature = parts
-        if not hmac.compare_digest(signature, _sign(f"{nonce}{_SEPARATOR}{expires_raw}", secret)):
+        # compare_secret, not hmac.compare_digest: `signature` is a slice
+        # of a caller-supplied token, and compare_digest raises on
+        # non-ASCII rather than returning False. `consume` promises a
+        # bool for *any* string, forged ones included.
+        if not compare_secret(signature, _sign(f"{nonce}{_SEPARATOR}{expires_raw}", secret)):
             return False
         try:
             expires_at = int(expires_raw)
