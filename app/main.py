@@ -49,6 +49,13 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     probes.register_liveness("app", lambda: True)
     probes.register_readiness("database", lambda: _database_probe(session_factory))
 
+    # Imported here rather than at module scope: app.scheduler imports the
+    # ingest stack, which imports app.settings and the models, and a
+    # top-level import would make app.main the entry point for all of it.
+    from app.scheduler import install_scheduler
+
+    install_scheduler(application)
+
     # Added innermost-first (Starlette wraps in reverse). CSRF sits closest
     # to the router so a rejection still travels back out through the
     # request-ID and security-header layers; headers therefore apply to

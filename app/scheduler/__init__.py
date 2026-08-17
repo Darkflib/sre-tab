@@ -1,18 +1,12 @@
 """In-process scheduling for feed refresh and retention pruning.
 
-Wiring is one line, and it belongs to Phase 2 rather than here:
-``app/main.py`` is Phase 0 property, so this package cannot install
-itself. Integration adds
+:func:`app.main.create_app` calls :func:`install_scheduler` once
+``application.state`` is populated; that is what starts the scheduler and
+puts a ``scheduler`` readiness probe in ``/api/v1/healthz``.
 
-.. code-block:: python
-
-    from app.scheduler import install_scheduler
-
-    install_scheduler(application)
-
-to :func:`app.main.create_app`, after ``application.state`` is
-populated. Until that line exists the scheduler never starts and no
-``scheduler`` readiness probe appears in ``/api/v1/healthz``.
+``SOURCE_REFRESH_ENABLED=false`` is the test and maintenance posture:
+nothing is scheduled, no thread starts, and the probe reports
+ready-and-disabled.
 """
 
 from __future__ import annotations
@@ -43,7 +37,16 @@ __all__ = [
 
 
 def install_scheduler(application: FastAPI) -> SchedulerService:
-    """Attach a scheduler to *application*'s lifespan and probes."""
+    """Attach a scheduler to *application*'s lifespan and probes.
+
+    Idempotent. ``create_app`` calls this, so a second call on the same
+    application returns the installed service rather than stacking a
+    second background thread on the same lifespan.
+    """
+    installed = getattr(application.state, "scheduler", None)
+    if isinstance(installed, SchedulerService):
+        return installed
+
     service = SchedulerService(
         cast("Settings", application.state.settings),
         cast("Engine", application.state.engine),

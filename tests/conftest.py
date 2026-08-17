@@ -25,7 +25,13 @@ from app.settings import Settings
 
 @pytest.fixture
 def settings() -> Settings:
-    """Deterministic test settings; never reads .env."""
+    """Deterministic test settings; never reads .env.
+
+    ``source_refresh_enabled=False`` is load-bearing rather than tidy:
+    ``create_app`` installs the scheduler, so without it every test using
+    the ``app`` fixture would start a real APScheduler background thread
+    and fetch live feeds.
+    """
     return Settings(  # type: ignore[call-arg]  # _env_file is a pydantic-settings init kwarg
         _env_file=None,
         database_url="sqlite://",
@@ -33,6 +39,7 @@ def settings() -> Settings:
         github_client_id="test-client-id",
         github_client_secret=SecretStr("test-client-secret"),
         allowed_github_ids=[1000001],
+        source_refresh_enabled=False,
     )
 
 
