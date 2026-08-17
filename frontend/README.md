@@ -1,0 +1,132 @@
+# Frontend — Developer News Dashboard
+
+React client for the v1 API. Built with Vite, generated against the frozen
+`/api/v1/openapi.json` contract, served same-origin with the API.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `npm ci` | Install exactly the locked dependency set |
+| `npm run dev` | Dev server on `http://localhost:5173`, proxying `/api` to `http://localhost:8000` |
+| `npm run build` | Production build into `frontend/dist` |
+| `npm run preview` | Serve the built output locally |
+| `npm run lint` | ESLint 9, flat config, type-aware rules |
+| `npm run typecheck` | `tsc --build --force` over app and tooling projects |
+| `npm run check` | lint + typecheck + build, in that order |
+| `npm run generate:api` | Regenerate `src/api/schema.d.ts` from `openapi.json` |
+
+Node 20.19 or newer (Vite 8's floor); CI and the container build should pin
+Node 24.
+
+## Deployment shape
+
+- **Build command:** `npm ci && npm run build`
+- **Output directory:** `frontend/dist`
+- **Base path:** `/`. The app is served at the origin root; there is no
+  sub-path build.
+- **History fallback:** required. Client routes are `/`, `/onboarding`,
+  `/feed`, `/bookmarks`, `/settings`; unknown paths must fall back to
+  `index.html`, *except* `/api/*`, which proxies upstream to FastAPI.
+- **Caching:** `dist/assets/*` are content-hashed and safe to serve
+  `immutable`. `dist/index.html` and `dist/theme-init.js` are not hashed and
+  must be revalidated.
+- **Build-time environment:** none required. Three optional overrides exist
+  and should stay unset unless the operator has changed the matching server
+  setting:
+
+  | Variable | Default | Server counterpart |
+  | --- | --- | --- |
+  | `VITE_CSRF_COOKIE_NAME` | `csrftoken` | `CSRF_COOKIE_NAME` |
+  | `VITE_CSRF_HEADER_NAME` | `X-CSRF-Token` | `CSRF_HEADER_NAME` |
+
+  Changing either server-side requires a frontend rebuild.
+
+## Content Security Policy
+
+The server sends `script-src 'self'; style-src 'self'` with no
+`'unsafe-inline'`, so the build contains **no inline script or style**:
+
+- `public/theme-init.js` is a separate same-origin file, loaded blocking in
+  `<head>`. It resolves the stored theme before first paint, which is what
+  stops a light/dark flash. It must not be inlined.
+- Icons are inline SVG elements in JSX, not `data:` URIs, and
+  `assetsInlineLimit` is `0` so nothing else becomes one either.
+- React writes the `style` prop through the CSSOM rather than the `style`
+  attribute, so dynamic values (the composition bars) are unaffected by
+  `style-src`.
+- `img-src 'self' https: data:` is load-bearing: feed images, source icons,
+  and GitHub avatars are third-party hosts.
+
+If a reverse proxy serves `dist/` directly rather than FastAPI serving it,
+the proxy must set the CSP and the other security headers itself — the
+application middleware only decorates responses FastAPI emits.
+
+## The API client
+
+`src/api/schema.d.ts` is generated, not written:
+
+```sh
+uv run python -c "import json; from app.main import create_app; print(json.dumps(create_app().openapi(), indent=2))" > frontend/openapi.json
+cd frontend && npm run generate:api
+```
+
+`openapi.json` is committed so the build never depends on a running server
+or a Python toolchain. When the contract changes, regenerate both files in
+one commit; a contract change then shows up as a type error rather than a
+runtime surprise.
+
+`src/api/client.ts` is the only module that touches the network. It adds:
+
+- `credentials: 'same-origin'`, so the `HttpOnly` session cookie rides along
+  and no token is ever held in JavaScript;
+- the CSRF header on every `POST`/`PUT`/`PATCH`/`DELETE`, read from the
+  double-submit cookie;
+- a 401 hook — any 401 anywhere flips the session to signed-out, which
+  returns the user to the landing page from wherever they were.
+
+## Layout
+
+```
+src/
+  api/          generated schema, fetch client, endpoint wrappers
+  catalogue/    GET /sources, shared by feed filters, onboarding, settings
+  components/   shell, filter bar, item card, icons, shared states
+  data/         cursor-pagination hook
+  feed/         filter model, volume analysis, feed/bookmark hooks
+  lib/          formatting and CSS helpers
+  routes/       landing, onboarding, feed, bookmarks, settings, auth guard
+  session/      GET /me, preference updates, sign-out, account deletion
+  styles/       tokens, base, app
+  theme/        theme resolution and application
+```
+
+## Filtering and the volume asymmetry
+
+The catalogue mixes sources whose publication rates differ by an order of
+magnitude. A feed ordered purely by publication time belongs to the fastest
+of them within the hour, so filtering is the primary control on the feed
+screen rather than a secondary one:
+
+- Topic and source chips sit in the page flow above the feed, not behind a
+  menu, and the active state is stated in words as well as colour
+  ("Your selection" versus "Filtered").
+- Filters live in the URL query string, so they survive reload, back, and
+  sharing, and never change the saved profile. "Save as my default" is the
+  explicit way to promote a filter set into `PATCH /me/preferences`.
+- Sources refreshing every 15 minutes or faster are flagged **high volume**
+  from `refresh_minutes` — a signal available before a single item loads —
+  and are left switched off in onboarding.
+- A composition panel measures each source's share of what has actually
+  loaded, with one-click *Only* and *Hide*.
+- When one source exceeds 35% of the loaded items, a notice says so and
+  offers to hide or isolate it.
+
+## Preferences
+
+`max_visible_cards` doubles as the feed page size: it is the number of items
+the user asked to have in front of them at once. `layout` switches the item
+list between grid and single-column. `theme` honours light, dark, and
+system; system follows `prefers-color-scheme` live, and the last choice is
+mirrored into `localStorage` purely as a first-paint hint — the server
+profile remains authoritative.
