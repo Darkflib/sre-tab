@@ -60,6 +60,10 @@ DEFAULT_MIN_HOST_INTERVAL_SECONDS = 1.0
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
+# Absent and `identity` are the same thing; anything else is a decompression
+# bomb waiting to be counted after the fact. See `_read_capped`.
+_ALLOWED_CODINGS = frozenset({"", "identity"})
+
 
 class HostRateLimiter:
     """Serialise requests per host with a minimum interval between them."""
@@ -149,7 +153,10 @@ class FeedFetcher:
                 "User-Agent": self._settings.source_fetch_user_agent,
                 "Accept": "application/atom+xml, application/rss+xml, application/xml;q=0.9, "
                 "text/xml;q=0.9, */*;q=0.1",
-                "Accept-Encoding": "gzip, deflate",
+                # Not gzip: the size cap counts decompressed bytes, so a
+                # coding lets a tiny body blow past it. `_read_capped`
+                # refuses anything an origin sends regardless.
+                "Accept-Encoding": "identity",
             },
             limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
         )
@@ -200,6 +207,26 @@ class FeedFetcher:
 
     def _read_capped(self, response: httpx.Response, *, url: str, deadline: float) -> bytes:
         cap = self._settings.source_fetch_max_bytes
+
+        # Refuse content-codings outright. The byte counter below sees what
+        # httpx has *already decompressed*, so with a coding in play the cap
+        # bounds the wrong quantity: a 285-byte body carrying stacked gzip
+        # layers expands past a gigabyte inside the decoder before the loop
+        # gets a chance to look. `Accept-Encoding: identity` asks for none,
+        # and this refuses one sent anyway -- the ask is a courtesy, this is
+        # the enforcement. Measured against the shipped catalogue: all seven
+        # feeds honour identity, at a cost of ~554 KB per full refresh.
+        #
+        # This check must stay ahead of the first read. It works because the
+        # caller streams: with `client.stream(...)` the headers land before
+        # any body is decoded. A plain `client.get()` would decode eagerly
+        # during construction and this would be inspecting a corpse.
+        coding = response.headers.get("content-encoding", "").strip().lower()
+        if coding not in _ALLOWED_CODINGS:
+            raise ResponseTooLargeError(
+                f"{url} used content-coding {coding!r}; only identity is accepted"
+            )
+
         declared = response.headers.get("content-length")
         if declared is not None and declared.isdigit() and int(declared) > cap:
             # An early-out only. The count below is what enforces the cap.

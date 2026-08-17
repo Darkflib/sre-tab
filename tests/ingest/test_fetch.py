@@ -6,7 +6,9 @@ respx intercepts at the transport, below everything the fetcher does, so
 
 from __future__ import annotations
 
+import gzip
 import time
+import zlib
 from collections.abc import Iterator
 
 import httpx
@@ -354,3 +356,55 @@ def test_rate_limiter_does_not_couple_hosts() -> None:
     limiter.wait("a.example")
     limiter.wait("b.example")
     assert time.monotonic() - started < 0.4
+
+
+# --- H1: the size cap counts decompressed bytes ---------------------------
+
+
+@respx.mock
+def test_identity_is_requested_so_the_cap_counts_wire_bytes(fetcher: FeedFetcher) -> None:
+    """The cap counts what httpx hands back, which is post-decompression.
+    Asking for ``identity`` is what keeps that equal to the wire size."""
+    route = respx.get(PINNED_URL).mock(return_value=httpx.Response(200, content=BODY))
+    fetcher.fetch(FEED_URL, allowed_urls={FEED_URL})
+    assert route.calls.last.request.headers["accept-encoding"] == "identity"
+
+
+def _gzip(payload: bytes, layers: int = 1) -> bytes:
+    for _ in range(layers):
+        payload = gzip.compress(payload)
+    return payload
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("coding", "body"),
+    [
+        ("gzip", _gzip(b"\0" * (8 << 20))),
+        ("GZIP", _gzip(b"\0" * (8 << 20))),
+        ("deflate", zlib.compress(b"\0" * (8 << 20))),
+        # The one that matters: httpx builds a decoder per comma-separated
+        # value, so each layer multiplies for free. Tiny on the wire.
+        ("gzip, gzip, gzip, gzip, gzip, gzip, gzip", _gzip(b"\0" * (8 << 20), layers=7)),
+    ],
+    ids=["gzip", "uppercase", "deflate", "stacked-x7"],
+)
+def test_a_content_coding_is_refused_before_it_is_decoded(
+    fetcher: FeedFetcher, coding: str, body: bytes
+) -> None:
+    """A decompression bomb: trivial on the wire, enormous decoded. Refusing
+    on the header is what stops the decoder running at all -- counting bytes
+    afterwards counts them too late, because the allocation already happened."""
+    respx.get(PINNED_URL).mock(
+        return_value=httpx.Response(200, headers={"Content-Encoding": coding}, content=body)
+    )
+    with pytest.raises(ResponseTooLargeError, match="content-coding"):
+        fetcher.fetch(FEED_URL, allowed_urls={FEED_URL})
+
+
+@respx.mock
+def test_an_explicit_identity_header_is_accepted(fetcher: FeedFetcher) -> None:
+    respx.get(PINNED_URL).mock(
+        return_value=httpx.Response(200, headers={"Content-Encoding": "identity"}, content=BODY)
+    )
+    assert fetcher.fetch(FEED_URL, allowed_urls={FEED_URL}).content == BODY
