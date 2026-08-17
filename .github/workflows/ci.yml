@@ -201,25 +201,108 @@ jobs:
       - name: Deployment smoke test — migrations, health, backup, restore
         run: SRE_TAB_IMAGE=sre-tab:ci deploy/scripts/smoke.sh
 
+  # Everything a deployment is later asked to trust is produced here: the
+  # image, a signature over its digest, SLSA provenance, and an SBOM. All
+  # three attachments are bound to the *digest*, never to a tag, because a tag
+  # is a mutable pointer and signing one would sign nothing durable.
   publish:
-    name: Publish image
+    name: Publish, sign, and attest image
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [python, postgres, audit, frontend, container]
+    needs: [python, postgres, audit, sast, frontend, container]
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      packages: write # push the image and its sigstore attachments
+      id-token: write # keyless signing: the OIDC token IS the identity
+      attestations: write # provenance and SBOM, recorded against this repo
+    env:
+      # cosign, syft, and the attest actions all read registry credentials
+      # from a docker-style config directory. Podman's login writes an
+      # equivalent file, so pointing them all at one place is enough — no
+      # second login, and no credential in more than one file.
+      DOCKER_CONFIG: ${{ runner.temp }}/docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Podman
         run: sudo apt-get update && sudo apt-get install --yes podman
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+
       - name: Build and publish
+        id: publish
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          printf '%s' "$GHCR_TOKEN" | podman login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          mkdir -p "$DOCKER_CONFIG"
+          printf '%s' "$GHCR_TOKEN" | podman login ghcr.io \
+            --username "$GITHUB_ACTOR" --password-stdin \
+            --authfile "$DOCKER_CONFIG/config.json"
           podman build --format docker --tag "$image:sha-${GITHUB_SHA}" --tag "$image:latest" .
-          podman push "$image:sha-${GITHUB_SHA}"
-          podman push "$image:latest"
+          # --digestfile rather than inspecting the local image: this is the
+          # digest the registry accepted, and it is what every signature,
+          # attestation, and deployment pin below refers to.
+          podman push --authfile "$DOCKER_CONFIG/config.json" \
+            --digestfile "$RUNNER_TEMP/digest" "$image:sha-${GITHUB_SHA}"
+          podman push --authfile "$DOCKER_CONFIG/config.json" "$image:latest"
+          digest=$(cat "$RUNNER_TEMP/digest")
+          {
+            echo "image=$image"
+            echo "digest=$digest"
+          } >> "$GITHUB_OUTPUT"
+          echo "published $image:sha-${GITHUB_SHA} at $digest"
+
+      # Keyless. There is no key to store, rotate, or leak: cosign exchanges
+      # this job's OIDC token for a short-lived Fulcio certificate whose
+      # subject is this workflow on this branch, and records the signature in
+      # Rekor. What a verifier checks is therefore "was this built by
+      # Darkflib/sre-tab's ci.yml on main", which is the question worth
+      # asking — not "does this match a key someone put in a secret".
+      - name: Sign the manifest
+        env:
+          IMAGE: ${{ steps.publish.outputs.image }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: SLSA build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish.outputs.image }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+
+      # The SBOM is generated from the pushed image rather than the local
+      # build, so it describes the bytes the registry serves.
+      - name: Generate an SBOM
+        env:
+          IMAGE: ${{ steps.publish.outputs.image }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: syft "registry:${IMAGE}@${DIGEST}" -o "spdx-json=$RUNNER_TEMP/sbom.spdx.json"
+
+      - name: Attest the SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ${{ steps.publish.outputs.image }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/sbom.spdx.json
+          push-to-registry: true
+
+      # The attestation above is the copy that travels with the image. This
+      # one is for the human who wants to read it without a registry client.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ github.sha }}
+          path: ${{ runner.temp }}/sbom.spdx.json
+          retention-days: 90
+
+      # Produced is not verified. This runs the same script an operator runs
+      # before pinning a digest, against what was just published, so the
+      # signature and both attestations are proven checkable from outside the
+      # steps that made them.
+      - name: Verify what was just published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ steps.publish.outputs.image }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: deploy/scripts/verify-image.sh --require-attestations "${IMAGE}@${DIGEST}"
