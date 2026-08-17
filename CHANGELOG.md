@@ -35,6 +35,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Frontend test suite (114 Vitest tests) covering theme resolution, the
   anti-flash script, and the contrast ratios of the design tokens — the
   first tests the client has had — and they run in CI.
+- 72 further Vitest tests over the feed's filter model
+  (`src/feed/filters.ts`) and volume signals (`src/feed/volume.ts`),
+  taking the suite to 186. They pin the distinction between "no override"
+  (`null`) and "nothing selected" (`[]`), including its survival through
+  the URL, and the thresholds behind the high-volume flag and the
+  dominance notice.
 - `LICENSE` (MIT), matching the declaration that was already in
   `pyproject.toml` but had no corresponding grant in the repository.
 - `CONTRIBUTING.md`, and a `Docs` workflow that extracts the README's

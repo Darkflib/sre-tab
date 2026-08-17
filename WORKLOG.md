@@ -3,6 +3,53 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-17 — The filter model under test, and what it exposed
+
+72 Vitest tests over `src/feed/filters.ts` and `src/feed/volume.ts`, the
+cheap half of the frontend-coverage item and the half the roadmap said to
+take first. It was right about the ordering for the stated reason — both
+modules import types only, so they needed no DOM, no request mocking, and
+no new dependency — and the suite goes from 114 to 186 tests still running
+in under half a second.
+
+The subject is one distinction with three meanings. `null` is "no
+override, use my saved selection"; `[]` is "the user deselected
+everything". The server completes the set: `_effective_sources` honours an
+explicit `[]` verbatim and returns an empty page, but an *empty saved
+selection* means the instance defaults, which is everything. So the same
+empty array means "nothing" on the request side and "everything" on the
+saved side, and which one you get is decided by nothing more visible than
+which side of a `??` it sits on.
+
+Mutation-tested rather than merely run, on the theme suite's precedent:
+thirteen mutations, each the plausible mistake rather than an arbitrary
+one — `selectsNothing` rewritten as a falsy check, an empty selection
+serialised as an absent parameter, `filterKey` losing its sort, the
+dominance comparison becoming exclusive, the twelve-item floor slipping to
+eleven. All thirteen fail the suite. Two limitations are pinned as passing
+tests instead of fixed, because neither is reachable with kebab-case
+slugs: a comma in a slug does not survive the URL, and `filterKey`'s `*`
+and `+` sentinels alias. Both now fail where the reasoning is written
+down, rather than as a stale cached page.
+
+**The tests found a live bug they do not fix.** `FilterBar`'s "Save as my
+default" writes `effectiveSelection`'s result into preferences, which
+carries `[]` across from the override side to the saved side, where it
+means the opposite. Deselect every source, save, and the feed goes from
+empty to the entire catalogue — the user's "show me nothing" stored as
+"show me everything", in two clicks, with no error. Left unfixed
+deliberately: disabling the control while `selectsNothing` is the narrow
+answer, but what saving an empty selection *ought* to mean is a product
+decision, and inventing one inside a testing task is how a defect becomes
+a behaviour. It is on the roadmap with the reproduction.
+
+Two documentation corrections alongside: `CONTRIBUTING.md` carried the
+same paragraph about `audit` and `sast` twice, and the roadmap still
+listed "make `Docs` a required check" as pending when it had landed inside
+the branch-protection rewrite — that write replaced the context list
+wholesale, so both of its checks came along and nobody went back to strike
+the item.
+
 ## 2026-08-17 — Licence, and the notes brought up to date
 
 MIT `LICENSE` added, matching the declaration that had been sitting in

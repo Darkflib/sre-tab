@@ -153,27 +153,46 @@ prerequisite for going past it.
   `npm test` between the typecheck and the build: the suite is pure logic with
   no build dependency and finishes in well under a second, so failing early
   costs nothing.
-- **Widen frontend coverage beyond the theme layer.** The suite that exists is
-  thorough about theme resolution, the anti-flash script, and contrast. The
-  feed, the filter model, the cursor-pagination hook, and the API client have
-  no tests, and between them they are most of the client. This is really two
-  jobs of very different cost, and taking them in the wrong order is how it
-  stalls:
+- **Widen frontend coverage beyond the theme layer** — **the cheap half has
+  landed; the expensive half has not.** The suite was thorough about theme
+  resolution, the anti-flash script, and contrast, and covered none of the
+  client's actual logic.
 
-  `src/feed/filters.ts` and `src/feed/volume.ts` come first and need no new
-  tooling at all — both import types only, so they are the same shape as what
-  Vitest already covers. `filters.ts` is the higher value of the two because
-  it encodes a distinction that breaks silently: `null` means "no override,
-  use my saved selection" and `[]` means "the user deselected everything, so
-  nothing can match and the request is skipped". They look alike and
-  `hasOverride`, `selectsNothing`, `effectiveSelection`, and `filterKey` all
-  turn on telling them apart. `volume.ts` is the 35% dominance threshold and
-  the share arithmetic behind the composition panel.
+  `src/feed/filters.ts` and `src/feed/volume.ts` now have 72 tests, and they
+  needed no new tooling — both modules import types only, so they are the same
+  shape as what Vitest already covered. They were mutation-tested rather than
+  merely run: thirteen behavioural mutations, each the plausible version of
+  the mistake, and all thirteen fail the suite. `filters.ts` was the higher
+  value of the two because it encodes a distinction that breaks silently —
+  `null` means "no override, use my saved selection" and `[]` means "the user
+  deselected everything, so nothing can match and the request is skipped" —
+  and the tests pin the URL round trip, which is where that distinction has to
+  survive between renders. Two limitations were documented rather than fixed,
+  because neither is reachable with kebab-case slugs: a comma in a slug does
+  not survive serialisation, and `filterKey`'s `*` and `+` sentinels would
+  alias. Both now fail loudly if the slug rules are ever loosened.
 
-  `usePagedResource` and `src/api/client.ts` are the expensive half: hooks and
-  `fetch` mean a DOM environment and request mocking, which is real setup and
-  probably a dependency or two. Worth doing, but not the thing to pick up
-  first.
+  `usePagedResource` and `src/api/client.ts` are the expensive half and are
+  still untested: hooks and `fetch` mean a DOM environment and request
+  mocking, which is real setup and probably a dependency or two. Still worth
+  doing, and still not the thing to pick up first.
+
+- **"Save as my default" inverts an empty selection.** Found by the tests
+  above rather than fixed by them, because the fix is a product decision
+  rather than a correction. `FilterBar`'s `saveAsDefault` writes
+  `effectiveSelection`'s result straight into preferences, which moves `[]`
+  from the override side of the distinction to the saved side — where it
+  means the opposite. Deselect every source, click **Save as my default**, and
+  the override is cleared, the server sees an empty saved selection, and
+  `_effective_sources` returns `None`: the user's "show me nothing" is stored
+  as "show me everything", and the feed goes from empty to the full
+  catalogue in one click.
+
+  It is reachable in two clicks from the feed (**None**, then **Save as my
+  default**), and it fails silently — a fuller feed is not obviously an
+  error. The narrow fix is to disable the control while `selectsNothing`, but
+  the question underneath it is what saving an empty selection *should* mean,
+  and that wants deciding before it is coded.
 
 ## Things that are true but unproven
 
@@ -217,9 +236,14 @@ during an incident.
   hand. Extending the same marker-and-extract approach to a Linux runner is
   the obvious next step, and the expensive part is a runner with systemd
   rather than the harness.
-- **Make `Docs` a required check.** It is new, so it is not in branch
-  protection's required set yet. It should join `python`, `postgres`, `audit`,
-  `frontend`, and `container` once it has a run history.
+- **Make `Docs` a required check** — **landed, as a side effect of fixing the
+  branch-protection rule.** Both of its check-runs — `README quickstart runs
+  on a clean checkout` and `Relative links resolve` — are in the required set
+  of eight, listed in
+  [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection). The rewrite that
+  corrected the job-key/display-name mistake replaced the context list
+  wholesale, so this was picked up in the same write rather than as its own
+  task.
 
 ## Repository
 
