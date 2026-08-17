@@ -91,8 +91,27 @@ dump_name=$(basename -- "$dump")
 # Verify the checksum sidecar when backup.sh wrote one. A dump that has been
 # truncated in transit off-host is worth catching before the target database
 # is dropped, not after.
+#
+# Checked inside a container as uid 999, not on the host. backup.sh writes
+# under `umask 077` as that uid, so the dump and its sidecar are 0600 and
+# owned by it -- an operator running this script as themselves cannot read
+# either. Doing it on the host worked only for root, and reported the
+# resulting EACCES as "checksum mismatch", which points at data corruption
+# when the real problem is the reader.
+verify_checksum() {
+    "$engine" run --rm \
+        --volume "$dump_dir:/restore:ro" \
+        --workdir /restore \
+        --user 999:999 \
+        --read-only \
+        --network none \
+        --security-opt=no-new-privileges \
+        --cap-drop all \
+        "$image" sha256sum --check --status "$dump_name.sha256"
+}
+
 if [ -f "$dump_dir/$dump_name.sha256" ]; then
-    if ( cd "$dump_dir" && sha256sum --check --status "$dump_name.sha256" ); then
+    if verify_checksum; then
         echo "checksum OK: $dump_name"
     else
         echo "error: checksum mismatch for $dump_name" >&2
