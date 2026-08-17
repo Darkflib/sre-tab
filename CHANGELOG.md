@@ -19,8 +19,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   non-localhost host over plain http.
 - PostgreSQL integration suite (`tests/postgres/`), opt-in on
   `SRE_TAB_POSTGRES_URL` and run in CI against a service container.
+- Published images are signed with cosign using GitHub's OIDC identity
+  (no key to store or rotate), and carry SLSA build provenance and an
+  SPDX SBOM, all bound to the image digest rather than to a tag.
+- `deploy/scripts/promote.sh` promotes a published build: it resolves a
+  commit to the digest the registry serves, refuses to write one cosign
+  cannot verify, and pins all three application units together.
+- `deploy/scripts/verify-image.sh` checks the signature, the provenance,
+  and the SBOM for any digest — used by CI on every run, by the promotion
+  step before it writes, and by an operator before a restart.
+- npm audit in CI: the production tree at high and above is a gate, the
+  full tree including dev dependencies is reported without failing.
+- Semgrep (`sast` job), guarded so that a run which errored or scanned no
+  files fails the build rather than passing with no findings.
+- Frontend tests run in CI.
 
 ### Changed
+
+- **The application image is pinned by digest.** The three application
+  units tracked `:latest` with `Pull=newer`, so any restart adopted
+  whatever CI had last pushed to main. They now pin
+  `:sha-<commit>@sha256:<digest>` with `Pull=missing`; upgrading is a
+  reviewed commit produced by `promote.sh`, not a side effect of
+  restarting. See the upgrade procedure in `deploy/README.md`.
+- **`DOCS_ENABLED` now defaults to false.** A deployment that inherits
+  the defaults no longer serves Swagger UI at `/docs`; set
+  `DOCS_ENABLED=true` to opt in. `/api/v1/openapi.json` is unaffected and
+  served either way.
 
 - The feed scheduler now starts with the application, and
   `/api/v1/healthz` reports its readiness.
