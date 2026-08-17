@@ -24,7 +24,16 @@ class Settings(BaseSettings):
     # --- Core -----------------------------------------------------------
     database_url: str = "sqlite:///./dev.db"
     app_base_url: str = "http://localhost:8000"
-    docs_enabled: bool = True
+
+    # Swagger UI at /docs. Default-closed: a deployment that was not derived
+    # from deploy/app.env.example — a container run by hand, a second
+    # instance, anything that inherits only the defaults — should not publish
+    # an interactive client against its own API because nobody said not to.
+    # Development opts in with DOCS_ENABLED=true.
+    #
+    # /api/v1/openapi.json is unaffected and served either way: publishing the
+    # schema is a v1 requirement. This flag governs the UI, not the contract.
+    docs_enabled: bool = False
 
     # --- GitHub OAuth ---------------------------------------------------
     github_client_id: str = ""
