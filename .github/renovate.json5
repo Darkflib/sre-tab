@@ -60,27 +60,42 @@
 
   customManagers: [
     {
-      // Quadlet .container files and the deployment shell scripts are not
-      // formats Renovate knows, so the version-pinned PostgreSQL and Caddy
-      // images would otherwise never be flagged. Both scripts carry the same
-      // pins as the units so that a restore or a smoke test runs the same
-      // build as production; CI asserts they agree.
+      // Quadlet .container files, the deployment shell scripts, and the
+      // workflows are not formats Renovate knows — or, for the workflows, are
+      // known only in part: the github-actions manager reads `uses:` and the
+      // images in `container:` and `services:` blocks, but an image named
+      // inside a `run:` script (CI validates the Caddyfile by running the
+      // real Caddy image) is just text to it. Everything that runs anywhere
+      // in this project therefore has to be matched here or it drifts
+      // unwatched. All copies carry the same pins so that a restore, a smoke
+      // test, and CI run the same build as production; CI asserts they agree.
       //
       // The `docker.io/` anchor is load-bearing, not incidental: these same
-      // files carry Image=ghcr.io/darkflib/sre-tab:latest, this project's own
-      // floating tag, which must never be rewritten by a bot. A looser
-      // pattern would match it and start proposing digest pins for our own
-      // builds.
+      // files carry Image=ghcr.io/darkflib/sre-tab@sha256:…, this project's
+      // own image, which must never be rewritten by a bot. Its digest changes
+      // only through deploy/scripts/promote.sh, which refuses to write one
+      // that cosign cannot verify — the whole point of pinning it. A looser
+      // pattern here would hand that decision back to a robot.
       customType: "regex",
       managerFilePatterns: [
         "/^deploy/quadlet/.*\\.container$/",
         "/^deploy/scripts/.*\\.sh$/",
+        "/^\\.github/workflows/.*\\.ya?ml$/",
       ],
       matchStrings: [
         "docker\\.io/(?<depName>[^:\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
       ],
       datasourceTemplate: "docker",
       registryUrlTemplate: "https://docker.io",
+    },
+    {
+      // Semgrep runs from an ephemeral `uvx` environment rather than from
+      // uv.lock, which keeps it out of the application's dependency tree and
+      // out of pip-audit's scope — and out of Renovate's, without this.
+      customType: "regex",
+      managerFilePatterns: ["/^\\.github/workflows/.*\\.ya?ml$/"],
+      matchStrings: ["uvx (?<depName>semgrep)==(?<currentValue>[0-9.]+)"],
+      datasourceTemplate: "pypi",
     },
   ],
 }
