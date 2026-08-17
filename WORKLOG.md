@@ -26,11 +26,36 @@ thirteen mutations, each the plausible mistake rather than an arbitrary
 one — `selectsNothing` rewritten as a falsy check, an empty selection
 serialised as an absent parameter, `filterKey` losing its sort, the
 dominance comparison becoming exclusive, the twelve-item floor slipping to
-eleven. All thirteen fail the suite. Two limitations are pinned as passing
-tests instead of fixed, because neither is reachable with kebab-case
-slugs: a comma in a slug does not survive the URL, and `filterKey`'s `*`
-and `+` sentinels alias. Both now fail where the reasoning is written
-down, rather than as a stale cached page.
+eleven. All thirteen fail the suite.
+
+**Two of those tests were wrong, and review caught it.** They pinned a
+comma in a slug being split by the URL, and `filterKey`'s `*` and `+`
+sentinels aliasing, as documented assumptions — on the stated grounds that
+slugs are kebab-case and so cannot contain either character. That premise
+was never checked. It is false: `add_source` validates uniqueness, the
+feed URL, and the refresh interval but not the slug's shape, `add_topic`
+validates uniqueness alone, and both columns are plain `String(64)` with
+no CHECK. The only strict slug pattern in the tree guards the Medium tag
+expansion, where the value is interpolated into a feed URL, and says
+nothing about the general creation paths.
+
+So both were reachable defects, and the tests had made them expected
+results — which would have failed whoever later fixed them. Worth naming
+the mechanism, because the repository has been careful about exactly this
+elsewhere: the constraint was inferred from what the seeded catalogue
+looks like, then written down as though it were enforced. A catalogue
+where every slug is kebab-case and a system that requires it are not the
+same claim, and only one of them was true.
+
+`filterKey` is fixed — it encodes as JSON, so no slug can alias one
+selection onto another's cache entry, which mattered because
+`usePagedResource` refetches only when the key changes and an alias
+therefore serves the previous filter's items. The comma case is now
+`it.fails` asserting the behaviour we want: it records the gap without
+pinning the defect, and errors with "expected to fail but passed" the day
+someone closes it. Verified by applying the repair and watching the marker
+trip. The choice between enforcing a slug format and preserving arbitrary
+slugs in the URL is on the roadmap, costed both ways.
 
 **The tests found a live bug they do not fix.** `FilterBar`'s "Save as my
 default" writes `effectiveSelection`'s result into preferences, which

@@ -35,7 +35,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Frontend test suite (114 Vitest tests) covering theme resolution, the
   anti-flash script, and the contrast ratios of the design tokens — the
   first tests the client has had — and they run in CI.
-- 72 further Vitest tests over the feed's filter model
+- 73 further Vitest tests over the feed's filter model
   (`src/feed/filters.ts`) and volume signals (`src/feed/volume.ts`),
   taking the suite to 186. They pin the distinction between "no override"
   (`null`) and "nothing selected" (`[]`), including its survival through
@@ -130,6 +130,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The feed's cache key can no longer alias two different filters onto one
+  entry. `filterKey` joined the selection with `+` and wrote `*` for "no
+  override", so a source slug of `*`, or the pair `a`/`b` against a single
+  slug `a+b`, produced the same key — and since the paged resource only
+  refetches when the key changes, the second selection was served the
+  first's items. Nothing constrains a slug's shape at any creation path,
+  so this was reachable rather than theoretical; the key is now encoded as
+  JSON.
 - PostgreSQL now starts. `NoNewPrivileges=true` on `sre-tab-db.container`
   stopped it ever reaching `pg_isready`: podman's AppArmor profile denies
   signal delivery under `no_new_privs` on Debian 13, so `gosu` live-locked

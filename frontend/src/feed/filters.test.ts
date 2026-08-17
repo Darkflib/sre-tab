@@ -181,16 +181,25 @@ describe('the URL round trip', () => {
     expect(parseFilters(params)).toEqual({ topics: null, sources: [] });
   });
 
-  it('does not survive a slug containing a comma — a documented assumption', () => {
-    // The comma is the separator and nothing escapes it, so this is a real
-    // limitation rather than a latent bug: slugs are kebab-case, generated
-    // by the CLI, and cannot contain one. The test exists so that changing
-    // the slug rules fails here rather than in the feed.
+  // Marked `.fails`: this asserts the behaviour we want and records that we
+  // do not have it. A slug containing a comma is split in two by the round
+  // trip, because the comma is the separator and nothing escapes it, so the
+  // user lands on a filter naming two slugs that do not exist and an empty
+  // feed. It is reachable — `add_source` and `add_topic` enforce uniqueness
+  // but not shape, and the columns are plain `String(64)` — so this is a
+  // defect, not a documented assumption.
+  //
+  // Asserting the *current* behaviour instead would pin the defect as
+  // correct and fail whoever fixes it. `.fails` inverts that: the day
+  // serialisation preserves arbitrary slugs, or the creation paths enforce
+  // a slug format, this test errors with "expected to fail but passed" and
+  // whoever did it deletes the marker. See ROADMAP.md for the two options.
+  it.fails('preserves a slug containing a comma', () => {
     const params = applyFiltersToParams(new URLSearchParams(''), {
       topics: null,
       sources: ['a,b'],
     });
-    expect(parseFilters(params).sources).toEqual(['a', 'b']);
+    expect(parseFilters(params).sources).toEqual(['a,b']);
   });
 });
 
@@ -271,17 +280,27 @@ describe('filterKey', () => {
     expect(filterKey(EMPTY_FILTERS, 25)).not.toBe(filterKey(EMPTY_FILTERS, 50));
   });
 
-  it('collides on slugs that use its own sentinels — a documented assumption', () => {
-    // `*` marks "no override" and `+` joins the selection, so a slug that
-    // is literally `*`, or one containing `+`, would alias to another key
-    // and serve a cached page for the wrong filter. Neither is reachable
-    // with kebab-case slugs. Pinned so that loosening the slug rules fails
-    // here, where the reason is written down, rather than as a stale feed.
-    expect(filterKey({ topics: ['*'], sources: null }, 50)).toBe(
+  it('does not alias a slug onto its own sentinels', () => {
+    // The delimiter-joined version of this function used `*` for "no
+    // override" and `+` between entries, so a slug of `*` aliased onto
+    // "no override" and `a+b` aliased onto the pair `a`/`b`. Since
+    // `usePagedResource` refetches only when the key changes, an alias
+    // serves the previous selection's items under the new filter.
+    //
+    // This was reachable, not theoretical: no creation path constrains a
+    // slug's shape — `add_source` and `add_topic` check uniqueness, and
+    // the columns are plain `String(64)`.
+    expect(filterKey({ topics: ['*'], sources: null }, 50)).not.toBe(
       filterKey({ topics: null, sources: null }, 50),
     );
-    expect(filterKey({ topics: ['a+b'], sources: null }, 50)).toBe(
+    expect(filterKey({ topics: ['a+b'], sources: null }, 50)).not.toBe(
       filterKey({ topics: ['a', 'b'], sources: null }, 50),
+    );
+  });
+
+  it('separates an empty selection from a slug that encodes as empty', () => {
+    expect(filterKey({ topics: [], sources: null }, 50)).not.toBe(
+      filterKey({ topics: [''], sources: null }, 50),
     );
   });
 });

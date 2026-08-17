@@ -47,10 +47,21 @@ export function selectsNothing(filters: FeedFilters): boolean {
   return filters.topics?.length === 0 || filters.sources?.length === 0;
 }
 
-/** Stable identity for the paged-resource cache key. */
+/**
+ * Stable identity for the paged-resource cache key.
+ *
+ * Encoded as JSON rather than joined with delimiters. The delimiter version
+ * used `*` for "no override" and `+` between entries, which aliased: a slug
+ * of `*`, or the pair `a`/`b` against the single slug `a+b`, produced the
+ * same key. `usePagedResource` only resets and refetches when the key
+ * changes, so an alias serves the previous selection's items for the new
+ * filter — a wrong feed, silently. Nothing constrains a slug's format at any
+ * creation path (`app/cli/operations.py` checks uniqueness, not shape), so
+ * that was reachable rather than theoretical.
+ */
 export function filterKey(filters: FeedFilters, limit: number): string {
-  const part = (value: string[] | null) => (value === null ? '*' : [...value].sort().join('+'));
-  return `${part(filters.topics)}|${part(filters.sources)}|${limit}`;
+  const part = (value: string[] | null) => (value === null ? null : [...value].sort());
+  return JSON.stringify([part(filters.topics), part(filters.sources), limit]);
 }
 
 /**

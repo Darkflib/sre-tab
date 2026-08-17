@@ -167,15 +167,55 @@ prerequisite for going past it.
   `null` means "no override, use my saved selection" and `[]` means "the user
   deselected everything, so nothing can match and the request is skipped" —
   and the tests pin the URL round trip, which is where that distinction has to
-  survive between renders. Two limitations were documented rather than fixed,
-  because neither is reachable with kebab-case slugs: a comma in a slug does
-  not survive serialisation, and `filterKey`'s `*` and `+` sentinels would
-  alias. Both now fail loudly if the slug rules are ever loosened.
+  survive between renders.
+
+  Two limitations were first written up as documented assumptions, on the
+  premise that slugs are kebab-case and so could not contain the delimiters
+  either function uses. **That premise was asserted rather than checked, and
+  it is false** — see the slug-format item below. Both were therefore
+  reachable defects, and review caught it. What changed as a result:
+  `filterKey` now encodes as JSON instead of joining on `*` and `+`, so no
+  slug can alias one selection onto another's cache entry; and the comma case
+  is marked `it.fails` with the behaviour we want, so it records the gap
+  without pinning the defect as correct and errors the day someone closes it.
 
   `usePagedResource` and `src/api/client.ts` are the expensive half and are
   still untested: hooks and `fetch` mean a DOM environment and request
   mocking, which is real setup and probably a dependency or two. Still worth
   doing, and still not the thing to pick up first.
+
+- **Nothing constrains a slug's format at any creation path.** The catalogue
+  is operator-seeded and every slug in it is kebab-case, which is why this
+  read as a rule and got asserted as one. It is not enforced anywhere:
+  `add_source` checks uniqueness, the feed URL, and the refresh interval;
+  `add_topic` checks uniqueness alone; and `sources.slug`/`topics.slug` are
+  plain `String(64)` with no CHECK constraint. The one strict slug pattern in
+  the tree guards the Medium *tag* expansion (`app/cli/catalogue.py`), because
+  that value is interpolated into a feed URL — it says nothing about the
+  general `add-source` and `add-topic` paths.
+
+  A slug is not an inert label. It goes in the URL, in a cache key, and in the
+  query the server builds, so its shape is load-bearing in three places that
+  each assume something different. The comma case above is the live
+  consequence: `sre-tab source add --slug 'a,b'` produces a source the feed
+  cannot filter to.
+
+  Two ways to close it, and they are not equivalent:
+
+  Enforcing a slug pattern at every creation path is the smaller change and
+  matches how `validate_feed_url` was handled — make the invalid state
+  unrepresentable rather than teach each consumer to cope. It does not repair
+  slugs already stored, so it wants a check over the existing catalogue too.
+
+  Making the frontend preserve arbitrary slugs — repeated query parameters
+  (`?sources=a&sources=b`) instead of a comma-joined value — is also small and
+  is robust to whatever the database actually holds. Its cost is that the
+  browser URL format changes, so any bookmarked filter URL in the old format
+  reads back as one slug rather than several. On a three-operator deployment
+  that is close to free, but it is a user-visible change and should be a
+  decision rather than a side effect. The wire format is unaffected either
+  way: `fetchFeed` sends arrays through openapi-fetch, so this is purely the
+  browser URL.
 
 - **"Save as my default" inverts an empty selection.** Found by the tests
   above rather than fixed by them, because the fix is a product decision
