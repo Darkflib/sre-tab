@@ -32,7 +32,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   full tree including dev dependencies is reported without failing.
 - Semgrep (`sast` job), guarded so that a run which errored or scanned no
   files fails the build rather than passing with no findings.
-- Frontend tests run in CI.
+- Frontend test suite (114 Vitest tests) covering theme resolution, the
+  anti-flash script, and the contrast ratios of the design tokens — the
+  first tests the client has had — and they run in CI.
+- `LICENSE` (MIT), matching the declaration that was already in
+  `pyproject.toml` but had no corresponding grant in the repository.
+- `CONTRIBUTING.md`, and a `Docs` workflow that extracts the README's
+  quickstart from the README itself and executes it on a clean checkout
+  on every push. Two documented procedures here have been wrong while
+  reading perfectly, so the documentation is executed rather than
+  proofread.
 
 ### Changed
 
@@ -57,9 +66,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the real client address instead of collapsing into one bucket.
 - `ALLOWED_GITHUB_IDS` ships with the initial operator allow-list rather
   than empty.
+- Dark and light themes meet WCAG AA on interactive boundaries, not just
+  on body text. Button, input, and inactive-chip borders sat at 1.80:1 in
+  dark and 1.95:1 in light against 1.4.11's 3:1, and read-card summary
+  text at 3.22:1 against 1.4.3's 4.5:1 — the kind of failure a screenshot
+  does not show, because the text on top of them was always legible. A
+  `--focus-halo` token also separates the focus ring from the fill it
+  sits on: in dark, `--focus` and `--accent` were the same colour, so a
+  focused active chip was a glow rather than a ring.
 
 ### Security
 
+- Feed fetches refuse content-codings. The size cap counted bytes `httpx`
+  had already decompressed and `Content-Length` was checked against the
+  compressed length, so neither bounded what actually got allocated: a
+  20 KB body materialised 21 MB, and because a decoder is built per
+  comma-separated `Content-Encoding` value, stacked codings reached a
+  gigabyte from a few hundred bytes on the wire. Under the unit's
+  `MemoryMax=768M` that is a cgroup kill of the process hosting both the
+  API and the scheduler, and since the process is killed rather than
+  raising, the per-source backoff never engaged — `Restart=always` plus
+  an immediate first tick made it a loop. The fetcher now asks for
+  `Accept-Encoding: identity` and refuses any coding an origin sends
+  regardless; the request is a courtesy, the refusal is the enforcement.
+  All seven catalogue feeds honour it, measured against the live origins,
+  at a cost of about 554 KB per full refresh.
 - Database dumps are written `0600` under `umask 077`, and
   `/srv/sre-tab/backups` is created `0700` rather than `0750`. The
   directory is owned by gid 999, which is `postgres` inside the postgres

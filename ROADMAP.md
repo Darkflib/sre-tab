@@ -226,42 +226,40 @@ during an incident.
 Consequences of the repository being public that are decisions rather than
 tasks.
 
-- **No licence file.** `pyproject.toml` declares `license = "MIT"` and there is
-  no `LICENSE` at the repository root, so the only statement of terms lives in
-  packaging metadata that a reader of the repository never sees. Choosing and
-  adding one is the owner's call and is being handled separately; it is
-  recorded here so it is not rediscovered as a surprise by the first person
-  who wants to use the code.
-- **Read the branch-protection rule, and correct it if it needs correcting.**
-  GitHub keys a required status check on the check-run **context**, and it is
-  measured that every context this repository reports is a job's *display*
-  name — `Format, lint, types, security, tests` and friends. Not one job key
-  is ever reported. The rule itself is known from the other end: it was
-  created through the API, and GitHub's response to that `PUT` echoed the
-  stored contexts back as the five job keys. Those two sets do not intersect,
-  so every required context names something that has never reported, and the
-  set enforces nothing while appearing to. Behind that sits a second, smaller
-  defect: the `frontend` job was renamed when the Vitest suite was wired into
-  it, which matters once the contexts are corrected. Nothing would have
-  surfaced either — all 79 commits on `main` are direct pushes, there has
-  never been a pull request here, and required checks are not consulted on
-  that path.
+- **No licence file** — **landed.** `pyproject.toml` declared
+  `license = "MIT"` while the repository granted nothing, so the only
+  statement of terms lived in packaging metadata a reader never sees — on a
+  public repository that is an inconsistency rather than an omission, since
+  the metadata claimed terms the repository did not offer. `LICENSE` (MIT,
+  © 2026 Mike Preston) now makes the existing claim true.
+- **Read the branch-protection rule, and correct it if it needs correcting** —
+  **landed, and it had never enforced anything.** GitHub keys a required
+  status check on the check-run **context**, which for Actions is the job's
+  `name:` whenever one is set. The rule had been created with the job *keys*
+  — `python`, `postgres`, `audit`, `frontend`, `container` — which no
+  check-run here has ever reported. The read finally succeeded once GitHub's
+  incident of 17 August 2026 eased and confirmed exactly that, matching what
+  the creating `PUT` response had recorded.
 
-  The read command, the fix, and the reason `Publish, sign, and attest image`
-  must be **excluded** from the required set — it never runs on a pull
-  request, and whether requiring a job skipped that way blocks the request or
-  quietly passes is untested here, so it is excluded on the asymmetry rather
-  than on a known deadlock — are in
-  [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection). Neither command could
-  be run on the day: the protection endpoint answered `503` throughout
-  GitHub's incident of 17 August 2026, diagnosed rather than assumed, since an
-  ordinary repository read succeeded on the same token while two *different*
-  admin-scope endpoints returned 503, and a permissions failure answers 403 or
-  404. Changing protection is the repository owner's decision, not a
-  contributor's. The one thing still open is whether anything has edited the
-  rule since it was created — impossible through the API while it answered
-  503, but possible through the web UI — so read before writing, and keep the
-  output, because the fix replaces the context list wholesale.
+  It failed safe: a pull request waits on a status that never arrives rather
+  than merging unchecked. But the real checks were not required either, and
+  nothing would ever have surfaced it — every commit on `main` is a direct
+  push, there has never been a pull request here, and required checks are not
+  consulted on that path. The required set is now the eight reported
+  check-run names, verified by set-differencing them against the check-runs
+  the repository actually reports rather than by reading the rule back.
+
+  `Publish, sign, and attest image` is deliberately excluded: it never runs
+  on a pull request, and whether requiring a job skipped that way blocks the
+  request or quietly passes is untested here, so it is excluded on the
+  asymmetry rather than on a known deadlock.
+
+  The lesson generalises past this instance. **A job rename is a
+  branch-protection change**, and nothing in the repository can detect it,
+  because protection lives in GitHub's settings rather than in a file anyone
+  reviews. [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection) carries the
+  read and fix commands for the next time a job is renamed.
+
 - **Issue and pull-request templates.** Neither exists. Worth adding if the
   repository attracts contributions beyond the operator's own.
 

@@ -144,16 +144,27 @@ parts have been run and which have not.
 
 ## Branch protection
 
-`main` is protected. Five checks are required, all from
-`.github/workflows/ci.yml`:
+`main` is protected. Eight checks are required. They are listed here by the
+name GitHub reports — the job's `name:`, which is what a required check
+actually matches on, not the job key in the workflow:
 
-| Check | What it is |
-| --- | --- |
-| `python` | format, lint, mypy, Bandit, the header and env-example parity scripts, pytest |
-| `postgres` | the PostgreSQL-only suite against a service container |
-| `audit` | `pip-audit` over the locked dependency set, and `npm audit` over the client's |
-| `frontend` | eslint, tsc, the Vitest suite, vite build |
-| `container` | image build, Caddyfile validation, Quadlet generation, the deployment smoke test |
+| Required check | Workflow / job | What it is |
+| --- | --- | --- |
+| `Format, lint, types, security, tests` | `ci.yml` / `python` | format, lint, mypy, Bandit, the header and env-example parity scripts, pytest |
+| `PostgreSQL integration` | `ci.yml` / `postgres` | the PostgreSQL-only suite against a service container |
+| `Dependency audit` | `ci.yml` / `audit` | `pip-audit` over the locked dependency set, and `npm audit` over the client's |
+| `Static analysis` | `ci.yml` / `sast` | Semgrep, guarded against a run that scans nothing |
+| `Frontend lint, types, tests, build` | `ci.yml` / `frontend` | eslint, tsc, the Vitest suite, vite build |
+| `Container build and deployment smoke` | `ci.yml` / `container` | image build, Caddyfile validation, Quadlet generation, the deployment smoke test |
+| `README quickstart runs on a clean checkout` | `docs.yml` / `quickstart` | the README's own commands, executed |
+| `Relative links resolve` | `docs.yml` / `links` | every relative link and image in the docs |
+
+`Publish, sign, and attest image` is **not** required — see below.
+
+`audit` is a separate job on purpose, and so is `sast`: both reach the network
+and report on something other than the code under change, so a CVE published
+this morning or a registry hiccup should not hide the test results behind the
+same red cross.
 
 `audit` is a separate job on purpose, and so is `sast`: both reach the network
 and report on something other than the code under change, so a CVE published
@@ -162,7 +173,7 @@ same red cross.
 
 ### Renaming a job can silently break a required check
 
-The names in that table are the job *keys* in `ci.yml`. GitHub keys a required
+GitHub keys a required
 status check on the check-run **context**, which for Actions is the job's
 `name:` — its display name, not its key. So renaming a job can break branch
 protection without breaking anything else: the old context never reports
@@ -171,77 +182,49 @@ waits forever for a check that will never arrive, or the job quietly stops
 being enforced. Neither shows up on a push to `main`, which is where this
 would be noticed if it were noticeable at all.
 
-This is not hypothetical here, and there are two questions behind it. Keep
-them apart, because only one has been answered.
+This is not hypothetical here: **the rule was broken from the day it was
+created, and has now been fixed.**
 
-**Measured.** Every check-run this repository reports is a display name. On
-both `d8ad2b8` and `9f11d8d` the complete set is `Format, lint, types,
-security, tests`, `PostgreSQL integration`, `Dependency audit`, `Static
-analysis`, `Frontend lint, types, tests, build`, `Container build and
-deployment smoke`, `Publish, sign, and attest image`, `README quickstart runs
-on a clean checkout`, and `Relative links resolve`. Not one job key appears —
-no `python`, no `postgres`, no `frontend`. Read from
-`/commits/{sha}/check-runs`, not from the documentation.
+It was configured with the job *keys* — `python`, `postgres`, `audit`,
+`frontend`, `container`. Every check-run this repository reports is a display
+name: `Format, lint, types, security, tests`, `PostgreSQL integration`,
+`Dependency audit`, `Static analysis`, `Frontend lint, types, tests, build`,
+`Container build and deployment smoke`, plus the two from the Docs workflow.
+The two sets did not intersect, so every required context named a check that
+had never reported and never could.
 
-**Also measured, from the other end: what was written into the rule.** The
-protection was created on 17 August 2026 through the API, not the web UI, and
-GitHub's response to that `PUT` echoed the stored state back:
+It failed safe — a pull request waits on a status that never arrives rather
+than merging unchecked — but the real checks were not required either, and
+nothing would ever have surfaced it: every commit on `main` is a direct push,
+there has never been a pull request here, and required checks are not
+consulted on that path.
 
-```json
-"required_status_checks": {
-  "strict": true,
-  "contexts": ["python", "postgres", "audit", "frontend", "container"],
-  "checks": [{"context": "python", "app_id": null}, …]
-}
-```
+The required set is now the eight reported names, and it was verified by
+set-differencing the required contexts against the check-runs the repository
+actually reports — empty in the direction that matters — rather than by
+reading the rule back and trusting it looked right.
 
-That is the server's own normalised representation — the `checks` array is
-GitHub's, not something the request contained — so it records what was
-stored rather than what was asked for. The rule was configured with **job
-keys**.
+`Publish, sign, and attest image` is deliberately excluded. It carries
+`if: github.event_name == 'push' && github.ref == 'refs/heads/main'`, so it
+never runs on a pull request. Whether requiring a job skipped that way would
+*block* the request or quietly pass is untested here — GitHub reports a
+job-level `if:` skip with a `skipped` conclusion, which has historically
+counted as success, whereas a context that never reports sits pending forever
+— so it is excluded on the asymmetry, not on a known deadlock.
 
-Put beside the measured check-run names, those two sets do not intersect, and
-the conclusion follows without needing to read the rule again: **every
-required context names something that has never reported and never will.**
-The set enforces nothing while appearing to, and the real checks are not
-required. The `frontend` rename sits behind that, not in front of it.
-
-**What remains genuinely unknown** is only whether anything has changed the
-rule since. Not through the API — that endpoint answered `503` on every
-attempt for the rest of the day — but the web UI would do it, so a read is
-still worth taking before the fix rather than assuming.
-
-Either way nothing would have surfaced it. All 79 commits on `main` are
-direct pushes, there has never been a pull request on this repository, and
-required checks are not consulted on that path.
-
-Reading it needs admin scope; changing it is the repository owner's decision,
-not a contributor's. Read first:
+**If you rename a job, update branch protection in the same change.** Nothing
+in this repository can detect that you didn't: protection lives in GitHub's
+settings, not in a file anyone reviews. Read the current state first, and keep
+the output — the write below replaces the context list wholesale, so that read
+is the only record of what was there before:
 
 ```sh
 gh api repos/Darkflib/sre-tab/branches/main/protection \
   --jq '.required_status_checks.contexts'
 ```
 
-Job keys in that list are the expected result and confirm the rule still
-needs fixing. Display names would mean someone has already corrected it, in
-which case check each still matches a job's current `name:` — which is where
-the `frontend` rename comes back.
-
-**Keep that output.** The command below replaces the context list wholesale
-and sets `strict`, so the read is the only record of what was there before.
-
-If the read shows job keys, set the contexts to the check-run names, omitting
-`Publish, sign, and attest image`. That job carries
-`if: github.event_name == 'push' && github.ref == 'refs/heads/main'`, so it
-never runs on a pull request at all. Whether requiring it would *block* a
-pull request or quietly pass is untested here — GitHub reports a job skipped
-by a job-level `if:` with a `skipped` conclusion, which has historically
-counted as success for a required check, whereas a context that never reports
-at all sits pending forever. With zero pull requests on this repository, that
-path has no data. Exclude it anyway: the cost of excluding it is nothing, and
-the cost if the pessimistic reading is right is a permanently unmergeable
-pull request.
+Then write the full set — the current one, for reference, and the shape to
+follow after a rename:
 
 ```sh
 gh api -X PATCH repos/Darkflib/sre-tab/branches/main/protection/required_status_checks \
@@ -256,30 +239,21 @@ gh api -X PATCH repos/Darkflib/sre-tab/branches/main/protection/required_status_
   -f 'contexts[]=Relative links resolve'
 ```
 
-Neither command could be run on the day: the endpoint answered `503`
-throughout GitHub's incident of 17 August 2026. That was diagnosed rather
-than assumed — an ordinary repository read succeeded with the same token
-while two *different* admin-scope endpoints both returned 503, and a
-permissions failure answers 403 or 404, not 503 on some endpoints and 200 on
-others. So the 503 is the outage, and the read is worth retrying rather than
-treating as a scope problem to work around.
+Then confirm it by comparing the two sets, rather than by rereading the rule:
 
-So, stated with its provenance rather than as a flat verdict: the rule is
-**known to have been created with job keys**, from the `PUT` response at
-creation time; it is **not known to be unchanged since**, because no read has
-succeeded after that. The expected finding is a broken gate. Confirm it with
-the read before changing anything — not because the evidence is weak, but
-because the fix overwrites the list and the read is the only record of what
-it replaced.
+```sh
+sha=$(git rev-parse origin/main)
+comm -23 \
+  <(gh api repos/Darkflib/sre-tab/branches/main/protection/required_status_checks \
+      --jq '.contexts[]' | sort) \
+  <(gh api "repos/Darkflib/sre-tab/commits/$sha/check-runs" \
+      --jq '.check_runs[].name' | sort -u)
+```
 
-The general rule this leaves behind: **a job rename is a branch-protection
-change**, and the two have to move together.
-
-Two more jobs run and are **not** in the required set, because both are new
-and a required check should have a run history before it can block a merge:
-`sast` in `ci.yml`, and the `quickstart` and `links` jobs in `docs.yml`. Both
-should join it. A pull request that makes either flaky is a bug in that job,
-not a reason to ignore it.
+Empty output means every required context is a check that actually reports.
+Anything listed is a context waiting on a check that will never arrive — which
+is the failure this section exists to describe, and the only way to be sure it
+is absent is to look for it.
 
 ## Commits and pull requests
 

@@ -1,21 +1,50 @@
 # Agent rules
 
-Binding rules for every agent working in this repository. Phase 0 built the
-shared contract; Phase 1 agents implement behaviour behind it. If a rule
-here blocks you, escalate to the coordinator — do not work around it.
+Binding rules for every agent working in this repository.
+
+Most of this file was written for v1's parallel build, where several agents
+worked at once in one tree. That is over, and the rules that were *purely*
+about coordination are marked below as such. The rest are live invariants —
+they describe how the code is put together, not how it was built, and
+breaking one now breaks the same thing it would have broken then.
+
+If a rule here blocks you, say so rather than working around it.
 
 ## Standing rules
 
-- Do not edit files outside your owned paths (see the ownership table
-  below).
-- Never run `uv add` or edit pyproject.toml — a missing dependency is
-  escalated, not installed.
-- Never generate Alembic revisions — a schema gap is escalated, not
-  patched.
-- Never edit app/db/models.py, app/api/v1/router.py, root
-  tests/conftest.py, or the health endpoint. Readiness checks are
-  registered via the probe registry; extra fixtures live in
-  tests/<area>/conftest.py.
+- **Ownership** (coordination-era): do not edit files outside your owned
+  paths — see the table below. Working alone, this collapses to the
+  ordinary courtesy of not making unrelated changes in the same commit.
+- **Never run `uv add` or edit `pyproject.toml` casually.** A dependency
+  is a supply-chain decision now, not a convenience: the lockfile is
+  audited by `pip-audit` in CI, and everything in it ships in the image.
+- **Never generate an Alembic revision without meaning to.** The
+  migration history is verified in both directions against SQLite *and*
+  PostgreSQL, including against a populated database. A second concurrent
+  revision forks the graph, which is why this was absolute during the
+  parallel build and remains a considered act now.
+- **`app/db/models.py`, `app/api/v1/router.py`, root `tests/conftest.py`,
+  and the health endpoint are shared surfaces.** Readiness checks are
+  registered through the probe registry rather than by editing the
+  endpoint; extra fixtures live in `tests/<area>/conftest.py`. This is
+  still the right shape — the registry is what lets the scheduler report
+  readiness without the health module knowing the scheduler exists.
+
+## Two rules that outlived the parallel build
+
+- **Attribute reasoning to the evidence cited, not to the author.** Every
+  commit in this repository carries the same author and committer, so git
+  records what was decided and never who decided it. A claim with no
+  measurement behind it is unsupported, whoever appears to have written
+  it. This is not hypothetical: two agents each credited the other with
+  the same work, and the metadata could not settle it.
+- **A green check is not a passed check.** Six times in this project a
+  gate existed, reported success, and verified nothing: a CI assertion
+  querying the wrong JSON key, a Semgrep run that scanned zero files, a
+  CSRF check bypassed by a test fixture, a test suite that ran nowhere, a
+  size cap counting bytes after the allocation it existed to prevent, and
+  a branch-protection rule naming checks that never report. When you add
+  a guard, make it fail once on purpose before you believe it.
 
 ## Data-access rules
 

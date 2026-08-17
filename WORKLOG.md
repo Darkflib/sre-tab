@@ -3,6 +3,118 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-17 — Licence, and the notes brought up to date
+
+MIT `LICENSE` added, matching the declaration that had been sitting in
+`pyproject.toml` with nothing in the repository to back it. Backfilled the
+worklog entries below, which had stopped after Phase 2 while the work did
+not, and the changelog entries for the decompression fix, the frontend
+suite, the docs workflow, and the theme contrast work.
+
+Worth recording why the backlog happened: five agents were committing in
+parallel to one working tree, and `CHANGELOG.md`/`WORKLOG.md` are owned by
+nobody in that arrangement, so each agent correctly declined to race for
+them. Shared-file ownership needs assigning explicitly, the same way the
+code paths were.
+
+## 2026-08-17 — Branch protection was never enforcing anything
+
+The rule was created with the job *keys* from `ci.yml` — `python`,
+`postgres`, `audit`, `frontend`, `container`. GitHub keys a required check
+on the check-run **context**, which for Actions is the job's `name:`
+whenever one is set, and every job here sets one. So all five required
+contexts named checks that had never reported and never could.
+
+It failed safe — a pull request waits on a status that never arrives rather
+than merging unchecked — but the real checks were not required either, and
+80 commits of direct pushes never consulted the rule, so nothing surfaced
+it. Now set to the eight reported check-run names, excluding
+`Publish, sign, and attest image`, which only runs on push to `main`.
+Verified by set-differencing the required contexts against the check-runs
+the repository actually reports: empty, in the direction that matters.
+
+The general trap: a job rename is a branch-protection change. Nothing in
+the repository can detect it, because protection lives in GitHub's
+settings and not in a file anyone reviews.
+
+## 2026-08-17 — Documentation, dark mode, supply chain
+
+Three parallel workstreams after the release-blocking fixes.
+
+- **Supply chain.** Application image digest-pinned with a promotion
+  script that refuses to write a digest cosign cannot verify; cosign
+  keyless signing, SLSA provenance, and an SPDX SBOM, all bound to the
+  digest. Admission verification is *not* possible and the gap is
+  measured rather than asserted: podman's `sigstoreSigned.fulcio` policy
+  requires `oidcIssuer` **and** `subjectEmail`, and a GitHub Actions
+  keyless certificate carries a URI SAN, so the identity cannot be
+  expressed. A `{"type":"reject"}` policy on the same repository does
+  refuse the pull, which is how we know the machinery works and the
+  identity is the blocker.
+- **Documentation.** README from 58 to 311 lines, `CONTRIBUTING.md`, and a
+  workflow that extracts the quickstart from the README and runs it on a
+  clean checkout. Checking the prose found eight things documented and
+  wrong, the sharpest being `deploy/README.md`'s claim that the fetcher is
+  the only component making outbound requests — the OAuth flow also calls
+  GitHub, so an egress policy allowing only feed hosts would have broken
+  sign-in.
+- **Dark mode.** Verified rather than assumed, and it was not as
+  advertised: body text passed everywhere, which is why it read as done,
+  while every interactive boundary failed WCAG AA. 114 tests added, then
+  mutation-tested by reverting tokens and drifting the palette to confirm
+  they fail.
+
+## 2026-08-17 — Phase 3 verification
+
+Four parallel read-only passes over the integrated tree: an adversarial
+security review, SAST, an acceptance walk of the v1 criteria, and a
+deployment validation on a real Debian 13 host with podman 5.4.2.
+
+The Linux pass is the one that earned its cost. Two release-blockers
+existed that no amount of macOS testing would have found, and both trace
+to the same root cause — `no_new_privs` blocks the AppArmor profile
+transition crun performs on exec, after which AppArmor denies signals
+between the resulting profiles. PostgreSQL wedged for the full five-minute
+timeout; uvicorn exited 1 on every clean stop. `smoke.sh` already set that
+flag, so it *was* under test — it just does not trigger under Docker on
+arm64.
+
+Also found there: Caddy's pinned `.20` sat inside the network's dynamic
+IPAM pool, so an unrelated restart could hand that address to another
+container and leave Caddy in a permanent restart loop; and backup dumps
+were group-readable by `systemd-journal`, because gid 999 is `postgres`
+inside the postgres image but `systemd-journal` on Debian.
+
+Acceptance measured the feed at 12.7 ms p95 against a 400 ms target, and —
+more convincingly than the number — flat from 5,000 to 100,000 items,
+which is what proves the keyset pagination rather than the hardware.
+`EXPLAIN` confirms the index is used on PostgreSQL in every query shape;
+on SQLite it is not, once a filter is present. Recorded rather than fixed:
+PostgreSQL is the production engine.
+
+## 2026-08-17 — Phase 1 fan-out
+
+Five agents in parallel on disjoint paths: auth and sessions, ingest and
+scheduling, feed and user state, frontend, and build/deploy/CI. Phase 0's
+contract — complete models, complete schemas, and `501` stubs so
+`openapi.json` was real on day one — is what made that possible; without
+it five agents would have invented five incompatible data layers.
+
+Three conflicts were designed out rather than discovered: the Alembic
+revision graph (Phase 0 wrote the only migration, Phase 1 wrote none),
+`pyproject.toml` (the dependency set was pinned up front, and no agent
+ran `uv add`), and the router aggregator (pre-wired to the stubs, so no
+agent edited a shared file). One conflict was *not* designed out and had
+to be fixed mid-flight: `/me` routes live in one module owned by the auth
+agent while the preferences logic belonged to the API agent, resolved with
+a frozen service-signature seam committed before either started.
+
+What the parallelism actually cost: agents share one working tree, and
+`git commit` takes the whole index, so one agent's staged files landed in
+another's commit twice. Pathspec-scoped commits fixed it. Uniform git
+authorship also means no commit records *which* agent wrote it, which
+later made two agents each credit the other with the same work.
+
 ## 2026-08-17 — Phase 3 security remediation
 
 Six reproduced findings from the adversarial review. The SSRF guard and
