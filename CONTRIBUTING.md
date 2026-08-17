@@ -183,21 +183,33 @@ on a clean checkout`, and `Relative links resolve`. Not one job key appears —
 no `python`, no `postgres`, no `frontend`. Read from
 `/commits/{sha}/check-runs`, not from the documentation.
 
-**Not measured: what the rule actually contains.** Nobody has read it. The
-protection endpoint answered `503` on every attempt during GitHub's incident
-of 17 August 2026. The table above names the required set by job key because
-that is how it was described to the people writing this file — which is how
-anyone would name those jobs in conversation, and is not the same thing as a
-dump of `required_status_checks.contexts`. Protection configured through the
-web UI picks display names off a list, so a rule built that way would hold
-display names however it was later described.
+**Also measured, from the other end: what was written into the rule.** The
+protection was created on 17 August 2026 through the API, not the web UI, and
+GitHub's response to that `PUT` echoed the stored state back:
 
-So the conditional, and it is worth stating in full because the two branches
-cost very different amounts: **if the rule lists job keys, every required
-context names something that has never reported and never will** — the set
-enforces nothing while appearing to, and the real checks are not required.
-If it lists display names, the rule is sound and the `frontend` rename is the
-only thing to fix. From outside, the two are indistinguishable.
+```json
+"required_status_checks": {
+  "strict": true,
+  "contexts": ["python", "postgres", "audit", "frontend", "container"],
+  "checks": [{"context": "python", "app_id": null}, …]
+}
+```
+
+That is the server's own normalised representation — the `checks` array is
+GitHub's, not something the request contained — so it records what was
+stored rather than what was asked for. The rule was configured with **job
+keys**.
+
+Put beside the measured check-run names, those two sets do not intersect, and
+the conclusion follows without needing to read the rule again: **every
+required context names something that has never reported and never will.**
+The set enforces nothing while appearing to, and the real checks are not
+required. The `frontend` rename sits behind that, not in front of it.
+
+**What remains genuinely unknown** is only whether anything has changed the
+rule since. Not through the API — that endpoint answered `503` on every
+attempt for the rest of the day — but the web UI would do it, so a read is
+still worth taking before the fix rather than assuming.
 
 Either way nothing would have surfaced it. All 79 commits on `main` are
 direct pushes, there has never been a pull request on this repository, and
@@ -211,9 +223,10 @@ gh api repos/Darkflib/sre-tab/branches/main/protection \
   --jq '.required_status_checks.contexts'
 ```
 
-Job keys in that list confirm the broken branch. Display names mean the rule
-is sound — provided each still matches a job's current `name:`, which is
-where the `frontend` rename comes back.
+Job keys in that list are the expected result and confirm the rule still
+needs fixing. Display names would mean someone has already corrected it, in
+which case check each still matches a job's current `name:` — which is where
+the `frontend` rename comes back.
 
 **Keep that output.** The command below replaces the context list wholesale
 and sets `strict`, so the read is the only record of what was there before.

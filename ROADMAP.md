@@ -256,8 +256,13 @@ tasks.
   ordinary repository read succeeded on the same token while two *different*
   admin-scope endpoints returned 503, and a permissions failure answers 403 or
   404. Changing protection is the repository owner's decision, not a
-  contributor's; until it is read, the required set is **unverified** rather
-  than known-good or known-broken.
+  contributor's. The required set is **known to be broken**, not merely
+  unverified: the rule was created through the API and GitHub's response to
+  that `PUT` echoed back the stored contexts as the five job keys, which do
+  not intersect the display names every check-run actually reports. The only
+  open question is whether anything has edited it since — impossible through
+  the API while it was returning 503, but possible through the web UI, so
+  read before writing.
 - **Issue and pull-request templates.** Neither exists. Worth adding if the
   repository attracts contributions beyond the operator's own.
 
