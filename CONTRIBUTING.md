@@ -171,38 +171,54 @@ waits forever for a check that will never arrive, or the job quietly stops
 being enforced. Neither shows up on a push to `main`, which is where this
 would be noticed if it were noticeable at all.
 
-This is not hypothetical here, and the problem is worse than a rename.
+This is not hypothetical here, and there are two questions behind it. Keep
+them apart, because only one has been answered.
 
-**The rule was configured with job keys** — `python`, `postgres`, `audit`,
-`frontend`, `container` — the identifiers on the left of each job in
-`ci.yml`. GitHub does not match on those. It matches on the check-run name,
-which is the job's `name:` whenever one is set, and every job here sets one.
-The names GitHub actually reports are `Format, lint, types, security, tests`,
-`PostgreSQL integration`, `Dependency audit`, `Static analysis`,
-`Frontend lint, types, tests, build`, and
-`Container build and deployment smoke`.
+**Measured.** Every check-run this repository reports is a display name. On
+both `d8ad2b8` and `9f11d8d` the complete set is `Format, lint, types,
+security, tests`, `PostgreSQL integration`, `Dependency audit`, `Static
+analysis`, `Frontend lint, types, tests, build`, `Container build and
+deployment smoke`, `Publish, sign, and attest image`, `README quickstart runs
+on a clean checkout`, and `Relative links resolve`. Not one job key appears —
+no `python`, no `postgres`, no `frontend`. Read from
+`/commits/{sha}/check-runs`, not from the documentation.
 
-So every required context names something that has never reported and never
-will. The failure is at least in the safe direction — a pull request waits on
-a status that never arrives rather than merging unchecked — but the required
-set is enforcing nothing, and the real checks are not required. It went
-unnoticed because every commit so far has gone straight to `main` by an
-administrator, and required checks are not consulted on that path.
+**Not measured: what the rule actually contains.** Nobody has read it. The
+protection endpoint answered `503` on every attempt during GitHub's incident
+of 17 August 2026. The table above names the required set by job key because
+that is how it was described to the people writing this file — which is how
+anyone would name those jobs in conversation, and is not the same thing as a
+dump of `required_status_checks.contexts`. Protection configured through the
+web UI picks display names off a list, so a rule built that way would hold
+display names however it was later described.
 
-The `frontend` rename is therefore a second problem behind the first: it
-matters once the contexts are corrected, not before.
+So the conditional, and it is worth stating in full because the two branches
+cost very different amounts: **if the rule lists job keys, every required
+context names something that has never reported and never will** — the set
+enforces nothing while appearing to, and the real checks are not required.
+If it lists display names, the rule is sound and the `frontend` rename is the
+only thing to fix. From outside, the two are indistinguishable.
 
-Fixing it needs admin scope. Read the current state:
+Either way nothing would have surfaced it. All 79 commits on `main` are
+direct pushes, there has never been a pull request on this repository, and
+required checks are not consulted on that path.
+
+Reading it needs admin scope; changing it is the repository owner's decision,
+not a contributor's. Read first:
 
 ```sh
 gh api repos/Darkflib/sre-tab/branches/main/protection \
   --jq '.required_status_checks.contexts'
 ```
 
-Job keys in that list mean the rule is broken as described. Display names
-mean it is working, provided each one still matches a job's current `name:`.
+Job keys in that list confirm the broken branch. Display names mean the rule
+is sound — provided each still matches a job's current `name:`, which is
+where the `frontend` rename comes back.
 
-Then set the contexts to the check-run names, omitting
+**Keep that output.** The command below replaces the context list wholesale
+and sets `strict`, so the read is the only record of what was there before.
+
+If the read shows job keys, set the contexts to the check-run names, omitting
 `Publish, sign, and attest image` — that job only runs on a push to `main`,
 so requiring it would leave every pull request permanently unsatisfiable,
 which is the same trap in the opposite direction:
@@ -225,8 +241,14 @@ throughout GitHub's incident of 17 August 2026. That was diagnosed rather
 than assumed — an ordinary repository read succeeded with the same token
 while two *different* admin-scope endpoints both returned 503, and a
 permissions failure answers 403 or 404, not 503 on some endpoints and 200 on
-others. Until the PATCH above has been applied and confirmed, treat the
-required set as **not enforcing anything**, rather than as probably enforced.
+others. So the 503 is the outage, and the read is worth retrying rather than
+treating as a scope problem to work around.
+
+Until someone has read the rule, treat the required set as **unverified** —
+neither known-good nor known-broken. That is a weaker claim than the evidence
+might seem to support, and deliberately so: the mechanism is measured, the
+rule's contents are not, and a document that blurs the two is the thing this
+whole gate exists to prevent.
 
 The general rule this leaves behind: **a job rename is a branch-protection
 change**, and the two have to move together.

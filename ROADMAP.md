@@ -232,21 +232,32 @@ tasks.
   adding one is the owner's call and is being handled separately; it is
   recorded here so it is not rediscovered as a surprise by the first person
   who wants to use the code.
-- **Confirm branch protection still names the checks it thinks it does.** The
-  `frontend` job was renamed when the Vitest suite was wired into it, and
-  GitHub keys required status checks on a job's *display* name rather than its
-  key in the workflow. If the rule on `main` lists display names, it now names
-  a context that will never report — which either blocks every pull request on
-  a check that cannot arrive, or silently stops enforcing the job. One command
-  with admin scope settles it, and it is written up in
-  [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection). It could not be run on
-  the day: the protection endpoint answered `503` throughout GitHub's incident
-  of 17 August 2026. That was diagnosed rather than assumed — an ordinary
-  repository read succeeded with the same token while two *different*
-  admin-scope endpoints both returned 503, and a permissions failure answers
-  403 or 404 rather than 503 on some endpoints and 200 on others. So the
-  cause is the outage, not the token; the item is open because the fix could
-  not be applied, not because anything about it is unclear.
+- **Read the branch-protection rule, and correct it if it needs correcting.**
+  GitHub keys a required status check on the check-run **context**, and it is
+  measured that every context this repository reports is a job's *display*
+  name — `Format, lint, types, security, tests` and friends. Not one job key
+  is ever reported. What nobody has been able to read is the rule itself, so
+  there are two branches and they cost very different amounts. If the rule
+  lists job keys, every required context names something that has never
+  reported and the set enforces nothing while appearing to. If it lists
+  display names, the rule is sound and the only defect is that the `frontend`
+  job was renamed when the Vitest suite was wired into it, so one context is
+  now stale. Nothing would have surfaced either: all 79 commits on `main` are
+  direct pushes, there has never been a pull request here, and required checks
+  are not consulted on that path.
+
+  The read command, the conditional fix, and the reason
+  `Publish, sign, and attest image` must be **excluded** from the required set
+  — it only runs on a push to `main`, so requiring it would leave every pull
+  request permanently unsatisfiable — are in
+  [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection). Neither command could
+  be run on the day: the protection endpoint answered `503` throughout
+  GitHub's incident of 17 August 2026, diagnosed rather than assumed, since an
+  ordinary repository read succeeded on the same token while two *different*
+  admin-scope endpoints returned 503, and a permissions failure answers 403 or
+  404. Changing protection is the repository owner's decision, not a
+  contributor's; until it is read, the required set is **unverified** rather
+  than known-good or known-broken.
 - **Issue and pull-request templates.** Neither exists. Worth adding if the
   repository attracts contributions beyond the operator's own.
 
