@@ -255,6 +255,9 @@ jobs:
       - name: Install Podman
         run: sudo apt-get update && sudo apt-get install --yes podman
 
+      # For the pinned-image verification below, not for the build.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
       # Built with Podman here and with Docker on developer machines. Same
       # Containerfile, no engine-specific syntax; if that ever stops being
       # true, this is where it surfaces.
@@ -310,6 +313,50 @@ jobs:
             echo "the references above name a tag without pinning a digest"
             exit 1
           fi
+
+      # The application image is ours, so it gets a stricter check than the
+      # third-party pins above: one digest, present in all three units, and
+      # never a bare tag. The three are one artefact — migrations,
+      # application, and assets ship in a single image so they cannot skew —
+      # and a promotion that updated two of them would reintroduce exactly
+      # the skew that design exists to prevent.
+      - name: The application image is pinned, by digest, in one place
+        run: |
+          set -euo pipefail
+          refs=$(grep -rho '^Image=ghcr\.io/darkflib/sre-tab.*$' deploy/quadlet | sort -u)
+          count=$(printf '%s\n' "$refs" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "the application units do not agree on one image:"
+            grep -rn '^Image=ghcr\.io/darkflib/sre-tab' deploy/quadlet
+            exit 1
+          fi
+          case "$refs" in
+            *@sha256:*) ;;
+            *)
+              echo "the application image is not pinned by digest: $refs"
+              echo "use deploy/scripts/promote.sh; do not hand-edit the pin."
+              exit 1
+              ;;
+          esac
+          echo "${refs#Image=}"
+
+      # Signed is not verified until something verifies it, and this is the
+      # something. Every push and every pull request re-checks that the
+      # digest the units will deploy carries a cosign signature from this
+      # repository's publish job, plus SLSA provenance and an SBOM.
+      #
+      # This is the enforcement point, and it is deliberately here rather
+      # than on the host: podman's containers-policy.json can express a
+      # sigstore identity only as `fulcio.subjectEmail`, which is mandatory,
+      # and a GitHub Actions keyless certificate carries a URI SAN instead —
+      # measured on Debian 13 with podman 5.4.2, not merely read in a man
+      # page. So nothing verifies at container start, here or anywhere. What
+      # this buys is that an unverifiable digest cannot survive in the
+      # repository: it fails the build that would have shipped it.
+      - name: The pinned image is signed, with provenance and an SBOM
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: deploy/scripts/verify-image.sh --require-attestations
 
       - name: Validate the Caddy configuration
         run: |
