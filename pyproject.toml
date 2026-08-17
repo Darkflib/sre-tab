@@ -1,0 +1,119 @@
+[project]
+name = "sre-tab"
+version = "0.1.0"
+description = "Developer News Dashboard — self-hosted, GitHub-authenticated feed aggregator"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    # Web framework and server
+    "fastapi>=0.116",
+    "uvicorn[standard]>=0.35",
+    # Validation and configuration
+    "pydantic>=2.11",
+    "pydantic-settings>=2.10",
+    # Data layer (sync by contract — see AGENTS.md)
+    "sqlalchemy>=2.0.41",
+    "alembic>=1.16",
+    "psycopg[binary]>=3.2",
+    # Observability
+    "structlog>=25.4",
+    # Ingest (Phase 1 agent B)
+    "apscheduler>=3.11,<4",
+    "httpx>=0.28",
+    "feedparser>=6.0.11",
+    "defusedxml>=0.7.1",
+    "nh3>=0.2.21",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.12",
+    "mypy>=1.17",
+    "pylint>=3.3",
+    "bandit[toml]>=1.8",
+    "pip-audit>=2.9",
+    "pre-commit>=4.2",
+    "pytest>=8.4",
+    "pytest-cov>=6.2",
+    "respx>=0.22",
+    "time-machine>=2.16",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# --- Ruff ---------------------------------------------------------------
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["frontend"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # bugbear
+    "SIM", # simplify
+    "C4",  # comprehensions
+    "DTZ", # naive-datetime bans
+    "T20", # no print()
+    "RUF",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Alembic templates use module-level config before imports settle.
+"alembic/*" = ["E402"]
+
+# --- mypy ---------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+exclude = ["^frontend/"]
+
+[[tool.mypy.overrides]]
+module = ["feedparser", "feedparser.*", "apscheduler.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+# Fixtures make full strictness noisy without adding safety.
+disallow_untyped_decorators = false
+
+# --- pytest -------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = ["error::DeprecationWarning:app.*"]
+
+[tool.coverage.run]
+source = ["app"]
+
+# --- Bandit -------------------------------------------------------------
+
+[tool.bandit]
+exclude_dirs = [".venv", "tests", "frontend"]
+
+# --- Pylint (advisory; not part of the blocking gate) -------------------
+
+[tool.pylint.main]
+py-version = "3.12"
+ignore-paths = ["frontend", ".venv", "alembic/versions"]
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "too-few-public-methods",
+]
+max-line-length = 100
