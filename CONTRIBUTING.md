@@ -232,9 +232,16 @@ the `frontend` rename comes back.
 and sets `strict`, so the read is the only record of what was there before.
 
 If the read shows job keys, set the contexts to the check-run names, omitting
-`Publish, sign, and attest image` — that job only runs on a push to `main`,
-so requiring it would leave every pull request permanently unsatisfiable,
-which is the same trap in the opposite direction:
+`Publish, sign, and attest image`. That job carries
+`if: github.event_name == 'push' && github.ref == 'refs/heads/main'`, so it
+never runs on a pull request at all. Whether requiring it would *block* a
+pull request or quietly pass is untested here — GitHub reports a job skipped
+by a job-level `if:` with a `skipped` conclusion, which has historically
+counted as success for a required check, whereas a context that never reports
+at all sits pending forever. With zero pull requests on this repository, that
+path has no data. Exclude it anyway: the cost of excluding it is nothing, and
+the cost if the pessimistic reading is right is a permanently unmergeable
+pull request.
 
 ```sh
 gh api -X PATCH repos/Darkflib/sre-tab/branches/main/protection/required_status_checks \
@@ -257,11 +264,13 @@ permissions failure answers 403 or 404, not 503 on some endpoints and 200 on
 others. So the 503 is the outage, and the read is worth retrying rather than
 treating as a scope problem to work around.
 
-Until someone has read the rule, treat the required set as **unverified** —
-neither known-good nor known-broken. That is a weaker claim than the evidence
-might seem to support, and deliberately so: the mechanism is measured, the
-rule's contents are not, and a document that blurs the two is the thing this
-whole gate exists to prevent.
+So, stated with its provenance rather than as a flat verdict: the rule is
+**known to have been created with job keys**, from the `PUT` response at
+creation time; it is **not known to be unchanged since**, because no read has
+succeeded after that. The expected finding is a broken gate. Confirm it with
+the read before changing anything — not because the evidence is weak, but
+because the fix overwrites the list and the read is the only record of what
+it replaced.
 
 The general rule this leaves behind: **a job rename is a branch-protection
 change**, and the two have to move together.
@@ -324,6 +333,15 @@ actual invariants, and they still hold for human contributors:
 Keep it accurate. If a rule in `AGENTS.md` no longer describes how the code
 works, that is a bug in the same sense a wrong README is — fix the file in
 the commit that changes the behaviour.
+
+One consequence of how this repository was built, worth knowing before you go
+looking: every commit carries the same author and committer, so git records
+*what* was decided and never *who* decided it. Attribute the reasoning in
+these documents to the evidence cited in them, not to whoever appears to have
+written the commit — during the v1 build two contributors were each credited
+with the other's supposed work on the same section, and the metadata could
+not settle it. Where a claim matters, it should carry the measurement that
+supports it. Where it does not carry one, treat it as unsupported.
 
 ## Reporting a security issue
 

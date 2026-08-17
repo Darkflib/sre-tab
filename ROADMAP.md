@@ -236,33 +236,32 @@ tasks.
   GitHub keys a required status check on the check-run **context**, and it is
   measured that every context this repository reports is a job's *display*
   name — `Format, lint, types, security, tests` and friends. Not one job key
-  is ever reported. What nobody has been able to read is the rule itself, so
-  there are two branches and they cost very different amounts. If the rule
-  lists job keys, every required context names something that has never
-  reported and the set enforces nothing while appearing to. If it lists
-  display names, the rule is sound and the only defect is that the `frontend`
-  job was renamed when the Vitest suite was wired into it, so one context is
-  now stale. Nothing would have surfaced either: all 79 commits on `main` are
-  direct pushes, there has never been a pull request here, and required checks
-  are not consulted on that path.
+  is ever reported. The rule itself is known from the other end: it was
+  created through the API, and GitHub's response to that `PUT` echoed the
+  stored contexts back as the five job keys. Those two sets do not intersect,
+  so every required context names something that has never reported, and the
+  set enforces nothing while appearing to. Behind that sits a second, smaller
+  defect: the `frontend` job was renamed when the Vitest suite was wired into
+  it, which matters once the contexts are corrected. Nothing would have
+  surfaced either — all 79 commits on `main` are direct pushes, there has
+  never been a pull request here, and required checks are not consulted on
+  that path.
 
-  The read command, the conditional fix, and the reason
-  `Publish, sign, and attest image` must be **excluded** from the required set
-  — it only runs on a push to `main`, so requiring it would leave every pull
-  request permanently unsatisfiable — are in
+  The read command, the fix, and the reason `Publish, sign, and attest image`
+  must be **excluded** from the required set — it never runs on a pull
+  request, and whether requiring a job skipped that way blocks the request or
+  quietly passes is untested here, so it is excluded on the asymmetry rather
+  than on a known deadlock — are in
   [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection). Neither command could
   be run on the day: the protection endpoint answered `503` throughout
   GitHub's incident of 17 August 2026, diagnosed rather than assumed, since an
   ordinary repository read succeeded on the same token while two *different*
   admin-scope endpoints returned 503, and a permissions failure answers 403 or
   404. Changing protection is the repository owner's decision, not a
-  contributor's. The required set is **known to be broken**, not merely
-  unverified: the rule was created through the API and GitHub's response to
-  that `PUT` echoed back the stored contexts as the five job keys, which do
-  not intersect the display names every check-run actually reports. The only
-  open question is whether anything has edited it since — impossible through
-  the API while it was returning 503, but possible through the web UI, so
-  read before writing.
+  contributor's. The one thing still open is whether anything has edited the
+  rule since it was created — impossible through the API while it answered
+  503, but possible through the web UI — so read before writing, and keep the
+  output, because the fix replaces the context list wholesale.
 - **Issue and pull-request templates.** Neither exists. Worth adding if the
   repository attracts contributions beyond the operator's own.
 
