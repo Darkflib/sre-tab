@@ -232,6 +232,17 @@ tasks.
   adding one is the owner's call and is being handled separately; it is
   recorded here so it is not rediscovered as a surprise by the first person
   who wants to use the code.
+- **Confirm branch protection still names the checks it thinks it does.** The
+  `frontend` job was renamed when the Vitest suite was wired into it, and
+  GitHub keys required status checks on a job's *display* name rather than its
+  key in the workflow. If the rule on `main` lists display names, it now names
+  a context that will never report — which either blocks every pull request on
+  a check that cannot arrive, or silently stops enforcing the job. One command
+  with admin scope settles it, and it is written up in
+  [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection). It could not be run on
+  the day: the protection endpoint answered `503` throughout GitHub's incident
+  of 17 August 2026, and a 503 is indistinguishable from a permissions
+  failure, so this is open rather than cleared.
 - **Issue and pull-request templates.** Neither exists. Worth adding if the
   repository attracts contributions beyond the operator's own.
 

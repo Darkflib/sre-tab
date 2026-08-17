@@ -160,6 +160,37 @@ and report on something other than the code under change, so a CVE published
 this morning or a registry hiccup should not hide the test results behind the
 same red cross.
 
+### Renaming a job can silently break a required check
+
+The names in that table are the job *keys* in `ci.yml`. GitHub keys a required
+status check on the check-run **context**, which for Actions is the job's
+`name:` — its display name, not its key. So renaming a job can break branch
+protection without breaking anything else: the old context never reports
+again, and depending on how the rule is written either every pull request
+waits forever for a check that will never arrive, or the job quietly stops
+being enforced. Neither shows up on a push to `main`, which is where this
+would be noticed if it were noticeable at all.
+
+This is not hypothetical here. The `frontend` job was renamed from
+`Frontend lint, types, build` to `Frontend lint, types, tests, build` when the
+Vitest suite was wired into it. **Whether that broke the rule is unverified**,
+because the protection endpoint answered `503` throughout GitHub's incident of
+17 August 2026 and it has not been checked since. One command settles it, and
+it needs admin scope on the repository:
+
+```sh
+gh api repos/Darkflib/sre-tab/branches/main/protection \
+  --jq '.required_status_checks.contexts'
+```
+
+If that returns display names, the rule still names the old string and needs
+updating. If it returns job keys, nothing is wrong and the table above is
+right as written. Until someone runs it, treat the required set as *probably*
+enforced rather than known to be.
+
+The general rule this leaves behind: **a job rename is a branch-protection
+change**, and the two have to move together.
+
 Two more jobs run and are **not** in the required set, because both are new
 and a required check should have a run history before it can block a merge:
 `sast` in `ci.yml`, and the `quickstart` and `links` jobs in `docs.yml`. Both
