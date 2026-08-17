@@ -1,0 +1,49 @@
+# Build-context exclusions.
+#
+# One file serves both engines: Docker reads .dockerignore, and
+# Buildah/Podman fall back to it when no .containerignore is present. Keeping
+# a single list is deliberate — two copies drift, and a drifted ignore file
+# is how a .env or a node_modules tree ends up inside an image.
+
+# Version control and CI
+.git
+.gitignore
+.github
+
+# Secrets and local configuration. Nothing matching .env* belongs in an
+# image; the deployment supplies configuration at run time.
+.env
+.env.*
+
+# Python tooling caches and virtualenvs
+.venv
+venv
+**/__pycache__
+**/*.py[cod]
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.coverage
+coverage.xml
+htmlcov
+
+# Node: the frontend stage runs `npm ci` from the lockfile, so a host
+# node_modules would only shadow it with the wrong platform's binaries.
+**/node_modules
+frontend/dist
+frontend/.vite
+
+# Local databases
+*.db
+*.sqlite3
+
+# Not needed at run time
+tests
+deploy
+alembic/README
+
+# Editors and OS
+.idea
+.vscode
+**/.DS_Store
+*.swp
