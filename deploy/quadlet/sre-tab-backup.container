@@ -1,0 +1,46 @@
+[Unit]
+Description=Back up the Developer News Dashboard database
+Requires=sre-tab-db.service
+After=sre-tab-db.service
+
+[Container]
+ContainerName=sre-tab-backup
+# The same pinned server image, so pg_dump's version always matches the
+# server it is dumping. A newer client can read an older server, but the
+# reverse silently fails on a major upgrade — pinning both to one line
+# removes the question.
+Image=docker.io/library/postgres:18-trixie@sha256:06cad38a5d9f5d24b4d83d86def30795d5e4b757fedbf5281172b576dedcd941
+Pull=missing
+Network=sre-tab.network
+
+Volume=/srv/sre-tab/backups:/backups:rw
+Volume=/etc/sre-tab/backup.sh:/usr/local/bin/sre-tab-backup:ro
+Exec=/usr/local/bin/sre-tab-backup
+
+Environment=PGHOST=sre-tab-db
+Environment=PGUSER=sretab
+Environment=PGDATABASE=sretab
+Environment=BACKUP_DIR=/backups
+Environment=BACKUP_KEEP_DAYS=14
+# PGPASSWORD from a podman secret rather than the environment file: the
+# backup job is the one place outside the database container that needs the
+# password, and it should not be readable in /etc.
+Secret=sre-tab-postgres-password,type=env,target=PGPASSWORD
+
+ReadOnly=true
+Tmpfs=/tmp:rw,nosuid,nodev,size=64M
+NoNewPrivileges=true
+DropCapability=all
+# uid 999 is `postgres` in this image. pg_dump needs no privilege beyond
+# writing to /backups, which install.sh creates owned by 999:999.
+User=999
+Group=999
+LogDriver=none
+PidsLimit=64
+
+[Service]
+Type=oneshot
+MemoryMax=512M
+# A dump of a v1-sized database is seconds; the hour is headroom for a host
+# under load rather than an expectation.
+TimeoutStartSec=1h

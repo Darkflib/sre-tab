@@ -1,0 +1,17 @@
+[Unit]
+Description=Developer News Dashboard container network
+
+[Network]
+Driver=bridge
+# Fixed subnet, as on orbit-egress.network, and for the same two reasons: the
+# containers reach each other by name over a network nothing else shares, and
+# the range is stable enough for a host firewall rule to act on.
+#
+# 10.89.61.0/24 deliberately avoids orbit-data's 10.89.60.0/24 so both stacks
+# can run on one host. Change it if it collides with something local.
+#
+# Egress from this network is the feed fetcher's, which is the one component
+# that talks to the internet at all. See deploy/README.md if that traffic
+# needs to leave by a specific source address.
+Subnet=10.89.61.0/24
+Gateway=10.89.61.1

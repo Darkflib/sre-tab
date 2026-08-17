@@ -1,0 +1,61 @@
+[Unit]
+Description=Developer News Dashboard front door
+After=network-online.target
+Wants=network-online.target
+# Assets must be in the volume before Caddy serves from it. The application
+# is a Wants= rather than a Requires= deliberately: if the API is down, Caddy
+# should still serve the SPA shell and return 502 on /api/*, which is a far
+# better failure than a dead port.
+Requires=sre-tab-assets.service
+After=sre-tab-assets.service
+Wants=sre-tab.service
+After=sre-tab.service
+
+[Container]
+ContainerName=sre-tab-web
+Image=docker.io/library/caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+# Version-pinned, so a restart does not depend on Docker Hub. Upgrades happen
+# by changing the pin — the same policy as orbit-data-web.container.
+Pull=missing
+Network=sre-tab.network
+# Fixed address so the application can name exactly one trusted proxy in
+# FORWARDED_ALLOW_IPS (see deploy/app.env.example).
+IP=10.89.61.20
+Exec=caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+
+Volume=/etc/sre-tab/Caddyfile:/etc/caddy/Caddyfile:ro
+Volume=sre-tab-assets.volume:/srv/www:ro
+
+# Loopback only. TLS is terminated by the host's existing proxy or load
+# balancer; change this deliberately if Caddy must be directly reachable.
+PublishPort=127.0.0.1:8080:8080
+
+ReadOnly=true
+# Caddy writes an autosave and a storage-clean stamp under $XDG_CONFIG_HOME
+# and $XDG_DATA_HOME even with `admin off` and `auto_https off`. Without
+# these two it still serves correctly, but logs a storage-clean error at
+# every cleaning pass, which is recurring noise in the journal for no
+# benefit. mode=1777 because the tmpfs would otherwise be root-owned and uid
+# 65532 could not write to it. Verified against caddy:2.11.4-alpine.
+Tmpfs=/data:rw,nosuid,nodev,mode=1777
+Tmpfs=/config:rw,nosuid,nodev,mode=1777
+NoNewPrivileges=true
+DropCapability=all
+# The official Caddy binary carries cap_net_bind_service=ep. Keep that
+# capability in the bounding set or execve(2) fails before Caddy can start,
+# even though :8080 needs no privilege.
+AddCapability=NET_BIND_SERVICE
+User=65532
+Group=65532
+LogDriver=journald
+PidsLimit=128
+
+[Service]
+Restart=always
+RestartSec=5s
+MemoryMax=256M
+TimeoutStartSec=5m
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target

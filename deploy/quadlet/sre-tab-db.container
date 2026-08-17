@@ -1,0 +1,74 @@
+[Unit]
+Description=Developer News Dashboard PostgreSQL
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=sre-tab-db
+Image=docker.io/library/postgres:18-trixie@sha256:06cad38a5d9f5d24b4d83d86def30795d5e4b757fedbf5281172b576dedcd941
+# Version-pinned, so a restart must not depend on Docker Hub being
+# reachable. Upgrades happen by changing the pin, deliberately, with the
+# major-version note in deploy/README.md read first.
+Pull=missing
+Network=sre-tab.network
+# postgres:18 moved PGDATA to /var/lib/postgresql/18/docker and declares the
+# volume one level up at /var/lib/postgresql. Mounting the parent is
+# therefore correct here and would have been wrong on postgres:17 — check
+# this line before any major-version bump.
+Volume=sre-tab-db.volume:/var/lib/postgresql:rw
+
+# No PublishPort. The database is reachable only from sre-tab.network; there
+# is no path to it from the host or the outside world.
+
+Environment=POSTGRES_USER=sretab
+Environment=POSTGRES_DB=sretab
+Environment=POSTGRES_INITDB_ARGS=--data-checksums
+# Podman secret, created by deploy/scripts/create-secrets.sh. The password
+# never appears in this file, in `podman inspect`, or in the journal.
+Secret=sre-tab-postgres-password,type=env,target=POSTGRES_PASSWORD
+
+ReadOnly=true
+# The only writable paths postgres needs outside its data volume: the unix
+# socket directory and scratch space.
+Tmpfs=/tmp:rw,nosuid,nodev,mode=1777
+Tmpfs=/run:rw,nosuid,nodev
+Tmpfs=/var/run/postgresql:rw,nosuid,nodev,mode=0755
+NoNewPrivileges=true
+DropCapability=all
+# The official entrypoint starts as root to create and chown PGDATA, then
+# drops to uid 999 with gosu for the server itself. These five are what that
+# sequence needs and nothing more; the postmaster runs unprivileged.
+# No User= here for the same reason — set one and initdb cannot prepare a
+# fresh volume.
+AddCapability=CHOWN DAC_OVERRIDE FOWNER SETGID SETUID
+
+# Readiness, not liveness: pg_isready answers only once the postmaster is
+# accepting connections. Paired with Notify=healthy below, this is what makes
+# "the app starts after the database is genuinely up" true rather than hoped
+# for — systemd holds sre-tab-migrate.service until this passes.
+HealthCmd=pg_isready --quiet --username=sretab --dbname=sretab
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=12
+HealthStartPeriod=10s
+# Requires podman 5.0 or newer. Without it the unit reports "started" the
+# moment the container process exists, and migrations race initdb.
+Notify=healthy
+
+# Long-running, so `podman logs sre-tab-db` is worth having — the same
+# reasoning as orbit-data-web.container.
+LogDriver=journald
+PidsLimit=256
+
+[Service]
+Restart=always
+RestartSec=5s
+MemoryMax=1G
+# Generous: a first start runs initdb on an empty volume.
+TimeoutStartSec=5m
+# The image sets STOPSIGNAL SIGINT, which is postgres' fast shutdown. Podman
+# honours it, so this is a real drain window and not a wait for SIGKILL.
+TimeoutStopSec=1m
+
+[Install]
+WantedBy=multi-user.target

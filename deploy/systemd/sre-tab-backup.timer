@@ -1,0 +1,16 @@
+[Unit]
+Description=Schedule Developer News Dashboard database backups
+
+[Timer]
+# Daily, as the PRD requires. 03:22 rather than 03:00 so this does not land
+# on the same minute as every other cron-shaped job on the host.
+OnCalendar=*-*-* 03:22:00 UTC
+RandomizedDelaySec=20m
+# Catch up after downtime. A host that was off overnight should take its
+# backup on the way back up, not wait another day.
+Persistent=true
+AccuracySec=1m
+Unit=sre-tab-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,91 @@
+# Same-origin front door: Caddy serves the built frontend and reverse-proxies
+# /api/ to FastAPI, which is the split the PRD sanctions ("The same origin
+# serves the built frontend and API, or a reverse proxy routes /api/ to
+# FastAPI"). The app process cannot serve the assets itself — app/main.py
+# mounts no StaticFiles and is frozen Phase 0 property — so the proxy split is
+# the only route to a single origin.
+#
+# Listens on :8080 inside the container, published to 127.0.0.1 only. TLS is
+# terminated by the host's existing proxy, exactly as in orbit-data.
+{
+	admin off
+	auto_https off
+}
+
+# --------------------------------------------------------------------------
+# Response headers for statically served files.
+#
+# SecurityHeadersMiddleware in app/middleware.py only decorates responses
+# FastAPI emits. Everything Caddy serves from disk — the HTML document above
+# all, which is where CSP is actually enforced — never reaches that
+# middleware, so these are not a duplicate of the app's headers: they cover
+# the paths the app never sees. Responses proxied to FastAPI deliberately get
+# none of this; they arrive with the app's own headers and pass through
+# untouched.
+#
+# The values below are a verbatim mirror of _CSP and _STATIC_HEADERS in
+# app/middleware.py. deploy/scripts/check-header-parity.sh compares the two
+# and CI fails on drift, so this cannot rot silently. Do not edit the block
+# between the markers without changing the app to match.
+# --------------------------------------------------------------------------
+(security_headers) {
+	# --- BEGIN mirrored from app/middleware.py ---
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		Permissions-Policy "camera=(), geolocation=(), microphone=()"
+	}
+	# --- END mirrored from app/middleware.py ---
+}
+
+:8080 {
+	encode zstd gzip
+
+	# FastAPI owns /api/* (including /api/v1/openapi.json) and /docs when
+	# DOCS_ENABLED is true. No header directive applies here: the app's own
+	# CSP and frame protections travel with the response, and the /docs CSP
+	# is deliberately different from the application one.
+	@api path /api/* /docs
+	handle @api {
+		reverse_proxy sre-tab-app:8000 {
+			# Trip the upstream's readiness rather than blocking a client
+			# for the default two minutes.
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+			}
+		}
+	}
+
+	# Content-hashed bundles. Cached hard and permanently, and served
+	# strictly as real files: a miss must 404 rather than fall through to
+	# index.html, which would hand the browser an HTML document labelled as
+	# JavaScript.
+	handle /assets/* {
+		root * /srv/www
+		header Cache-Control "public, max-age=31536000, immutable"
+		import security_headers
+		file_server
+	}
+
+	# Everything else: the SPA document and the handful of verbatim files
+	# from frontend/public. Client-side routes (/, /onboarding, /feed,
+	# /bookmarks, /settings) resolve to index.html.
+	#
+	# no-store, not just no-cache: index.html and theme-init.js are the two
+	# files that are *not* content-hashed, so a cached copy is exactly how a
+	# deployment lands and nobody sees it.
+	handle {
+		root * /srv/www
+		header Cache-Control "no-store"
+		import security_headers
+		try_files {path} /index.html
+		file_server
+	}
+
+	log
+}

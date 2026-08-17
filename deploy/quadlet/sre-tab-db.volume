@@ -1,0 +1,9 @@
+[Unit]
+Description=Developer News Dashboard PostgreSQL data
+
+[Volume]
+# Named explicitly rather than accepting quadlet's systemd-* prefix: the
+# backup and restore procedures in deploy/README.md name this volume on the
+# podman command line, and a predictable name is what makes those commands
+# copyable rather than host-specific.
+VolumeName=sre-tab-db

@@ -1,0 +1,40 @@
+[Unit]
+Description=Publish Developer News Dashboard frontend assets
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=sre-tab-assets
+Image=ghcr.io/darkflib/sre-tab:latest
+Pull=newer
+Volume=sre-tab-assets.volume:/srv/www:rw
+
+# The built frontend ships inside the application image at /opt/sre-tab/web;
+# Caddy runs from a different image and cannot read it there. This oneshot is
+# the bridge. Keeping the assets in the application image rather than baking a
+# second Caddy image is what makes API/asset skew impossible — there is one
+# artefact, one digest, one pull.
+#
+# The replace is destructive rather than an atomic symlink swap (orbit-data's
+# releases/ pattern), because the deployment procedure restarts Caddy
+# immediately afterwards anyway: the swap would remove a gap the restart
+# reintroduces. Reach for the symlink pattern if this ever needs to be
+# zero-downtime.
+#
+# No `$` in this line — see the note in sre-tab-migrate.container.
+Exec=sh -ec 'find /srv/www -mindepth 1 -delete; cp -a /opt/sre-tab/web/. /srv/www/'
+
+ReadOnly=true
+Tmpfs=/tmp:rw,nosuid,nodev,size=16M
+NoNewPrivileges=true
+DropCapability=all
+User=10001
+Group=10001
+LogDriver=none
+PidsLimit=64
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+MemoryMax=256M
+TimeoutStartSec=5m

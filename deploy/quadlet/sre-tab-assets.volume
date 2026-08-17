@@ -1,0 +1,8 @@
+[Unit]
+Description=Developer News Dashboard built frontend assets
+
+[Volume]
+# Populated from the application image by sre-tab-assets.service and read by
+# Caddy. Disposable: nothing here is state, and deleting it costs one restart
+# of sre-tab-assets.service.
+VolumeName=sre-tab-assets

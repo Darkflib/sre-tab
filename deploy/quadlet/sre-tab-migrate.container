@@ -1,0 +1,50 @@
+[Unit]
+Description=Apply Developer News Dashboard database migrations
+# The database must be accepting connections, not merely running: that is
+# what sre-tab-db.container's Notify=healthy buys.
+Requires=sre-tab-db.service
+After=sre-tab-db.service
+
+[Container]
+ContainerName=sre-tab-migrate
+Image=ghcr.io/darkflib/sre-tab:latest
+Pull=newer
+Network=sre-tab.network
+EnvironmentFile=/etc/sre-tab/app.env
+Secret=sre-tab-database-url,type=env,target=DATABASE_URL
+
+# `alembic upgrade head` in a unit of its own, ordered before the app, is the
+# answer to "migrations must not race". A single oneshot holds the whole
+# schema change; the app unit cannot start until it has exited zero. Even if
+# the app is scaled later, systemd runs this once per host transaction rather
+# than once per replica.
+#
+# The retry loop is not a substitute for the ordering above — it covers the
+# narrower case where the database restarts underneath a migration that has
+# already been ordered correctly.
+# No `$` anywhere in this line, deliberately: quadlet emits Exec= into
+# ExecStart=, where systemd expands $VAR and ${VAR} against the unit's own
+# environment. A shell variable written here would be replaced with the empty
+# string before /bin/sh ever saw it. Hence the literal retry list.
+Exec=sh -ec 'for attempt in 1 2 3 4 5 6 7 8 9 10; do alembic upgrade head && exit 0; sleep 3; done; exit 1'
+
+ReadOnly=true
+Tmpfs=/tmp:rw,nosuid,nodev,size=64M
+NoNewPrivileges=true
+DropCapability=all
+User=10001
+Group=10001
+# systemd already captures the container's stdout under this unit; podman's
+# journald driver would write a second copy of every line.
+LogDriver=none
+PidsLimit=64
+
+[Service]
+Type=oneshot
+# Keeps the unit "active (exited)" so the app's Requires= stays satisfied
+# after it finishes. It also means a plain restart of the app does NOT re-run
+# migrations, which is the intent: an upgrade restarts this unit explicitly.
+# See the upgrade procedure in deploy/README.md.
+RemainAfterExit=yes
+MemoryMax=512M
+TimeoutStartSec=10m

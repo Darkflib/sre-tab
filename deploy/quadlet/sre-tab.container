@@ -1,0 +1,66 @@
+[Unit]
+Description=Developer News Dashboard application
+After=network-online.target
+Wants=network-online.target
+# The ordering that acceptance criterion 6 rests on: PostgreSQL accepting
+# connections, then migrations applied, then the app serves traffic. Requires=
+# means a failure in either propagates here instead of leaving the app up
+# against a schema it does not match.
+Requires=sre-tab-db.service sre-tab-migrate.service
+After=sre-tab-db.service sre-tab-migrate.service
+
+[Container]
+ContainerName=sre-tab-app
+Image=ghcr.io/darkflib/sre-tab:latest
+# Floating tag, so a restart picks up the current build. Pin Image= to a
+# :sha-<commit> tag instead when upgrades need to be deliberate — see the
+# upgrade procedure in deploy/README.md.
+Pull=newer
+Network=sre-tab.network
+
+# Non-secret configuration, installed from deploy/app.env.example and edited
+# in place by the operator.
+EnvironmentFile=/etc/sre-tab/app.env
+
+# Everything genuinely secret arrives as a podman secret, never inline in this
+# file and never on a command line. DATABASE_URL is a secret in its own right
+# because it carries the database password in the URL.
+Secret=sre-tab-database-url,type=env,target=DATABASE_URL
+Secret=sre-tab-github-client-secret,type=env,target=GITHUB_CLIENT_SECRET
+Secret=sre-tab-session-secret,type=env,target=SESSION_SECRET
+
+# No PublishPort: the app is reachable only from sre-tab.network, and only
+# sre-tab-web (Caddy) is on the far side of a published port.
+
+ReadOnly=true
+Tmpfs=/tmp:rw,nosuid,nodev,size=64M
+NoNewPrivileges=true
+DropCapability=all
+User=10001
+Group=10001
+
+# No HealthCmd= here on purpose. The image carries its own HEALTHCHECK
+# against /api/v1/healthz (see Containerfile) and podman honours it, so there
+# is exactly one definition to keep correct — and no shell quoting to get
+# wrong in a unit file that cannot be tested on a developer's macOS host.
+#
+# The dependency is real, though: Notify=healthy below waits for that
+# healthcheck, so an image built in OCI format (which drops HEALTHCHECK)
+# would make this unit hang until TimeoutStartSec. CI asserts the healthcheck
+# survives `podman build --format docker` for exactly this reason.
+Notify=healthy
+
+LogDriver=journald
+PidsLimit=256
+
+[Service]
+Restart=always
+RestartSec=5s
+MemoryMax=768M
+TimeoutStartSec=5m
+# uvicorn is PID 1 and handles SIGTERM, so this is a drain window rather than
+# a countdown to SIGKILL.
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target

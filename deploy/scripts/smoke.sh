@@ -1,0 +1,253 @@
+#!/bin/sh
+#
+# Deployment smoke test: fresh PostgreSQL, migrations, health checks, then a
+# backup and a restore verified end to end.
+#
+# This is acceptance criterion 6 ("the app starts with documented environment
+# variables, runs migrations, and passes health checks on a fresh PostgreSQL
+# deployment") executed rather than asserted, plus the PRD's "test restore
+# before release" gate.
+#
+# It runs the containers with the same flags the quadlets set — read-only
+# root filesystems, dropped capabilities, the same non-root UIDs, the same
+# tmpfs mounts — so those choices are exercised even though systemd is not
+# involved. What it does NOT cover is quadlet generation, unit ordering, and
+# podman secrets; CI validates unit generation separately with
+# podman-system-generator --dryrun, and the secret plumbing only exists under
+# podman on the deployment host.
+#
+# Engine-agnostic on purpose: CONTAINER_ENGINE=docker runs it on a developer
+# machine, and it defaults to podman for CI and the deployment host.
+#
+#   CONTAINER_ENGINE=docker SRE_TAB_IMAGE=sre-tab:dev deploy/scripts/smoke.sh
+#
+# Run it on a host that is not already running the stack: it uses the real
+# container names so that the Caddyfile's upstream is tested verbatim.
+
+set -eu
+
+ENGINE=${CONTAINER_ENGINE:-podman}
+IMAGE=${SRE_TAB_IMAGE:-sre-tab:smoke}
+PORT=${SMOKE_PORT:-18080}
+
+PG_IMAGE=docker.io/library/postgres:18-trixie@sha256:06cad38a5d9f5d24b4d83d86def30795d5e4b757fedbf5281172b576dedcd941
+CADDY_IMAGE=docker.io/library/caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+
+NET=sre-tab-smoke
+ASSETS_VOL=sre-tab-smoke-assets
+DB_VOL=sre-tab-smoke-db
+DB_PASSWORD=smoke-only-not-a-secret
+DATABASE_URL="postgresql+psycopg://sretab:$DB_PASSWORD@sre-tab-db:5432/sretab"
+
+repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
+workdir=$(mktemp -d)
+backups="$workdir/backups"
+mkdir -p "$backups"
+# The backup container runs as uid 999 and writes here.
+chmod 0777 "$workdir" "$backups"
+
+step() { printf '\n=== %s\n' "$*"; }
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+
+cleanup() {
+    status=$?
+    if [ "$status" -ne 0 ]; then
+        printf '\n--- container logs (failure) ---\n' >&2
+        for c in sre-tab-db sre-tab-app sre-tab-web; do
+            printf '\n[%s]\n' "$c" >&2
+            "$ENGINE" logs "$c" 2>&1 | tail -40 >&2 || true
+        done
+    fi
+    "$ENGINE" rm --force sre-tab-web sre-tab-app sre-tab-db >/dev/null 2>&1 || true
+    "$ENGINE" volume rm --force "$ASSETS_VOL" "$DB_VOL" >/dev/null 2>&1 || true
+    "$ENGINE" network rm --force "$NET" >/dev/null 2>&1 || true
+    rm -rf "$workdir"
+    exit "$status"
+}
+trap cleanup EXIT INT TERM
+
+psql_db() {
+    "$ENGINE" exec --env "PGPASSWORD=$DB_PASSWORD" sre-tab-db \
+        psql --quiet --no-psqlrc --tuples-only --no-align \
+        --username sretab --dbname sretab "$@"
+}
+
+step "Preparing $NET"
+"$ENGINE" rm --force sre-tab-web sre-tab-app sre-tab-db >/dev/null 2>&1 || true
+"$ENGINE" network rm --force "$NET" >/dev/null 2>&1 || true
+"$ENGINE" volume rm --force "$ASSETS_VOL" "$DB_VOL" >/dev/null 2>&1 || true
+"$ENGINE" network create "$NET" >/dev/null
+"$ENGINE" volume create "$ASSETS_VOL" >/dev/null
+"$ENGINE" volume create "$DB_VOL" >/dev/null
+
+step "Starting PostgreSQL on a fresh volume"
+# Flags mirror deploy/quadlet/sre-tab-db.container.
+"$ENGINE" run --detach --name sre-tab-db --network "$NET" \
+    --volume "$DB_VOL:/var/lib/postgresql:rw" \
+    --env POSTGRES_USER=sretab \
+    --env POSTGRES_DB=sretab \
+    --env POSTGRES_INITDB_ARGS=--data-checksums \
+    --env "POSTGRES_PASSWORD=$DB_PASSWORD" \
+    --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+    --tmpfs /run:rw,nosuid,nodev \
+    --tmpfs /var/run/postgresql:rw,nosuid,nodev,mode=0755 \
+    --security-opt=no-new-privileges \
+    --cap-drop all \
+    --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+    --cap-add SETGID --cap-add SETUID \
+    --pids-limit 256 \
+    "$PG_IMAGE" >/dev/null
+
+attempt=0
+until "$ENGINE" exec sre-tab-db pg_isready --quiet --username=sretab --dbname=sretab; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -ge 60 ] && fail "PostgreSQL never accepted connections"
+    sleep 1
+done
+echo "PostgreSQL is accepting connections (read-only rootfs, 5 capabilities)."
+
+step "Running migrations"
+# The same command deploy/quadlet/sre-tab-migrate.container runs.
+"$ENGINE" run --rm --name sre-tab-migrate --network "$NET" \
+    --env "DATABASE_URL=$DATABASE_URL" \
+    --read-only --tmpfs /tmp:rw,nosuid,nodev,size=64M \
+    --security-opt=no-new-privileges --cap-drop all \
+    --user 10001:10001 --pids-limit 64 \
+    "$IMAGE" \
+    sh -ec 'for attempt in 1 2 3 4 5 6 7 8 9 10; do alembic upgrade head && exit 0; sleep 3; done; exit 1'
+
+revision=$(psql_db --command "SELECT version_num FROM alembic_version" | tr -d ' ')
+[ -n "$revision" ] || fail "alembic_version is empty after upgrade head"
+tables=$(psql_db --command \
+    "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" | tr -d ' ')
+echo "Schema at revision $revision with $tables tables in public."
+[ "$tables" -ge 12 ] || fail "expected at least 12 tables, found $tables"
+
+step "Publishing frontend assets"
+"$ENGINE" run --rm --network "$NET" \
+    --volume "$ASSETS_VOL:/srv/www:rw" \
+    --read-only --tmpfs /tmp:rw,nosuid,nodev,size=16M \
+    --security-opt=no-new-privileges --cap-drop all \
+    --user 10001:10001 --pids-limit 64 \
+    "$IMAGE" \
+    sh -ec 'find /srv/www -mindepth 1 -delete; cp -a /opt/sre-tab/web/. /srv/www/'
+
+step "Starting the application"
+"$ENGINE" run --detach --name sre-tab-app --network "$NET" \
+    --env "DATABASE_URL=$DATABASE_URL" \
+    --env "SESSION_SECRET=smoke-only-not-a-secret" \
+    --env "APP_BASE_URL=http://127.0.0.1:$PORT" \
+    --env "LOG_JSON=true" \
+    --env "DOCS_ENABLED=false" \
+    --env "SOURCE_REFRESH_ENABLED=false" \
+    --read-only --tmpfs /tmp:rw,nosuid,nodev,size=64M \
+    --security-opt=no-new-privileges --cap-drop all \
+    --user 10001:10001 --pids-limit 256 \
+    "$IMAGE" >/dev/null
+
+step "Starting Caddy in front of it"
+"$ENGINE" run --detach --name sre-tab-web --network "$NET" \
+    --volume "$repo_root/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+    --volume "$ASSETS_VOL:/srv/www:ro" \
+    --publish "127.0.0.1:$PORT:8080" \
+    --read-only \
+    --tmpfs /data:rw,nosuid,nodev,mode=1777 \
+    --tmpfs /config:rw,nosuid,nodev,mode=1777 \
+    --security-opt=no-new-privileges \
+    --cap-drop all --cap-add NET_BIND_SERVICE \
+    --user 65532:65532 --pids-limit 128 \
+    "$CADDY_IMAGE" \
+    caddy run --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
+
+step "Health check through the proxy"
+attempt=0
+until curl --fail --silent "http://127.0.0.1:$PORT/api/v1/healthz" >/dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -ge 60 ] && fail "/api/v1/healthz never returned 200 through Caddy"
+    sleep 1
+done
+curl --silent "http://127.0.0.1:$PORT/api/v1/healthz"
+echo
+
+step "Front-door behaviour"
+check_status() {
+    got=$(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:$PORT$1")
+    [ "$got" = "$2" ] || fail "$1 returned $got, expected $2"
+    echo "  $1 -> $got"
+}
+check_status /            200
+check_status /feed        200
+check_status /theme-init.js 200
+check_status /assets/definitely-not-here.js 404
+
+# The security headers the app cannot set on statically served files.
+headers=$(curl --silent --dump-header - --output /dev/null "http://127.0.0.1:$PORT/")
+for want in 'Content-Security-Policy' 'X-Content-Type-Options' 'X-Frame-Options' \
+            'Referrer-Policy' 'Cross-Origin-Opener-Policy' 'Permissions-Policy'; do
+    printf '%s' "$headers" | grep -qi "^$want:" || fail "$want missing on the SPA document"
+done
+printf '%s' "$headers" | grep -qi '^Cache-Control: no-store' \
+    || fail "index.html is not no-store"
+echo "  security headers and no-store present on /"
+
+# ...and that the proxied API keeps the app's own headers rather than Caddy's.
+api_headers=$(curl --silent --dump-header - --output /dev/null "http://127.0.0.1:$PORT/api/v1/healthz")
+printf '%s' "$api_headers" | grep -qi '^Content-Security-Policy:' \
+    || fail "the app's CSP did not survive the proxy path"
+printf '%s' "$api_headers" | grep -qi '^Cache-Control: no-store' \
+    && fail "Caddy leaked its static Cache-Control onto a proxied response"
+echo "  app-set headers survive the proxy, static headers do not leak onto it"
+
+step "Backup"
+# A row that only exists in the dump, so the restore proves data round-trips
+# rather than merely rebuilding an empty schema.
+psql_db --command \
+    "CREATE TABLE smoke_marker (id int primary key, note text); \
+     INSERT INTO smoke_marker VALUES (1, 'present-before-backup')" >/dev/null
+
+"$ENGINE" run --rm --network "$NET" \
+    --volume "$backups:/backups:rw" \
+    --volume "$repo_root/deploy/scripts/backup.sh:/usr/local/bin/sre-tab-backup:ro" \
+    --env PGHOST=sre-tab-db --env PGUSER=sretab --env PGDATABASE=sretab \
+    --env "PGPASSWORD=$DB_PASSWORD" \
+    --env BACKUP_DIR=/backups --env BACKUP_KEEP_DAYS=14 \
+    --read-only --tmpfs /tmp:rw,nosuid,nodev,size=64M \
+    --security-opt=no-new-privileges --cap-drop all \
+    --user 999:999 --pids-limit 64 \
+    "$PG_IMAGE" /usr/local/bin/sre-tab-backup
+
+dump=$(find "$backups" -maxdepth 1 -name 'sretab-*.dump' | head -1)
+[ -n "$dump" ] || fail "backup.sh produced no dump"
+[ -f "$dump.sha256" ] || fail "backup.sh produced no checksum sidecar"
+
+step "Destroying the data the restore must bring back"
+psql_db --command "DROP TABLE smoke_marker" >/dev/null
+psql_db --command "SELECT to_regclass('public.smoke_marker') IS NULL" | grep -q t \
+    || fail "smoke_marker survived the drop"
+echo "  smoke_marker dropped"
+
+step "Restore"
+# The operator-facing script, unmodified, on the path an operator would take.
+PGPASSWORD="$DB_PASSWORD" "$repo_root/deploy/scripts/restore.sh" \
+    --engine "$ENGINE" --image "$PG_IMAGE" --network "$NET" \
+    --no-systemd --yes "$dump"
+
+step "Verifying the restore"
+note=$(psql_db --command "SELECT note FROM smoke_marker WHERE id = 1" | tr -d ' ')
+[ "$note" = "present-before-backup" ] || fail "smoke_marker did not come back: '$note'"
+restored_revision=$(psql_db --command "SELECT version_num FROM alembic_version" | tr -d ' ')
+[ "$restored_revision" = "$revision" ] || \
+    fail "alembic_version changed across the restore: $revision -> $restored_revision"
+echo "  smoke_marker restored, schema still at $restored_revision"
+
+step "Application recovers against the restored database"
+attempt=0
+until curl --fail --silent "http://127.0.0.1:$PORT/api/v1/healthz" >/dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -ge 60 ] && fail "the app did not become healthy again after the restore"
+    sleep 1
+done
+echo "  /api/v1/healthz is 200 again"
+
+printf '\nDeployment smoke test passed.\n'
