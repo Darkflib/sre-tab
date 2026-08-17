@@ -234,6 +234,21 @@ The outer proxy must therefore:
 `sre-tab-web.container` gives Caddy. It is the only host uvicorn will believe
 about forwarded headers.
 
+### Two settings that need a frontend rebuild, not a restart
+
+The frontend reads the CSRF cookie and header names at build time, defaulting
+to the same values as `.env.example`. Change either of these server-side and
+the bundle has to be rebuilt with the matching value, or every mutating
+request fails CSRF:
+
+| Server setting | Frontend build variable | Default |
+| --- | --- | --- |
+| `CSRF_COOKIE_NAME` | `VITE_CSRF_COOKIE_NAME` | `csrftoken` |
+| `CSRF_HEADER_NAME` | `VITE_CSRF_HEADER_NAME` | `X-CSRF-Token` |
+
+Leave both alone unless a proxy forces the issue. Nothing else in the
+frontend is configured at build time; all API paths are relative.
+
 ### Egress
 
 The feed fetcher is the only component that talks to the internet, and it does

@@ -1,0 +1,86 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  extends: [
+    "config:recommended",
+    // Every `uses:` in ci.yml is a full commit SHA with the tag in a trailing
+    // comment. This keeps new actions arriving that way and updates the SHA
+    // and the comment together.
+    "helpers:pinGitHubActionDigests",
+  ],
+
+  timezone: "Europe/London",
+
+  // One batch a week rather than a PR per upstream release.
+  schedule: ["before 6am on monday"],
+
+  semanticCommits: "enabled",
+
+  // Skip releases younger than this. Cheap insurance against a version that
+  // is yanked hours after publication, which a bot would otherwise adopt
+  // before a human saw it.
+  minimumReleaseAge: "3 days",
+
+  // Off by default in Renovate. .pre-commit-config.yaml runs everything from
+  // the uv-locked venv, so its hooks cannot drift from pyproject.toml — but
+  // enabling this keeps that true if a remote hook is ever added.
+  "pre-commit": { enabled: true },
+
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ["before 6am on the first day of the month"],
+  },
+
+  packageRules: [
+    {
+      // The unified PR: every safe update arrives as one branch, one CI run,
+      // one review.
+      //
+      // pinDigest is easy to miss and is NOT covered by `pin` or `digest`:
+      // `pin` is range -> exact version, `digest` is one digest -> a newer
+      // one, and `pinDigest` is the tag -> SHA conversion that
+      // helpers:pinGitHubActionDigests performs the first time a workflow
+      // references an action by tag. Omitting it would make that pin arrive
+      // as its own branch.
+      matchUpdateTypes: ["minor", "patch", "pin", "digest", "pinDigest"],
+      groupName: "all non-major dependencies",
+      groupSlug: "all-minor-patch",
+    },
+    {
+      // Majors are the ones that break; bundling one with nine harmless
+      // patches means a single failure blocks all of them. They sit on the
+      // dependency dashboard until ticked. python:3.12-slim-trixie -> 3.13
+      // and postgres:18 -> 19 are the obvious ones this holds back — the
+      // latter especially, because a PostgreSQL major bump needs the PGDATA
+      // note in deploy/quadlet/sre-tab-db.container read first.
+      matchUpdateTypes: ["major"],
+      dependencyDashboardApproval: true,
+    },
+  ],
+
+  customManagers: [
+    {
+      // Quadlet .container files and the deployment shell scripts are not
+      // formats Renovate knows, so the version-pinned PostgreSQL and Caddy
+      // images would otherwise never be flagged. Both scripts carry the same
+      // pins as the units so that a restore or a smoke test runs the same
+      // build as production; CI asserts they agree.
+      //
+      // The `docker.io/` anchor is load-bearing, not incidental: these same
+      // files carry Image=ghcr.io/darkflib/sre-tab:latest, this project's own
+      // floating tag, which must never be rewritten by a bot. A looser
+      // pattern would match it and start proposing digest pins for our own
+      // builds.
+      customType: "regex",
+      managerFilePatterns: [
+        "/^deploy/quadlet/.*\\.container$/",
+        "/^deploy/scripts/.*\\.sh$/",
+      ],
+      matchStrings: [
+        "docker\\.io/(?<depName>[^:\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
+      ],
+      datasourceTemplate: "docker",
+      registryUrlTemplate: "https://docker.io",
+    },
+  ],
+}
