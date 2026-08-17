@@ -42,17 +42,29 @@ cd frontend && npm run check           # eslint, tsc, vitest, vite build
 ```
 
 `npm test` is `vitest run` — one shot, not the watcher; `npm run test:watch`
-is the watcher. CI runs all four as separate steps, so `npm run check` is the
-local equivalent of the `frontend` job.
+is the watcher. CI runs all four as separate steps, and one thing more: it
+regenerates `src/api/schema.d.ts` and fails on a diff. `npm run check` does
+not, deliberately — a command called `check` should not write to the working
+tree — so it is the local equivalent of the `frontend` job in everything but
+that step.
 
-Three further checks run in CI and are worth knowing about before a change
+Four further checks run in CI and are worth knowing about before a change
 that touches their subject matter:
 
 | Command | Fails when |
 | --- | --- |
 | `deploy/scripts/check-env-example.sh` | a setting exists in `app/settings.py` and not in `.env.example` |
 | `deploy/scripts/check-header-parity.sh` | the security headers in `app/middleware.py` and `deploy/Caddyfile` disagree |
+| `cd frontend && npm run generate:api && git diff --exit-code` | `src/api/schema.d.ts` is older than the `openapi.json` it is generated from |
 | `SRE_TAB_POSTGRES_URL=... uv run pytest tests/postgres` | a PostgreSQL-only path breaks |
+
+The API contract reaches the client through two committed artefacts, and
+each is checked where the toolchain for it already exists. `uv run pytest`
+covers the first — `tests/test_openapi.py` compares `frontend/openapi.json`
+against the schema the application serves, byte for byte. The table's third
+row covers the second. Change a response model without regenerating and the
+first fails locally; regenerate `openapi.json` without regenerating the types
+and only CI notices, which is the asymmetry to keep in mind.
 
 `tests/postgres/` skips silently without `SRE_TAB_POSTGRES_URL`, which is why
 CI supplies one. The three things it reaches that SQLite cannot are
@@ -154,7 +166,7 @@ actually matches on, not the job key in the workflow:
 | `PostgreSQL integration` | `ci.yml` / `postgres` | the PostgreSQL-only suite against a service container |
 | `Dependency audit` | `ci.yml` / `audit` | `pip-audit` over the locked dependency set, and `npm audit` over the client's |
 | `Static analysis` | `ci.yml` / `sast` | Semgrep, guarded against a run that scans nothing |
-| `Frontend lint, types, tests, build` | `ci.yml` / `frontend` | eslint, tsc, the Vitest suite, vite build |
+| `Frontend lint, types, contract, tests, build` | `ci.yml` / `frontend` | eslint, tsc, the generated API types against the committed document, the Vitest suite, vite build |
 | `Container build and deployment smoke` | `ci.yml` / `container` | image build, Caddyfile validation, Quadlet generation, the deployment smoke test |
 | `README quickstart runs on a clean checkout` | `docs.yml` / `quickstart` | the README's own commands, executed |
 | `Relative links resolve` | `docs.yml` / `links` | every relative link and image in the docs |
@@ -182,11 +194,9 @@ created, and has now been fixed.**
 
 It was configured with the job *keys* — `python`, `postgres`, `audit`,
 `frontend`, `container`. Every check-run this repository reports is a display
-name: `Format, lint, types, security, tests`, `PostgreSQL integration`,
-`Dependency audit`, `Static analysis`, `Frontend lint, types, tests, build`,
-`Container build and deployment smoke`, plus the two from the Docs workflow.
-The two sets did not intersect, so every required context named a check that
-had never reported and never could.
+name: the table above is the current list, and no key appears in it. The two
+sets did not intersect, so every required context named a check that had
+never reported and never could.
 
 It failed safe — a pull request waits on a status that never arrives rather
 than merging unchecked — but the real checks were not required either, and
@@ -239,7 +249,7 @@ gh api -X PATCH repos/Darkflib/sre-tab/branches/main/protection/required_status_
   -f 'contexts[]=PostgreSQL integration' \
   -f 'contexts[]=Dependency audit' \
   -f 'contexts[]=Static analysis' \
-  -f 'contexts[]=Frontend lint, types, tests, build' \
+  -f 'contexts[]=Frontend lint, types, contract, tests, build' \
   -f 'contexts[]=Container build and deployment smoke' \
   -f 'contexts[]=README quickstart runs on a clean checkout' \
   -f 'contexts[]=Relative links resolve'

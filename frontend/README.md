@@ -79,6 +79,20 @@ or a Python toolchain. When the contract changes, regenerate both files in
 one commit; a contract change then shows up as a type error rather than a
 runtime surprise.
 
+That used to be a sentence asking for discipline. It is a gate now, split
+across the two jobs that already have the toolchain for each link:
+
+- `tests/test_openapi.py` compares `openapi.json` against the schema the
+  application serves, byte for byte, and names these two commands when it
+  fails;
+- the `frontend` CI job regenerates `schema.d.ts` and fails on a diff.
+
+Forgetting the second command is the interesting case, and the one neither
+`tsc` nor the test suite could ever have caught on its own: the types stay
+internally consistent with a document that has stopped describing the
+server, so the typecheck goes on passing — faithfully, against the wrong
+contract.
+
 `src/api/client.ts` is the only module that touches the network. It adds:
 
 - `credentials: 'same-origin'`, so the `HttpOnly` session cookie rides along
