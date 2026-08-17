@@ -1,0 +1,96 @@
+name: Docs
+
+# The README's quickstart is executed here, on a clean checkout, on every
+# push. A wrong doc has already cost this project real time — `install.sh
+# --start` never recreated a removed network, and the documented upgrade
+# procedure was wrong as written — and both read perfectly.
+#
+# The commands are extracted from README.md rather than copied into this
+# file. A copy is the same failure one level removed: it drifts, and the
+# workflow goes on passing while the document it was meant to protect stops
+# being true. See .github/scripts/run-doc-examples.py for the marker syntax.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quickstart:
+    name: README quickstart runs on a clean checkout
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # The quickstart seeds seven real feeds and the scheduler's first tick
+      # fires immediately, so leaving refresh enabled would have this job
+      # pulling the BBC and the Guardian on every push: slow, impolite, and
+      # red whenever one of them is having a bad afternoon. Every README
+      # command runs exactly as written; only this one documented setting is
+      # overridden, and it is overridden through the environment rather than
+      # by editing what the document says.
+      SOURCE_REFRESH_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Same pins as ci.yml so Renovate moves both in one PR.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.5"
+          enable-cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Printed before it runs so a failure downstream can be read against
+      # the exact script, without rebuilding it mentally from the document.
+      - name: The script extracted from README.md
+        run: python3 .github/scripts/run-doc-examples.py README.md --print
+
+      # No `uv sync` or `npm ci` step here on purpose: the quickstart's own
+      # commands install everything, which is the property under test.
+      - name: Execute it
+        run: python3 .github/scripts/run-doc-examples.py README.md
+
+  links:
+    name: Relative links resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Cheap, and it catches the class of breakage a moved file causes:
+      # every relative link and image in the front-door documents has to
+      # point at something that exists. External URLs are not fetched —
+      # that would make the gate depend on other people's uptime.
+      - name: Every relative link and image target exists
+        run: |
+          set -euo pipefail
+          rc=0
+          for doc in README.md CONTRIBUTING.md ROADMAP.md deploy/README.md; do
+            while read -r target; do
+              case "$target" in
+                http://*|https://*|mailto:*|'#'*|'') continue ;;
+              esac
+              # Strip any anchor: the file has to exist, the fragment is
+              # not something this can check without parsing headings.
+              path="${target%%#*}"
+              [ -n "$path" ] || continue
+              if [ ! -e "$(dirname "$doc")/$path" ]; then
+                echo "$doc: broken relative link: $path"
+                rc=1
+              fi
+            done < <(grep -oE '\]\([^)]+\)' "$doc" | sed -E 's/^\]\(//; s/\)$//')
+          done
+          exit "$rc"
