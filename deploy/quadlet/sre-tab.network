@@ -15,3 +15,18 @@ Driver=bridge
 # needs to leave by a specific source address.
 Subnet=10.89.61.0/24
 Gateway=10.89.61.1
+# Dynamic allocation is confined to .32-.254 so it can never collide with an
+# address something else pins. Without this the whole /24 is allocatable, and
+# the allocator hands out .2, .3, .4 … in order: any container that starts
+# before Caddy — the nightly backup job is one, and it takes a fresh address
+# every night — walks the pool towards .20, and the run that lands on it
+# leaves sre-tab-web looping forever on "IPAM error: requested ip address
+# 10.89.61.20 is already allocated" at status 126. Leases live in
+# /run/containers/networks, so a reboot clears it and the fault reads as
+# intermittent rather than as the ordering bug it is.
+#
+# Everything pinned must stay OUTSIDE this range: 10.89.61.1 (Gateway= above)
+# and 10.89.61.20 (IP= in sre-tab-web.container, which app.env.example's
+# FORWARDED_ALLOW_IPS also names). Add a pinned address below .32 if another
+# unit ever needs one, and leave the range alone.
+IPRange=10.89.61.32-10.89.61.254
