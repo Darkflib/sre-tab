@@ -6,12 +6,16 @@ respx intercepts at the transport, below everything the fetcher does, so
 
 from __future__ import annotations
 
+import time
+from collections.abc import Iterator
+
 import httpx
 import pytest
 import respx
 
 from app.ingest.errors import (
     FetchError,
+    FetchTimeoutError,
     IngestError,
     ResponseTooLargeError,
     SourceConfigurationError,
@@ -20,6 +24,7 @@ from app.ingest.errors import (
     UpstreamStatusError,
 )
 from app.ingest.fetch import FeedFetcher, HostRateLimiter
+from app.ingest.urlguard import UrlGuard
 from app.settings import Settings
 from tests.ingest.conftest import (
     FEED_URL,
@@ -255,11 +260,70 @@ def test_transport_error_is_wrapped(fetcher: FeedFetcher) -> None:
 
 @respx.mock
 def test_timeout_is_classified(fetcher: FeedFetcher) -> None:
-    from app.ingest.errors import FetchTimeoutError
-
     respx.get(PINNED_URL).mock(side_effect=httpx.ReadTimeout("slow"))
     with pytest.raises(FetchTimeoutError):
         fetcher.fetch(FEED_URL, allowed_urls={FEED_URL})
+
+
+# --- the deadline bounds the body, not just the handshake ---------------
+
+
+class DribbleStream(httpx.SyncByteStream):
+    """A body that arrives one byte at a time, never late enough for a
+    single read to time out. ``httpx.Timeout`` is per-operation, so only
+    a deadline checked inside the read loop stops this."""
+
+    def __init__(self, chunks: int, gap: float) -> None:
+        self.chunks = chunks
+        self.gap = gap
+        self.yielded = 0
+
+    def __iter__(self) -> Iterator[bytes]:
+        for _ in range(self.chunks):
+            time.sleep(self.gap)
+            self.yielded += 1
+            yield b"x"
+
+    def close(self) -> None:
+        pass
+
+
+@respx.mock
+def test_dribbled_body_cannot_outlive_the_deadline(
+    ingest_settings: Settings, guard: UrlGuard
+) -> None:
+    """A slow-drip body is bounded by the deadline, not by the size cap.
+
+    Before the fix this returned only once the body reached
+    ``source_fetch_max_bytes`` — 64,000 dribbles here — which is how one
+    hostile source stalls the serial scheduler tick for every other one.
+    """
+    settings = ingest_settings.model_copy(update={"source_fetch_timeout_seconds": 0.3})
+    fetcher = FeedFetcher(settings, guard=guard, rate_limiter=HostRateLimiter(0.0))
+    stream = DribbleStream(chunks=settings.source_fetch_max_bytes, gap=0.02)
+    respx.get(PINNED_URL).mock(return_value=httpx.Response(200, stream=stream))
+
+    started = time.monotonic()
+    with pytest.raises(FetchTimeoutError):
+        fetcher.fetch(FEED_URL, allowed_urls={FEED_URL})
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.0, f"the 0.3s deadline held for {elapsed:.1f}s"
+    # Stopped early: nowhere near the size cap, which is the other bound.
+    assert stream.yielded < settings.source_fetch_max_bytes
+
+
+@respx.mock
+def test_a_body_inside_the_deadline_is_not_disturbed(
+    ingest_settings: Settings, guard: UrlGuard
+) -> None:
+    """The in-loop check must not clip a slow-but-punctual source."""
+    settings = ingest_settings.model_copy(update={"source_fetch_timeout_seconds": 5.0})
+    fetcher = FeedFetcher(settings, guard=guard, rate_limiter=HostRateLimiter(0.0))
+    respx.get(PINNED_URL).mock(
+        return_value=httpx.Response(200, stream=DribbleStream(chunks=len(BODY), gap=0.001))
+    )
+    assert fetcher.fetch(FEED_URL, allowed_urls={FEED_URL}).content == b"x" * len(BODY)
 
 
 # --- client construction ------------------------------------------------

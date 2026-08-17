@@ -21,6 +21,14 @@ address would mean nothing.
 
 **Size.** ``Content-Length`` is used only to fail early; the cap that
 actually holds is counted over the streamed chunks.
+
+**Time.** ``source_fetch_timeout_seconds`` is a deadline for the whole
+fetch, not a per-operation timeout. ``httpx.Timeout`` bounds each
+individual read, so a server dribbling one byte just inside it would
+otherwise hold the connection for max-bytes ÷ dribble-rate — and the
+scheduler ticks sources serially, so one such source stalls every
+refresh. The deadline is therefore re-checked between redirect hops
+*and* on every chunk of the body.
 """
 
 from __future__ import annotations
@@ -177,7 +185,7 @@ class FeedFetcher:
                 if response.status_code >= 400:
                     raise UpstreamStatusError(str(target.url), response.status_code)
 
-                body = self._read_capped(response, url=str(target.url))
+                body = self._read_capped(response, url=str(target.url), deadline=deadline)
                 return FetchResult(
                     url=str(target.url),
                     content=body,
@@ -190,7 +198,7 @@ class FeedFetcher:
         except httpx.HTTPError as exc:
             raise FetchError(f"transport error fetching {target.url}: {exc}") from exc
 
-    def _read_capped(self, response: httpx.Response, *, url: str) -> bytes:
+    def _read_capped(self, response: httpx.Response, *, url: str, deadline: float) -> bytes:
         cap = self._settings.source_fetch_max_bytes
         declared = response.headers.get("content-length")
         if declared is not None and declared.isdigit() and int(declared) > cap:
@@ -200,6 +208,10 @@ class FeedFetcher:
         chunks: list[bytes] = []
         total = 0
         for chunk in self._iter(response):
+            # Two independent bounds on one loop: bytes, and time. Without
+            # the second, a dribbling server is limited only by the first.
+            if deadline - time.monotonic() <= 0:
+                raise FetchTimeoutError(f"fetch deadline expired while reading {url}")
             total += len(chunk)
             if total > cap:
                 raise ResponseTooLargeError(f"{url} exceeded {cap} bytes while streaming")
