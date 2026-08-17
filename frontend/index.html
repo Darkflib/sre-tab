@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <title>Developer News Dashboard</title>
+    <!--
+      Blocking, same-origin, non-inline: resolves the stored theme before
+      first paint so the wrong theme never flashes. It must stay external —
+      the production CSP is `script-src 'self'` with no 'unsafe-inline'.
+    -->
+    <script src="/theme-init.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
