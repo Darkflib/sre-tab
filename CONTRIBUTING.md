@@ -166,11 +166,6 @@ and report on something other than the code under change, so a CVE published
 this morning or a registry hiccup should not hide the test results behind the
 same red cross.
 
-`audit` is a separate job on purpose, and so is `sast`: both reach the network
-and report on something other than the code under change, so a CVE published
-this morning or a registry hiccup should not hide the test results behind the
-same red cross.
-
 ### Renaming a job can silently break a required check
 
 GitHub keys a required
