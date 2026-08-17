@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Bookmark, FeedItem, FeedItemTopic, Source, Topic, User
+from app.db.models import Bookmark, FeedItem, FeedItemTopic, Source, Topic, User, UserReadItem
 from app.ingest.normalise import NormalisedItem
 from app.ingest.store import prune_feed_items, upsert_items
 
@@ -149,8 +149,66 @@ def test_prune_with_nothing_to_do_removes_nothing(db_session: Session, source: S
     assert count(db_session) == 1
 
 
-def test_prune_cascades_to_dependent_rows(db_session: Session, source: Source) -> None:
+def test_prune_cascades_to_read_state(db_session: Session, source: Source) -> None:
+    """Read marks follow their item out. Only bookmarks confer immunity."""
     user = User(github_id=99, github_login="pruner")
+    db_session.add(user)
+    db_session.commit()
+
+    cutoff = NOW - timedelta(days=90)
+    upsert_items(
+        db_session,
+        source_id=source.id,
+        items=[item("https://example.org/old", published=cutoff - timedelta(days=5))],
+        topic_ids=[],
+        fetched_at=NOW,
+    )
+    stored = db_session.scalars(select(FeedItem)).one()
+    db_session.add(UserReadItem(user_id=user.id, feed_item_id=stored.id))
+    db_session.commit()
+
+    assert prune_feed_items(db_session, cutoff=cutoff) == 1
+    assert db_session.scalars(select(UserReadItem)).all() == []
+
+
+def test_prune_never_removes_a_bookmarked_item(db_session: Session, source: Source) -> None:
+    """A bookmark is an explicit "keep this" and outranks retention.
+
+    Both items are the same age and equally past the window; the only
+    difference is the bookmark, so the assertion isolates it.
+    """
+    user = User(github_id=101, github_login="saver")
+    db_session.add(user)
+    db_session.commit()
+
+    cutoff = NOW - timedelta(days=90)
+    ancient = cutoff - timedelta(days=30)
+    upsert_items(
+        db_session,
+        source_id=source.id,
+        items=[
+            item("https://example.org/saved", published=ancient),
+            item("https://example.org/unsaved", published=ancient),
+        ],
+        topic_ids=[],
+        fetched_at=NOW,
+    )
+    saved = db_session.scalars(
+        select(FeedItem).where(FeedItem.canonical_url == "https://example.org/saved")
+    ).one()
+    db_session.add(Bookmark(user_id=user.id, feed_item_id=saved.id))
+    db_session.commit()
+
+    assert prune_feed_items(db_session, cutoff=cutoff) == 1
+    assert set(db_session.scalars(select(FeedItem.canonical_url))) == {"https://example.org/saved"}
+    assert db_session.scalars(select(Bookmark.feed_item_id)).all() == [saved.id]
+
+
+def test_prune_removes_an_item_whose_bookmark_was_deleted(
+    db_session: Session, source: Source
+) -> None:
+    """Immunity is a property of the bookmark, not a permanent mark."""
+    user = User(github_id=102, github_login="unsaver")
     db_session.add(user)
     db_session.commit()
 
@@ -165,6 +223,8 @@ def test_prune_cascades_to_dependent_rows(db_session: Session, source: Source) -
     stored = db_session.scalars(select(FeedItem)).one()
     db_session.add(Bookmark(user_id=user.id, feed_item_id=stored.id))
     db_session.commit()
+    assert prune_feed_items(db_session, cutoff=cutoff) == 0
 
+    db_session.execute(delete(Bookmark).where(Bookmark.feed_item_id == stored.id))
+    db_session.commit()
     assert prune_feed_items(db_session, cutoff=cutoff) == 1
-    assert db_session.scalars(select(Bookmark)).all() == []

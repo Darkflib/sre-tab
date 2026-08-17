@@ -50,9 +50,11 @@ def put_bookmark(
 ) -> BookmarkOut:
     """Create a bookmark idempotently; repeats return the existing one."""
     try:
-        return bookmarks_service.create_bookmark(db, user, item_id)
+        bookmark = bookmarks_service.create_bookmark(db, user, item_id)
     except ItemNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Unknown item") from exc
+    db.commit()
+    return bookmark
 
 
 @router.delete(
@@ -66,4 +68,5 @@ def delete_bookmark(
         bookmarks_service.remove_bookmark(db, user, item_id)
     except ItemNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Unknown item") from exc
+    db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -9,6 +9,9 @@ read-then-write window, so two rapid clicks cannot race into an error.
 Every statement pins ``user_id`` to the caller. One user's read state is
 unreachable from another's session even with a guessed item id — that is
 acceptance criterion 4, not an implementation detail.
+
+Flush, never commit: the route owns the transaction (AGENTS.md,
+"Transactions").
 """
 
 from __future__ import annotations
@@ -26,11 +29,11 @@ from app.services.upsert import insert_ignore
 
 
 def set_read_state(db: Session, user: User, item_id: int, *, read: bool) -> ReadStateOut:
-    """Mark an item read or unread for this user and commit.
+    """Mark an item read or unread for this user.
 
-    The whole update is one transaction: the session opened by ``get_db``
-    is committed here on success, and rolled back by that dependency's
-    context manager if anything raises.
+    The whole update is one transaction, but the boundary belongs to the
+    route: this flushes so the read-back below sees the write, and the
+    route commits.
     """
     if db.scalar(select(FeedItem.id).where(FeedItem.id == item_id)) is None:
         raise ItemNotFoundError(f"no feed item {item_id}")
@@ -63,7 +66,7 @@ def set_read_state(db: Session, user: User, item_id: int, *, read: bool) -> Read
         )
         read_at = None
 
-    db.commit()
+    db.flush()
     return ReadStateOut(
         item_id=item_id, read=read, read_at=as_utc(read_at) if read_at is not None else None
     )

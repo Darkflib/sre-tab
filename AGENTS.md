@@ -33,6 +33,27 @@ must stay cheap. Three disciplines are therefore part of the contract:
    themselves. This contains the function-colour change if `Session` ever
    becomes `AsyncSession`.
 
+## Transactions
+
+**Whoever opens the session owns the transaction.** One rule, no
+exceptions:
+
+- A function that *receives* a `Session` never calls `commit()` or
+  `rollback()`. It may `flush()` when it needs to read its own write
+  back. That is every service in `app/services/`, every helper in
+  `app/ingest/store.py`, and everything in `app/auth/` below the route.
+- A function that *opens* a session commits it. In a request that is the
+  route, whose session comes from `get_db`; in the scheduler it is
+  `IngestService`, which opens its own.
+- `get_db` deliberately does not commit. It closes the session, and
+  closing rolls back anything uncommitted, so a route that raises before
+  its commit leaves nothing behind.
+
+The point is composability: a self-committing service cannot be called
+twice in one unit of work, and the OAuth callback already needs exactly
+that — `upsert_user`, `ensure_profile`, `revoke_session`, and
+`create_session` are one transaction or they are a half-created account.
+
 ## Ownership
 
 Each Phase 1 agent owns its paths exclusively. Overlap is the failure

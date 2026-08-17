@@ -6,7 +6,11 @@ agent changes them without the coordinator, because both sides are written
 in parallel against this contract.
 
 Every function participates in the caller's transaction and must not
-commit; the request-scoped session dependency owns commit and rollback.
+commit — the repository convention is that whoever *opened* the session
+owns it (AGENTS.md, "Transactions"). For these functions that is the
+route, via ``app.db.session.get_db``: ``get_db`` does not commit, it
+closes the session, and closing rolls back anything the route did not
+commit.
 """
 
 from __future__ import annotations

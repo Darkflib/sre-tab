@@ -131,8 +131,12 @@ class IngestService:
     def prune(self, *, now: datetime | None = None) -> int:
         moment = now or datetime.now(UTC)
         cutoff = self._retention_cutoff(moment)
+        # This method opens the session, so this method commits it
+        # (AGENTS.md, "Transactions").
         with self._session_factory() as session:
-            return prune_feed_items(session, cutoff=cutoff)
+            removed = prune_feed_items(session, cutoff=cutoff)
+            session.commit()
+            return removed
 
     # -- internals -------------------------------------------------------
 
@@ -148,13 +152,15 @@ class IngestService:
         self, source: SourceRef, items: Sequence[NormalisedItem], *, fetched_at: datetime
     ) -> int:
         with self._session_factory() as session:
-            return upsert_items(
+            inserted = upsert_items(
                 session,
                 source_id=source.id,
                 items=items,
                 topic_ids=source.topic_ids,
                 fetched_at=fetched_at,
             )
+            session.commit()
+            return inserted
 
     def _fail(
         self,

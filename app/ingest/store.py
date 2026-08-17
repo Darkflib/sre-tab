@@ -9,6 +9,10 @@ depends on. Nothing here ever updates or deletes an existing row.
 The existence check is advisory — it keeps the common re-fetch cheap —
 and the ``ON CONFLICT DO NOTHING`` behind it is what makes the write
 correct when two replicas race.
+
+Flush, never commit. These take a session rather than opening one, and
+whoever opened it owns the transaction (AGENTS.md, "Transactions") — for
+the refresh path that is :class:`app.ingest.service.IngestService`.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.models import Base, FeedItem, FeedItemTopic
+from app.db.models import Base, Bookmark, FeedItem, FeedItemTopic
 from app.ingest.normalise import NormalisedItem
 
 log = structlog.get_logger("app.ingest.store")
@@ -126,7 +130,7 @@ def upsert_items(
             session, FeedItemTopic, topic_rows, index_elements=["feed_item_id", "topic_id"]
         )
 
-    session.commit()
+    session.flush()
     inserted = len(new_rows)
     log.debug(
         "feed_items_stored",
@@ -139,22 +143,34 @@ def upsert_items(
 
 
 def prune_feed_items(session: Session, *, cutoff: datetime) -> int:
-    """Delete items published before *cutoff*. Returns rows removed.
+    """Delete items published before *cutoff*, except bookmarked ones.
 
-    ``ON DELETE CASCADE`` takes the item's topic links, read marks, and
-    bookmarks with it — retention applies to the item, not to whether
-    somebody bookmarked it.
+    ``ON DELETE CASCADE`` still takes an item's topic links and read
+    marks with it. Bookmarks are the exception, and deliberately so: a
+    bookmark is an explicit "keep this", and evaporating on a retention
+    schedule the user never set is the surprising behaviour. So any feed
+    item carrying a bookmark row is exempt from retention outright.
+    Bookmarked items therefore grow without bound; at 100 users and 25
+    sources that is cheaper than losing a saved item.
+
+    The alternative — copying title and URL onto the bookmark row and
+    letting the item go — is rejected: a denormalised bookmark can drift
+    from the item it names, and a saved link that no longer matches its
+    own title is worse than one that costs a row.
     """
+    # Correlated EXISTS rather than a join or an IN: it short-circuits on
+    # the first bookmark and needs no DISTINCT, on both engines.
+    bookmarked = select(Bookmark.feed_item_id).where(Bookmark.feed_item_id == FeedItem.id).exists()
+
     # synchronize_session=False: this is a bulk delete, and the ORM's
     # in-Python evaluation of the criterion would compare an aware cutoff
     # against SQLite's naive column values.
     statement = (
         delete(FeedItem)
-        .where(FeedItem.published_at < cutoff)
+        .where(FeedItem.published_at < cutoff, ~bookmarked)
         .execution_options(synchronize_session=False)
     )
     result = cast("CursorResult[Any]", session.execute(statement))
-    session.commit()
     removed = result.rowcount or 0
     if removed:
         log.info("feed_items_pruned", removed=removed, cutoff=cutoff.isoformat())

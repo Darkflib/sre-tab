@@ -30,6 +30,8 @@ def put_read_state(
 ) -> ReadStateOut:
     """Mark an item read or unread; idempotent either way."""
     try:
-        return read_state_service.set_read_state(db, user, item_id, read=update.read)
+        result = read_state_service.set_read_state(db, user, item_id, read=update.read)
     except ItemNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Unknown item") from exc
+    db.commit()
+    return result

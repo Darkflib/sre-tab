@@ -7,7 +7,12 @@ bookmarks.
 
 Unlike the feed, the listing does not require the source to still be
 enabled: an operator retiring a source should not silently empty someone's
-saved items.
+saved items. Nor does retention: :func:`app.ingest.store.prune_feed_items`
+excludes bookmarked items outright, so a saved item does not evaporate on
+a schedule the user never set.
+
+Flush, never commit: the route owns the transaction (AGENTS.md,
+"Transactions").
 """
 
 from __future__ import annotations
@@ -26,8 +31,8 @@ from app.services.upsert import insert_ignore
 
 
 def create_bookmark(db: Session, user: User, item_id: int) -> BookmarkOut:
-    """Bookmark an item and commit. Repeats return the existing bookmark
-    with its original ``created_at`` — a second click is not a new save."""
+    """Bookmark an item. Repeats return the existing bookmark with its
+    original ``created_at`` — a second click is not a new save."""
     # Existence first: feed_item_id is a foreign key, so inserting against
     # an unknown item would surface as an IntegrityError — a 500 dressed
     # up as a database fault rather than the 404 it is.
@@ -51,7 +56,6 @@ def create_bookmark(db: Session, user: User, item_id: int) -> BookmarkOut:
     db.flush()
 
     item, created_at, read_at = db.execute(_card_query(user).where(FeedItem.id == item_id)).one()
-    db.commit()
     return BookmarkOut(
         item=build_item_out(item, read=read_at is not None, bookmarked=True),
         created_at=as_utc(created_at),
@@ -59,7 +63,7 @@ def create_bookmark(db: Session, user: User, item_id: int) -> BookmarkOut:
 
 
 def remove_bookmark(db: Session, user: User, item_id: int) -> None:
-    """Remove this user's bookmark and commit.
+    """Remove this user's bookmark.
 
     Removing one that is not there is a no-op, not an error: the client
     retrying a delete it already made should converge, not fail.
@@ -70,7 +74,7 @@ def remove_bookmark(db: Session, user: User, item_id: int) -> None:
     db.execute(
         delete(Bookmark).where(Bookmark.user_id == user.id, Bookmark.feed_item_id == item_id)
     )
-    db.commit()
+    db.flush()
 
 
 def list_bookmarks(
