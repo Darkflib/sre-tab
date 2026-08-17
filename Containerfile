@@ -77,8 +77,8 @@ ENV PYTHONUNBUFFERED=1 \
 # quadlet's User= never has to resolve a name inside the image.
 RUN groupadd --system --gid 10001 sre-tab \
     && useradd --system --uid 10001 --gid sre-tab --home-dir /app --shell /usr/sbin/nologin sre-tab \
-    && mkdir -p /app \
-    && chown sre-tab:sre-tab /app
+    && mkdir -p /app /srv/www \
+    && chown sre-tab:sre-tab /app /srv/www
 
 WORKDIR /app
 
@@ -95,6 +95,12 @@ COPY --chown=sre-tab:sre-tab alembic ./alembic
 # deploy/quadlet/sre-tab-assets.container and served by Caddy. Keeping the
 # assets in this image rather than a second one makes API/asset version skew
 # impossible: there is one artefact to build, sign, and pull.
+#
+# /srv/www is created above, empty and owned by 10001, purely so that the
+# first mount of the empty assets volume inherits that ownership: both Podman
+# and Docker copy the image directory's uid/gid/mode onto a fresh named
+# volume. Without it the volume arrives root-owned and the publish step —
+# which runs unprivileged, as everything here does — cannot write to it.
 COPY --from=frontend --chown=sre-tab:sre-tab /build/dist /opt/sre-tab/web
 
 USER 10001:10001
