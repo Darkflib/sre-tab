@@ -1,0 +1,90 @@
+/*
+ * Light is the base; dark overrides only the values that change.
+ * `theme-init.js` stamps `data-theme` before first paint, so the attribute
+ * selectors decide the colours. The media query is the JavaScript-off
+ * fallback — with no attribute set, the OS preference still wins.
+ *
+ * Contrast: every text/background pair below clears WCAG AA (4.5:1) in
+ * both themes; muted text on its own surface is the tightest at ~5.5:1.
+ */
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #eceef2;
+  --surface-hover: #e3e6ec;
+  --text: #14171d;
+  --text-muted: #545b6b;
+  --border: #d3d7e0;
+  --border-strong: #b3bac7;
+  --accent: #1a54c4;
+  --accent-hover: #14459f;
+  --accent-contrast: #ffffff;
+  --accent-soft: #e5edfd;
+  --danger: #a81d17;
+  --danger-contrast: #ffffff;
+  --notice-bg: #fdf3dd;
+  --notice-border: #d9b45f;
+  --error-bg: #fcebe9;
+  --error-border: #d9a09b;
+  --focus: #0b4fd0;
+  --shadow: 0 1px 2px rgb(20 23 29 / 8%), 0 4px 12px rgb(20 23 29 / 6%);
+
+  --radius: 8px;
+  --radius-sm: 5px;
+  --gap: 1rem;
+  --measure: 68ch;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0d1015;
+    --surface: #161a21;
+    --surface-2: #1d222b;
+    --surface-hover: #262c37;
+    --text: #e8eaf0;
+    --text-muted: #a6aebd;
+    --border: #2b323e;
+    --border-strong: #3c4553;
+    --accent: #8ab4ff;
+    --accent-hover: #a9c8ff;
+    --accent-contrast: #0d1015;
+    --accent-soft: #1a2740;
+    --danger: #ff9a90;
+    --danger-contrast: #240a08;
+    --notice-bg: #2c2513;
+    --notice-border: #6f5c23;
+    --error-bg: #33191a;
+    --error-border: #6d3733;
+    --focus: #8ab4ff;
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 4px 14px rgb(0 0 0 / 30%);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #0d1015;
+  --surface: #161a21;
+  --surface-2: #1d222b;
+  --surface-hover: #262c37;
+  --text: #e8eaf0;
+  --text-muted: #a6aebd;
+  --border: #2b323e;
+  --border-strong: #3c4553;
+  --accent: #8ab4ff;
+  --accent-hover: #a9c8ff;
+  --accent-contrast: #0d1015;
+  --accent-soft: #1a2740;
+  --danger: #ff9a90;
+  --danger-contrast: #240a08;
+  --notice-bg: #2c2513;
+  --notice-border: #6f5c23;
+  --error-bg: #33191a;
+  --error-border: #6d3733;
+  --focus: #8ab4ff;
+  --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 4px 14px rgb(0 0 0 / 30%);
+
+  color-scheme: dark;
+}
