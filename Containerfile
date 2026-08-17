@@ -80,6 +80,20 @@ RUN groupadd --system --gid 10001 sre-tab \
     && mkdir -p /app /srv/www \
     && chown sre-tab:sre-tab /app /srv/www
 
+# Strip every setuid and setgid bit. python:3.12-slim-trixie ships eleven —
+# mount, umount, su, passwd, chsh, chfn, chage, expiry, gpasswd, newgrp,
+# unix_chkpwd — and nothing here runs any of them: the application is one
+# unprivileged uid on a read-only rootfs with all capabilities dropped.
+#
+# This is what deploy/quadlet/sre-tab.container relies on in place of
+# NoNewPrivileges=true, which that unit cannot set (podman's AppArmor profile
+# denies signal delivery under no_new_privs on Debian 13, so uvicorn cannot
+# shut down cleanly — the note in the unit has the measurements). Removing the
+# bits deletes the escalation outright rather than disarming it at runtime, and
+# because it runs at build time it re-applies itself if a base-image bump ever
+# introduces a new one.
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s '{}' + || true
+
 WORKDIR /app
 
 # The virtualenv carries the application as an installed (non-editable)
@@ -115,8 +129,14 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/healthz', timeout=4)"]
 
 # Exec form: uvicorn becomes PID 1 and receives SIGTERM directly, so podman
-# stop drains connections and exits cleanly instead of waiting out the
-# kill timeout.
+# stop drains connections and exits cleanly instead of waiting out the kill
+# timeout.
+#
+# No init process, and deliberately so. An init would only matter if uvicorn
+# left orphans to reap, which it does not — and on the deployment host adding
+# one makes shutdown worse rather than better, because podman's catatonit is
+# bind-mounted from the host and cannot signal into the container under
+# AppArmor. deploy/quadlet/sre-tab.container has the measurements.
 #
 # No --proxy-headers or --forwarded-allow-ips here on purpose. uvicorn enables
 # proxy-header handling by default and reads the trusted-peer list from

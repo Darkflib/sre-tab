@@ -34,7 +34,36 @@ Secret=sre-tab-session-secret,type=env,target=SESSION_SECRET
 
 ReadOnly=true
 Tmpfs=/tmp:rw,nosuid,nodev,size=64M
-NoNewPrivileges=true
+# NoNewPrivileges is deliberately NOT set here, for the same reason as
+# sre-tab-db.container — read the long note there first, because this looks
+# like a gratuitous relaxation and is not.
+#
+# Under no_new_privs, podman's AppArmor profile denies this container's
+# processes the right to deliver signals, including to themselves. uvicorn
+# ends a graceful shutdown by re-raising the signal it caught
+# (signal.raise_signal, uvicorn/server.py:340) so its exit status reports death
+# by SIGTERM; that raise comes back EPERM, the PermissionError propagates, and
+# uvicorn exits 1. Every clean `systemctl stop` then lands in
+# `systemctl --failed`, which deploy/README.md names as *the* place real
+# failures surface — so the one signal worth keeping is buried in false ones.
+#
+# Measured on the host, stopping this image five ways:
+#
+#   uvicorn as PID 1, NNP on         973ms   exit 1   PermissionError
+#   uvicorn as PID 1, NNP off        973ms   exit 0   clean
+#   Init=true (catatonit), NNP on   30409ms  exit 137 SIGTERM denied, SIGKILLed
+#   Init=true (catatonit), NNP off    631ms  exit 143 clean
+#   tini in the image, NNP on         392ms  exit 1   "error forwarding signal"
+#
+# So an init process is not the fix: it needs the same signal delivery, and
+# under NNP podman's own catatonit turns every stop into a 30-second hang
+# ending in SIGKILL — strictly worse than the bug. SuccessExitStatus=1 is not
+# the fix either; it would silence a genuine exit-1 alongside this one.
+#
+# What is lost by dropping the flag is covered instead: the image strips every
+# setuid and setgid bit at build time (see Containerfile), which removes the
+# escalation NoNewPrivileges existed to neuter rather than merely disarming it
+# at runtime. DropCapability=all, User=, and the read-only rootfs are untouched.
 DropCapability=all
 User=10001
 Group=10001
@@ -58,8 +87,8 @@ Restart=always
 RestartSec=5s
 MemoryMax=768M
 TimeoutStartSec=5m
-# uvicorn is PID 1 and handles SIGTERM, so this is a drain window rather than
-# a countdown to SIGKILL.
+# uvicorn is PID 1, handles SIGTERM directly, and drains — so this is a drain
+# window rather than a countdown to SIGKILL. Measured at under a second.
 TimeoutStopSec=30s
 
 [Install]

@@ -47,3 +47,9 @@ alembic/README
 .vscode
 **/.DS_Store
 *.swp
+# macOS AppleDouble sidecars. These appear whenever a tree has been through a
+# filesystem that cannot store xattrs, and they are not inert: `._foo.py` next
+# to `foo.py` inside alembic/versions/ is picked up as a revision and fails the
+# migration with "SyntaxError: source code string cannot contain null bytes",
+# which points at everything except the actual cause.
+**/._*
