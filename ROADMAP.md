@@ -241,8 +241,12 @@ tasks.
   with admin scope settles it, and it is written up in
   [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection). It could not be run on
   the day: the protection endpoint answered `503` throughout GitHub's incident
-  of 17 August 2026, and a 503 is indistinguishable from a permissions
-  failure, so this is open rather than cleared.
+  of 17 August 2026. That was diagnosed rather than assumed — an ordinary
+  repository read succeeded with the same token while two *different*
+  admin-scope endpoints both returned 503, and a permissions failure answers
+  403 or 404 rather than 503 on some endpoints and 200 on others. So the
+  cause is the outage, not the token; the item is open because the fix could
+  not be applied, not because anything about it is unclear.
 - **Issue and pull-request templates.** Neither exists. Worth adding if the
   repository attracts contributions beyond the operator's own.
 

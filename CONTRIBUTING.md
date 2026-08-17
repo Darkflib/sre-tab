@@ -171,22 +171,62 @@ waits forever for a check that will never arrive, or the job quietly stops
 being enforced. Neither shows up on a push to `main`, which is where this
 would be noticed if it were noticeable at all.
 
-This is not hypothetical here. The `frontend` job was renamed from
-`Frontend lint, types, build` to `Frontend lint, types, tests, build` when the
-Vitest suite was wired into it. **Whether that broke the rule is unverified**,
-because the protection endpoint answered `503` throughout GitHub's incident of
-17 August 2026 and it has not been checked since. One command settles it, and
-it needs admin scope on the repository:
+This is not hypothetical here, and the problem is worse than a rename.
+
+**The rule was configured with job keys** — `python`, `postgres`, `audit`,
+`frontend`, `container` — the identifiers on the left of each job in
+`ci.yml`. GitHub does not match on those. It matches on the check-run name,
+which is the job's `name:` whenever one is set, and every job here sets one.
+The names GitHub actually reports are `Format, lint, types, security, tests`,
+`PostgreSQL integration`, `Dependency audit`, `Static analysis`,
+`Frontend lint, types, tests, build`, and
+`Container build and deployment smoke`.
+
+So every required context names something that has never reported and never
+will. The failure is at least in the safe direction — a pull request waits on
+a status that never arrives rather than merging unchecked — but the required
+set is enforcing nothing, and the real checks are not required. It went
+unnoticed because every commit so far has gone straight to `main` by an
+administrator, and required checks are not consulted on that path.
+
+The `frontend` rename is therefore a second problem behind the first: it
+matters once the contexts are corrected, not before.
+
+Fixing it needs admin scope. Read the current state:
 
 ```sh
 gh api repos/Darkflib/sre-tab/branches/main/protection \
   --jq '.required_status_checks.contexts'
 ```
 
-If that returns display names, the rule still names the old string and needs
-updating. If it returns job keys, nothing is wrong and the table above is
-right as written. Until someone runs it, treat the required set as *probably*
-enforced rather than known to be.
+Job keys in that list mean the rule is broken as described. Display names
+mean it is working, provided each one still matches a job's current `name:`.
+
+Then set the contexts to the check-run names, omitting
+`Publish, sign, and attest image` — that job only runs on a push to `main`,
+so requiring it would leave every pull request permanently unsatisfiable,
+which is the same trap in the opposite direction:
+
+```sh
+gh api -X PATCH repos/Darkflib/sre-tab/branches/main/protection/required_status_checks \
+  -F strict=true \
+  -f 'contexts[]=Format, lint, types, security, tests' \
+  -f 'contexts[]=PostgreSQL integration' \
+  -f 'contexts[]=Dependency audit' \
+  -f 'contexts[]=Static analysis' \
+  -f 'contexts[]=Frontend lint, types, tests, build' \
+  -f 'contexts[]=Container build and deployment smoke' \
+  -f 'contexts[]=README quickstart runs on a clean checkout' \
+  -f 'contexts[]=Relative links resolve'
+```
+
+Neither command could be run on the day: the endpoint answered `503`
+throughout GitHub's incident of 17 August 2026. That was diagnosed rather
+than assumed — an ordinary repository read succeeded with the same token
+while two *different* admin-scope endpoints both returned 503, and a
+permissions failure answers 403 or 404, not 503 on some endpoints and 200 on
+others. Until the PATCH above has been applied and confirmed, treat the
+required set as **not enforcing anything**, rather than as probably enforced.
 
 The general rule this leaves behind: **a job rename is a branch-protection
 change**, and the two have to move together.
