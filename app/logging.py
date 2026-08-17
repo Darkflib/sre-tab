@@ -3,6 +3,11 @@
 The redaction processor is a backstop, not a licence — code must still
 never pass OAuth codes, access tokens, cookie values, or full preference
 payloads to the logger (PRD, Technical requirements).
+
+Redaction is the *last* processor before rendering, and that position is
+load-bearing rather than incidental: traceback rendering manufactures new
+keys out of exception state, so a redactor placed ahead of it inspects an
+event that does not yet contain the material it exists to remove.
 """
 
 from __future__ import annotations
@@ -104,9 +109,25 @@ def configure_logging(settings: Settings) -> None:
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
-            redact_sensitive,
             structlog.processors.StackInfoRenderer(),
-            structlog.processors.dict_tracebacks,
+            # Two deliberate departures from ``structlog.processors.dict_tracebacks``:
+            #
+            # ``show_locals=False``. That default is True, and it writes
+            # every frame's local variables into the event. ``code`` is a
+            # live local in ``github_callback`` and ``complete_sign_in``
+            # and ``client_secret`` in ``exchange_code``, so the first
+            # ``log.exception`` on the OAuth path would put both in
+            # cleartext — which the PRD forbids outright.
+            #
+            # *Order.* Redaction runs after this, not before. Traceback
+            # rendering produces new keys out of exception state, and a
+            # redactor placed ahead of it never sees them: reproduced with
+            # the event key ``code`` correctly redacted while the same
+            # value sat verbatim in ``exception[].frames[].locals``.
+            structlog.processors.ExceptionRenderer(
+                structlog.tracebacks.ExceptionDictTransformer(show_locals=False)
+            ),
+            redact_sensitive,
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),
