@@ -210,9 +210,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
     """
     with _session(args.database_url) as session:
         views = ops.refresh_status(session)
+        malformed = ops.nonconforming_slugs(session)
     if not views:
         print("no sources configured; run `sre-tab seed`")
-        return 0
+        return 1 if malformed else 0
 
     print(
         _table(
@@ -235,7 +236,19 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print()
         for view in failing:
             print(f"{view.slug}: {view.last_error_class}: {view.last_error_detail}")
-    return 1 if failing else 0
+
+    # A malformed slug is not a refresh failure — the source fetches
+    # perfectly and simply cannot be filtered to — so it is reported
+    # separately. It still fails the command, because the whole point of
+    # exiting non-zero here is that a monitoring job notices.
+    if malformed:
+        print()
+        print("slugs that predate the format check:")
+        for kind, slug, problem in malformed:
+            print(f"  {kind} {slug!r}: it {problem}")
+        print("these fetch normally but cannot be filtered to; re-add under a valid slug")
+
+    return 1 if failing or malformed else 0
 
 
 # --- parser -------------------------------------------------------------

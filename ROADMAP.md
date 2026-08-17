@@ -153,27 +153,127 @@ prerequisite for going past it.
   `npm test` between the typecheck and the build: the suite is pure logic with
   no build dependency and finishes in well under a second, so failing early
   costs nothing.
-- **Widen frontend coverage beyond the theme layer.** The suite that exists is
-  thorough about theme resolution, the anti-flash script, and contrast. The
-  feed, the filter model, the cursor-pagination hook, and the API client have
-  no tests, and between them they are most of the client. This is really two
-  jobs of very different cost, and taking them in the wrong order is how it
-  stalls:
+- **Widen frontend coverage beyond the theme layer** — **the cheap half has
+  landed; the expensive half has not.** The suite was thorough about theme
+  resolution, the anti-flash script, and contrast, and covered none of the
+  client's actual logic.
 
-  `src/feed/filters.ts` and `src/feed/volume.ts` come first and need no new
-  tooling at all — both import types only, so they are the same shape as what
-  Vitest already covers. `filters.ts` is the higher value of the two because
-  it encodes a distinction that breaks silently: `null` means "no override,
-  use my saved selection" and `[]` means "the user deselected everything, so
-  nothing can match and the request is skipped". They look alike and
-  `hasOverride`, `selectsNothing`, `effectiveSelection`, and `filterKey` all
-  turn on telling them apart. `volume.ts` is the 35% dominance threshold and
-  the share arithmetic behind the composition panel.
+  `src/feed/filters.ts` and `src/feed/volume.ts` now have 72 tests, and they
+  needed no new tooling — both modules import types only, so they are the same
+  shape as what Vitest already covered. They were mutation-tested rather than
+  merely run: thirteen behavioural mutations, each the plausible version of
+  the mistake, and all thirteen fail the suite. `filters.ts` was the higher
+  value of the two because it encodes a distinction that breaks silently —
+  `null` means "no override, use my saved selection" and `[]` means "the user
+  deselected everything, so nothing can match and the request is skipped" —
+  and the tests pin the URL round trip, which is where that distinction has to
+  survive between renders.
 
-  `usePagedResource` and `src/api/client.ts` are the expensive half: hooks and
-  `fetch` mean a DOM environment and request mocking, which is real setup and
-  probably a dependency or two. Worth doing, but not the thing to pick up
-  first.
+  Two limitations were first written up as documented assumptions, on the
+  premise that slugs are kebab-case and so could not contain the delimiters
+  either function uses. **That premise was asserted rather than checked, and
+  it is false** — see the slug-format item below. Both were therefore
+  reachable defects, and review caught it. What changed as a result:
+  `filterKey` now encodes as JSON instead of joining on `*` and `+`, so no
+  slug can alias one selection onto another's cache entry; and the comma case
+  is marked `it.fails` with the behaviour we want, so it records the gap
+  without pinning the defect as correct and errors the day someone closes it.
+
+  `usePagedResource` and `src/api/client.ts` are the expensive half and are
+  still untested: hooks and `fetch` mean a DOM environment and request
+  mocking, which is real setup and probably a dependency or two. Still worth
+  doing, and still not the thing to pick up first.
+
+- **Nothing constrains a slug's format at any creation path** — **landed.**
+  Resolved towards enforcement, on least-surprise grounds: the surprise here
+  belongs to the operator at a terminal, and for a CLI that means failing at
+  the point of the mistake rather than three components downstream.
+  `add_source` and `add_topic` now refuse anything that is not lower-case
+  alphanumerics joined by single hyphens, within the column's 64 characters,
+  reusing the pattern that already guarded the Medium tag. `sre-tab status`
+  reports rows that predate the check and exits non-zero, because
+  enforcement at add time binds only what is added after it and a slug cannot
+  be rewritten in place without breaking every saved selection naming it.
+
+  One dialect divergence fell out of writing it down: `medium_source` capped
+  the *tag* at 64 characters and then prefixed `medium-`, so a 60-character
+  tag made a 67-character slug — accepted by SQLite in development and
+  refused by PostgreSQL in production. The composed slug is now checked too.
+
+  The client was deliberately left as it is. Its fragility is contained
+  rather than fixed, which is why the `it.fails` marker stays: the constraint
+  now lives somewhere else, and a reader should be able to find that out.
+
+  The original entry follows, because the reasoning is what made the choice.
+
+- **Nothing constrains a slug's format at any creation path.** The catalogue
+  is operator-seeded and every slug in it is kebab-case, which is why this
+  read as a rule and got asserted as one. It is not enforced anywhere:
+  `add_source` checks uniqueness, the feed URL, and the refresh interval;
+  `add_topic` checks uniqueness alone; and `sources.slug`/`topics.slug` are
+  plain `String(64)` with no CHECK constraint. The one strict slug pattern in
+  the tree guards the Medium *tag* expansion (`app/cli/catalogue.py`), because
+  that value is interpolated into a feed URL — it says nothing about the
+  general `add-source` and `add-topic` paths.
+
+  A slug is not an inert label. It goes in the URL, in a cache key, and in the
+  query the server builds, so its shape is load-bearing in three places that
+  each assume something different. The comma case above is the live
+  consequence: `sre-tab source add --slug 'a,b'` produces a source the feed
+  cannot filter to.
+
+  Two ways to close it, and they are not equivalent:
+
+  Enforcing a slug pattern at every creation path is the smaller change and
+  matches how `validate_feed_url` was handled — make the invalid state
+  unrepresentable rather than teach each consumer to cope. It does not repair
+  slugs already stored, so it wants a check over the existing catalogue too.
+
+  Making the frontend preserve arbitrary slugs — repeated query parameters
+  (`?sources=a&sources=b`) instead of a comma-joined value — is also small and
+  is robust to whatever the database actually holds. Its cost is that the
+  browser URL format changes, so any bookmarked filter URL in the old format
+  reads back as one slug rather than several. On a three-operator deployment
+  that is close to free, but it is a user-visible change and should be a
+  decision rather than a side effect. The wire format is unaffected either
+  way: `fetchFeed` sends arrays through openapi-fetch, so this is purely the
+  browser URL.
+
+- **"Save as my default" inverts an empty selection** — **landed.** Found by
+  the tests above, then decided rather than merely patched. `saveAsDefault`
+  wrote `effectiveSelection`'s result straight into preferences, moving `[]`
+  from the override side of the distinction to the saved side, where it means
+  the opposite: the user's "show me nothing" was stored as "show me
+  everything", two clicks from the feed, with no error. Worse than it sounds
+  — it landed the user in precisely the state
+  [preferences.py](app/services/preferences.py)'s default-selection rationale
+  exists to prevent, where general news drowns the low-volume sources the
+  product is for.
+
+  Resolved by treating an empty selection as what it is: **a step, not a
+  destination.** It exists so you can clear the chips and pick two rather
+  than deselecting sixteen. The store has no way to say "my default is
+  nothing" — an empty saved selection is how the server spells "no
+  preference" — so the control no longer offers to save it, and says why in
+  the filter bar rather than presenting a dead button. Making the state
+  representable was considered and rejected: it is a schema change and a
+  server-logic ripple to persist a state whose only value is transient.
+
+  A second fault fell out of the same root, and is fixed with it.
+  `saveAsDefault` wrote *both* dimensions from `effective`, which resolves an
+  un-overridden dimension into the whole catalogue for rendering. Writing
+  that back converts "follow the instance" into a pinned snapshot of today's
+  catalogue, after which a source added later never appears for that user and
+  nothing indicates why. It only bites once saved preferences are empty —
+  which is exactly what the inversion above caused, so the two compounded.
+  The patch now carries only the dimensions the user actually overrode;
+  `PreferencesPatch` already treats an absent field as "leave alone".
+
+  The general lesson is worth more than the fix: `effectiveSelection` returns
+  a **display** value, lossy by design because it resolves *unset* into a
+  concrete list so chips can render. Persisting a display value into a store
+  with a different vocabulary is what inverted the meaning. Persist intent,
+  not appearance.
 
 ## Things that are true but unproven
 
@@ -217,9 +317,14 @@ during an incident.
   hand. Extending the same marker-and-extract approach to a Linux runner is
   the obvious next step, and the expensive part is a runner with systemd
   rather than the harness.
-- **Make `Docs` a required check.** It is new, so it is not in branch
-  protection's required set yet. It should join `python`, `postgres`, `audit`,
-  `frontend`, and `container` once it has a run history.
+- **Make `Docs` a required check** — **landed, as a side effect of fixing the
+  branch-protection rule.** Both of its check-runs — `README quickstart runs
+  on a clean checkout` and `Relative links resolve` — are in the required set
+  of eight, listed in
+  [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection). The rewrite that
+  corrected the job-key/display-name mistake replaced the context list
+  wholesale, so this was picked up in the same write rather than as its own
+  task.
 
 ## Repository
 
@@ -251,8 +356,24 @@ tasks.
 
   `Publish, sign, and attest image` is deliberately excluded: it never runs
   on a pull request, and whether requiring a job skipped that way blocks the
-  request or quietly passes is untested here, so it is excluded on the
+  request or quietly passes was untested here, so it was excluded on the
   asymmetry rather than on a known deadlock.
+
+  The repository's first pull request (#4) then exercised the corrected rule
+  on a real merge path rather than by set-difference. All eight required
+  contexts reported and passed, and the request came back `MERGEABLE` — which
+  is the property the set-difference could only infer. It also measured half
+  the asymmetry away: the excluded job *does* report on a pull request, as
+  `SKIPPED`, so it is not the never-reports case that leaves a request pending
+  forever. Whether protection would accept that `skipped` as satisfying a
+  required context is still unmeasured, and stays that way — it can only be
+  tested by requiring the job, which is the risk the exclusion exists to
+  avoid.
+
+  Worth knowing for the next reader of a rollup: `mergeStateStatus` came back
+  `UNSTABLE` rather than `CLEAN`, because a third-party reviewer (CodeRabbit)
+  posts a check that is not in the required set. `UNSTABLE` means mergeable
+  with a non-required check outstanding; it is not a protection failure.
 
   The lesson generalises past this instance. **A job rename is a
   branch-protection change**, and nothing in the repository can detect it,

@@ -1,5 +1,12 @@
+import type { PreferencesPatch } from '../api/types';
 import { useCatalogue } from '../catalogue/useCatalogue';
-import { effectiveSelection, hasOverride, toggle, type FeedFilters } from '../feed/filters';
+import {
+  effectiveSelection,
+  type FeedFilters,
+  hasOverride,
+  selectsNothing,
+  toggle,
+} from '../feed/filters';
 import { isHighVolume, type SourceShare } from '../feed/volume';
 import { cssVars } from '../lib/css';
 import { percent } from '../lib/format';
@@ -36,8 +43,25 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
     onChange({ ...filters, topics: next });
   };
 
+  // Nothing selected is a step, not a destination: it exists so you can
+  // clear the chips and pick two, rather than deselecting sixteen. It also
+  // cannot be saved — an empty saved selection is how the server spells
+  // "no preference, use the instance defaults", so storing it would mean
+  // the opposite of what the button says.
+  const nothingSelected = selectsNothing(filters);
+
   const saveAsDefault = () => {
-    void updatePreferences({ topics: effective.topics, sources: effective.sources }).then(() => {
+    // Save what the user chose, not what the chips are showing. `effective`
+    // resolves an un-overridden dimension into the full catalogue for
+    // rendering, and writing that back would convert "follow the instance"
+    // into a pinned snapshot of today's catalogue — after which a source
+    // added later would never appear for this user, with nothing to
+    // indicate why. An absent field leaves that dimension alone.
+    const patch: PreferencesPatch = {};
+    if (filters.topics !== null) patch.topics = filters.topics;
+    if (filters.sources !== null) patch.sources = filters.sources;
+
+    void updatePreferences(patch).then(() => {
       onChange({ topics: null, sources: null });
     });
   };
@@ -62,7 +86,19 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
 
         {overridden ? (
           <div className="filters__actions">
-            <button type="button" className="button button--quiet" onClick={saveAsDefault}>
+            <button
+              type="button"
+              className="button button--quiet"
+              onClick={saveAsDefault}
+              disabled={nothingSelected}
+              // Said rather than left to be inferred: a control that is
+              // dead with no reason given is its own small surprise.
+              title={
+                nothingSelected
+                  ? 'Nothing is selected, so there is no view here to make your default.'
+                  : 'Make the current filters your saved selection'
+              }
+            >
               Save as my default
             </button>
             <button
@@ -78,6 +114,13 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
           </div>
         ) : null}
       </div>
+
+      {nothingSelected ? (
+        <p className="filters__note" role="status">
+          Nothing is selected, so the feed is empty and there is no view to save. Pick a source or
+          topic below, or clear the filters to go back to your saved selection.
+        </p>
+      ) : null}
 
       <FilterGroup
         legend="Sources"

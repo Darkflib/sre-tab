@@ -178,6 +178,72 @@ def test_configuration_time_validation_is_a_fixpoint() -> None:
         assert ops.validate_feed_url(stored) == stored
 
 
+#: Each of these reaches a consumer that assumes something different about
+#: a slug's shape. The comma and the plus are the client's own separators —
+#: one splits the slug in two inside the browser's query string, the other
+#: aliases two selections onto one cache key — and neither produces an
+#: error anywhere, just a source that lists correctly and filters to
+#: nothing. The over-length case is a dialect divergence: ``String(64)``
+#: is enforced by PostgreSQL and ignored by SQLite, so it works in
+#: development and fails in production.
+BAD_SLUGS = [
+    "a,b",
+    "a+b",
+    "*",
+    "Upper-Case",
+    "with space",
+    "trailing-",
+    "-leading",
+    "double--hyphen",
+    "under_score",
+    "",
+    "x" * 65,
+]
+
+
+@pytest.mark.parametrize("slug", BAD_SLUGS)
+def test_add_source_rejects_a_slug_the_client_cannot_round_trip(seeded: Session, slug: str) -> None:
+    with pytest.raises(ops.OperatorError):
+        ops.add_source(
+            seeded,
+            slug=slug,
+            name="Whatever",
+            feed_url="https://example.com/feed.xml",
+            website_url="https://example.com/",
+            refresh_minutes=60,
+        )
+
+
+@pytest.mark.parametrize("slug", BAD_SLUGS)
+def test_add_topic_rejects_the_same_slugs(seeded: Session, slug: str) -> None:
+    with pytest.raises(ops.OperatorError):
+        ops.add_topic(seeded, slug=slug, name="Whatever")
+
+
+def test_the_slug_check_runs_before_the_uniqueness_check(seeded: Session) -> None:
+    # Order matters for the message the operator reads: told "already
+    # exists" about a slug that could never have been added, they would go
+    # looking for a row that is not there.
+    with pytest.raises(ops.OperatorError, match="not usable"):
+        ops.add_topic(seeded, slug="a,b", name="Comma")
+
+
+def test_nonconforming_slugs_reports_rows_that_predate_the_check(seeded: Session) -> None:
+    # Enforcement at add time binds only what is added after it, so the
+    # existing catalogue is reported rather than migrated — a slug cannot
+    # be rewritten in place without breaking every saved selection naming
+    # it. Written straight to the table, which is how such a row got there.
+    seeded.add(Topic(slug="legacy,topic", name="Legacy"))
+    seeded.flush()
+
+    found = ops.nonconforming_slugs(seeded)
+    assert [(kind, slug) for kind, slug, _ in found] == [("topic", "legacy,topic")]
+
+
+def test_nonconforming_slugs_is_empty_for_the_seeded_catalogue(seeded: Session) -> None:
+    assert ops.nonconforming_slugs(seeded) == []
+
+
 def test_add_source_rejects_a_duplicate_slug(seeded: Session) -> None:
     with pytest.raises(ops.OperatorError):
         ops.add_source(
@@ -370,3 +436,27 @@ def test_the_cli_status_exits_non_zero_when_a_source_is_failing(
 
     assert main(["--database-url", url, "status"]) == 1
     assert "UpstreamStatusError" in capsys.readouterr().out
+
+
+def test_the_cli_status_exits_non_zero_for_a_slug_that_predates_the_check(
+    tmp_path_factory: pytest.TempPathFactory, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A malformed slug is not a refresh failure — the source fetches
+    perfectly and simply cannot be filtered to — so it is reported as its
+    own thing. It still fails the command, because exiting non-zero is how
+    the monitoring job finds out."""
+    url = _migrated(tmp_path_factory.mktemp("cli") / "cli.db")
+    assert main(["--database-url", url, "seed"]) == 0
+
+    engine = create_db_engine(url)
+    factory = build_session_factory(engine)
+    with factory() as session:
+        session.add(Topic(slug="legacy,topic", name="Legacy"))
+        session.commit()
+    engine.dispose()
+
+    assert main(["--database-url", url, "status"]) == 1
+    output = capsys.readouterr().out
+    assert "legacy,topic" in output
+    # Reported as a slug problem, not misfiled under refresh failures.
+    assert "predate the format check" in output

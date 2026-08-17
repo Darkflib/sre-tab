@@ -592,7 +592,20 @@ podman exec sre-tab-app sre-tab sources add \
 podman exec sre-tab-app sre-tab sources add-medium-tag python --topics python
 ```
 
-Three things about it are worth knowing before using it.
+Four things about it are worth knowing before using it.
+
+**A slug has to be lower-case letters and digits joined by single hyphens**,
+and at most 64 characters. `sources add` and `topics add` refuse anything
+else. This is not cosmetic: the slug is written into the browser's query
+string, joined into the client's cache key, and matched against the database
+in the feed query, and those consumers do not agree about what characters
+mean. A slug containing a comma is split in two on its way through the URL,
+so the source lists correctly and filters to nothing, with no error anywhere.
+Refusing it here is the same trade the feed-URL check makes below — fail
+where the mistake was typed, not three components downstream. `sre-tab
+status` reports any slug that predates the check and exits non-zero; such a
+slug fetches normally and has to be re-added under a valid one, because
+rewriting it in place would break every saved selection naming it.
 
 **A feed URL is validated when it is added, not when it is first fetched.**
 `sre-tab sources add` runs the whole SSRF guard minus DNS — https only, no

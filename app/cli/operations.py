@@ -21,7 +21,7 @@ from datetime import datetime
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.cli.catalogue import SOURCES, TOPICS, SeedSource, medium_source
+from app.cli.catalogue import SOURCES, TOPICS, SeedSource, medium_source, slug_problem
 from app.db.models import Source, SourceStatus, SourceTopic, Topic
 from app.ingest.urlguard import UrlGuard, assert_supported_endpoint
 
@@ -31,6 +31,19 @@ _GUARD = UrlGuard()
 class OperatorError(Exception):
     """A problem the operator can fix; the CLI prints it without a
     traceback."""
+
+
+def _require_slug(slug: str, kind: str) -> None:
+    """Refuse a slug the rest of the system cannot round-trip.
+
+    Same reasoning as the feed-URL check above, one field along: the
+    operator is the one who can fix it, and they can only fix it while
+    they are still looking at the command they typed. Deferred, the
+    symptom is a source that lists correctly and filters to nothing.
+    """
+    problem = slug_problem(slug)
+    if problem is not None:
+        raise OperatorError(f"{kind} slug {slug!r} is not usable: it {problem}")
 
 
 @dataclass(frozen=True)
@@ -115,6 +128,7 @@ def list_topics(db: Session) -> list[Topic]:
 
 
 def add_topic(db: Session, *, slug: str, name: str) -> Topic:
+    _require_slug(slug, "topic")
     if db.scalar(select(Topic).where(Topic.slug == slug)) is not None:
         raise OperatorError(f"topic {slug!r} already exists")
     topic = Topic(slug=slug, name=name)
@@ -166,6 +180,7 @@ def add_source(
     topics: Sequence[str] = (),
     icon_url: str | None = None,
 ) -> Source:
+    _require_slug(slug, "source")
     if db.scalar(select(Source).where(Source.slug == slug)) is not None:
         raise OperatorError(f"source {slug!r} already exists")
     if refresh_minutes < 1:
@@ -218,6 +233,23 @@ def set_source_topics(db: Session, slug: str, topics: Sequence[str]) -> Source:
 
 
 # --- status -------------------------------------------------------------
+
+
+def nonconforming_slugs(db: Session) -> list[tuple[str, str, str]]:
+    """Rows whose slug predates the format check, as ``(kind, slug, why)``.
+
+    Enforcement at ``add`` time only binds what is added after it, and a
+    slug cannot be rewritten in place without breaking every saved
+    selection that names it. So the existing catalogue is reported rather
+    than migrated, and reported somewhere an operator already looks.
+    """
+    found: list[tuple[str, str, str]] = []
+    for kind, model in (("source", Source), ("topic", Topic)):
+        for slug in db.scalars(select(model.slug).order_by(model.slug)):
+            problem = slug_problem(slug)
+            if problem is not None:
+                found.append((kind, slug, problem))
+    return found
 
 
 def refresh_status(db: Session) -> list[StatusView]:

@@ -3,6 +3,157 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-17 — Least surprise, applied to two audiences
+
+Three fixes that came out of the filter-model work below, decided by
+asking who is surprised and where.
+
+**An empty selection is a step, not a destination.** "Save as my default"
+wrote the resolved chip state into preferences, so deselecting every
+source and saving stored an empty saved selection — which the server
+reads as "no preference, use the instance defaults". Two clicks turned
+"show me nothing" into "show me everything", and specifically into the
+state `preferences.py`'s default-selection comment exists to argue
+against, where general news drowns the low-volume sources the product is
+for.
+
+The store has no way to represent "my default is nothing", so the honest
+answer was to stop offering it rather than to make it representable. That
+was considered — a sentinel, or an explicit "has a selection" flag — and
+rejected: a schema change and a server-logic ripple to persist a state
+whose only value is as a transient editing step. You clear the chips so
+you can pick two, not so you can keep none. The control is disabled while
+nothing is selected, with the reason stated in the filter bar; a dead
+button with no explanation is its own small surprise.
+
+**A second fault shared the root and is fixed with it.** `saveAsDefault`
+wrote *both* dimensions from `effectiveSelection`, which resolves an
+un-overridden dimension into the whole catalogue so chips can render.
+Writing that back converts "follow the instance" into a pinned snapshot
+of today's catalogue, after which a source added later never appears for
+that user and nothing says why. It only bites once saved preferences are
+empty — which is what the inversion above caused, so the two compounded:
+invert, then freeze. The patch now carries only the dimensions the user
+actually overrode.
+
+The generalisation is the part worth keeping. `effectiveSelection`
+returns a **display** value, lossy by design because it resolves *unset*
+into a concrete list for rendering. Persisting a display value into a
+store with a different vocabulary is what inverted the meaning. Persist
+intent, not appearance.
+
+**The slug question resolved the other way, because the audience is
+different.** That surprise belongs to an operator at a terminal:
+`sre-tab sources add --slug 'a,b'` succeeded, and the consequence
+appeared later, in another component, as a source that lists correctly
+and filters to nothing. For a CLI, least surprise means failing at the
+point of the mistake — the same trade `validate_feed_url` already makes
+one field along, and the same conclusion the SSRF work reached about
+config-time validation. So the fix is enforcement at creation rather than
+tolerance in the client: `add_source` and `add_topic` refuse anything but
+lower-case alphanumerics with single hyphens, reusing the pattern that
+already guarded the Medium tag, and `sre-tab status` reports rows that
+predate the check and exits non-zero. Existing slugs are reported rather
+than migrated, because rewriting one in place breaks every saved
+selection naming it.
+
+Writing that down turned up a dialect divergence: `medium_source` capped
+the *tag* at 64 characters and then prefixed `medium-`, so a 60-character
+tag made a 67-character slug — accepted by SQLite in development and
+refused by PostgreSQL, where `String(64)` is real. The composed slug is
+checked now, not just the tag.
+
+The client is left fragile on purpose, and the `it.fails` marker stays to
+say so. Its comma limitation is contained by a constraint held somewhere
+else entirely, and that is exactly the kind of thing a reader needs told
+rather than left to infer — which is the mistake the entry below records.
+
+## 2026-08-17 — The filter model under test, and what it exposed
+
+72 Vitest tests over `src/feed/filters.ts` and `src/feed/volume.ts`, the
+cheap half of the frontend-coverage item and the half the roadmap said to
+take first. It was right about the ordering for the stated reason — both
+modules import types only, so they needed no DOM, no request mocking, and
+no new dependency — and the suite goes from 114 to 186 tests still running
+in under half a second.
+
+The subject is one distinction with three meanings. `null` is "no
+override, use my saved selection"; `[]` is "the user deselected
+everything". The server completes the set: `_effective_sources` honours an
+explicit `[]` verbatim and returns an empty page, but an *empty saved
+selection* means the instance defaults, which is everything. So the same
+empty array means "nothing" on the request side and "everything" on the
+saved side, and which one you get is decided by nothing more visible than
+which side of a `??` it sits on.
+
+Mutation-tested rather than merely run, on the theme suite's precedent:
+thirteen mutations, each the plausible mistake rather than an arbitrary
+one — `selectsNothing` rewritten as a falsy check, an empty selection
+serialised as an absent parameter, `filterKey` losing its sort, the
+dominance comparison becoming exclusive, the twelve-item floor slipping to
+eleven. All thirteen fail the suite.
+
+**Two of those tests were wrong, and review caught it.** They pinned a
+comma in a slug being split by the URL, and `filterKey`'s `*` and `+`
+sentinels aliasing, as documented assumptions — on the stated grounds that
+slugs are kebab-case and so cannot contain either character. That premise
+was never checked. It is false: `add_source` validates uniqueness, the
+feed URL, and the refresh interval but not the slug's shape, `add_topic`
+validates uniqueness alone, and both columns are plain `String(64)` with
+no CHECK. The only strict slug pattern in the tree guards the Medium tag
+expansion, where the value is interpolated into a feed URL, and says
+nothing about the general creation paths.
+
+So both were reachable defects, and the tests had made them expected
+results — which would have failed whoever later fixed them. Worth naming
+the mechanism, because the repository has been careful about exactly this
+elsewhere: the constraint was inferred from what the seeded catalogue
+looks like, then written down as though it were enforced. A catalogue
+where every slug is kebab-case and a system that requires it are not the
+same claim, and only one of them was true.
+
+`filterKey` is fixed — it encodes as JSON, so no slug can alias one
+selection onto another's cache entry, which mattered because
+`usePagedResource` refetches only when the key changes and an alias
+therefore serves the previous filter's items. The comma case is now
+`it.fails` asserting the behaviour we want: it records the gap without
+pinning the defect, and errors with "expected to fail but passed" the day
+someone closes it. Verified by applying the repair and watching the marker
+trip. The choice between enforcing a slug format and preserving arbitrary
+slugs in the URL is on the roadmap, costed both ways.
+
+**The tests found a live bug they do not fix.** `FilterBar`'s "Save as my
+default" writes `effectiveSelection`'s result into preferences, which
+carries `[]` across from the override side to the saved side, where it
+means the opposite. Deselect every source, save, and the feed goes from
+empty to the entire catalogue — the user's "show me nothing" stored as
+"show me everything", in two clicks, with no error. Left unfixed
+deliberately: disabling the control while `selectsNothing` is the narrow
+answer, but what saving an empty selection *ought* to mean is a product
+decision, and inventing one inside a testing task is how a defect becomes
+a behaviour. It is on the roadmap with the reproduction.
+
+This also became the repository's first pull request, which finally
+exercised the corrected branch-protection rule on a real merge path
+instead of by set-differencing the required contexts against the reported
+ones. All eight reported and passed, and the request came back
+`MERGEABLE` — the property the set-difference could only infer. The
+excluded `Publish, sign, and attest image` reported as `SKIPPED` rather
+than not reporting at all, which rules out the failure mode the broken
+rule actually had; whether protection would *accept* a skipped conclusion
+is still unmeasured, and can only be measured by taking the risk the
+exclusion exists to avoid. `mergeStateStatus` was `UNSTABLE` rather than
+`CLEAN`, which turned out to be CodeRabbit posting a non-required check
+and not a protection failure — worth knowing before someone reads that
+word as a problem.
+
+Two documentation corrections alongside: `CONTRIBUTING.md` carried the
+same paragraph about `audit` and `sast` twice, and the roadmap still
+listed "make `Docs` a required check" as pending when it had landed inside
+the branch-protection rewrite — that write replaced the context list
+wholesale, so both of its checks came along and nobody went back to strike
+the item.
+
 ## 2026-08-17 — Licence, and the notes brought up to date
 
 MIT `LICENSE` added, matching the declaration that had been sitting in

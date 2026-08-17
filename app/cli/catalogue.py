@@ -110,10 +110,35 @@ SOURCES: tuple[SeedSource, ...] = (
 
 MEDIUM_REFRESH_MINUTES = 60
 
-#: A Medium tag becomes a path component of a URL that is then stored and
-#: fetched, so it is validated here and never templated at runtime.
-_MEDIUM_TAG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-_MEDIUM_TAG_MAX = 64
+#: The shape every source and topic slug must have: lower-case
+#: alphanumerics joined by single interior hyphens.
+#:
+#: A slug is not an inert label. It is written into the browser's query
+#: string, joined into the client's paged-resource cache key, and matched
+#: against ``Source.slug``/``Topic.slug`` in the feed query — three
+#: consumers that each assume something different about its shape. A slug
+#: containing the client's separators is split in two on the way through
+#: the URL, so the operator gets a source the feed cannot filter to and no
+#: error anywhere. Enforcing the shape at the point the operator chooses
+#: it is the same trade ``validate_feed_url`` makes above: fail where the
+#: mistake was made, not three components downstream.
+SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+#: ``sources.slug`` and ``topics.slug`` are ``String(64)``. PostgreSQL
+#: rejects a longer value and SQLite accepts it, so an unchecked slug is
+#: also a dialect divergence that only shows up in production.
+SLUG_MAX_LENGTH = 64
+
+
+def slug_problem(value: str) -> str | None:
+    """Why ``value`` is not a usable slug, or ``None`` if it is."""
+    if not value:
+        return "must not be empty"
+    if len(value) > SLUG_MAX_LENGTH:
+        return f"must be at most {SLUG_MAX_LENGTH} characters, got {len(value)}"
+    if not SLUG_PATTERN.match(value):
+        return "must be lower-case letters and digits, joined by single hyphens"
+    return None
 
 
 class InvalidMediumTag(ValueError):
@@ -123,19 +148,30 @@ class InvalidMediumTag(ValueError):
 def medium_source(tag: str, *, topics: tuple[str, ...] = ()) -> SeedSource:
     """Expand the Medium template into an ordinary source row.
 
-    The tag is checked against a strict slug pattern first. That check is
-    the whole point of doing the expansion at configuration time: what
-    ends up in ``sources.feed_url`` is a fixed string an operator chose,
-    not a value assembled while a fetch is in flight.
+    The tag is checked against the slug pattern first. That check is the
+    whole point of doing the expansion at configuration time: what ends up
+    in ``sources.feed_url`` is a fixed string an operator chose, not a
+    value assembled while a fetch is in flight.
+
+    The composed ``medium-<tag>`` slug is checked as well as the tag. The
+    prefix costs seven characters, so a tag that is itself within the
+    column's limit could still produce a slug that is not — accepted by
+    SQLite in development and refused by PostgreSQL in production.
     """
     normalised = tag.strip().lower()
-    if not normalised or len(normalised) > _MEDIUM_TAG_MAX or not _MEDIUM_TAG.match(normalised):
+    if not normalised or not SLUG_PATTERN.match(normalised):
         raise InvalidMediumTag(
             f"{tag!r} is not a valid Medium tag: lower-case letters, digits, "
             "and single hyphens only"
         )
+
+    slug = f"medium-{normalised}"
+    problem = slug_problem(slug)
+    if problem is not None:
+        raise InvalidMediumTag(f"{tag!r} makes an unusable slug {slug!r}: it {problem}")
+
     return SeedSource(
-        slug=f"medium-{normalised}",
+        slug=slug,
         name=f"Medium — {normalised}",
         feed_url=f"https://medium.com/feed/tag/{normalised}",
         website_url=f"https://medium.com/tag/{normalised}",
