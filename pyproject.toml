@@ -40,6 +40,12 @@ dev = [
     "time-machine>=2.16",
 ]
 
+[project.scripts]
+# The operator CLI (PRD: "in v1 this can be an operator-only CLI"). The
+# runtime image puts /app/.venv/bin on PATH, so this is reachable as
+# `podman exec sre-tab-app sre-tab status`.
+sre-tab = "app.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -72,6 +78,8 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 # Alembic templates use module-level config before imports settle.
 "alembic/*" = ["E402"]
+# The operator CLI's output *is* stdout; T20 bans print everywhere else.
+"app/cli/*" = ["T20"]
 
 # --- mypy ---------------------------------------------------------------
 

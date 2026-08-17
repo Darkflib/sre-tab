@@ -328,6 +328,74 @@ Podman secret plumbing, and the timer firing. CI validates unit *generation*
 with `podman-system-generator --dryrun`, which catches malformed keys but not
 runtime behaviour.
 
+## Seeding the catalogue, and the operator CLI
+
+The database starts with no sources and no topics, so a freshly migrated
+instance shows an empty feed and an onboarding screen with nothing to tick.
+Seed it once, after the first `install.sh --start`:
+
+```bash
+podman exec sre-tab-app sre-tab seed
+```
+
+Idempotent, and it never overwrites an existing row — an operator who renamed
+a source, changed its interval, or disabled it has made a decision, and
+re-running the seed does not reverse it.
+
+The rest of the administrator role from the PRD lives in the same command:
+
+```bash
+podman exec sre-tab-app sre-tab sources list
+podman exec sre-tab-app sre-tab topics list
+podman exec sre-tab-app sre-tab sources disable bbc-news
+podman exec sre-tab-app sre-tab sources set-topics lobsters --topics open-source,devops
+podman exec sre-tab-app sre-tab sources add \
+  --slug phoronix --name Phoronix \
+  --feed-url https://www.phoronix.com/rss.php \
+  --website-url https://www.phoronix.com/ \
+  --topics hardware --refresh-minutes 60
+podman exec sre-tab-app sre-tab sources add-medium-tag python --topics python
+```
+
+Three things about it are worth knowing before using it.
+
+**A feed URL is validated when it is added, not when it is first fetched.**
+`sre-tab sources add` runs the whole SSRF guard minus DNS — https only, no
+credentials, port 443, no private or obfuscated IP literals, no single-label
+or non-public hostname — and refuses GraphQL and sitemap endpoints, which are
+the v2 deferral. A URL the fetcher would reject is rejected here, with the
+reason, rather than becoming a source that silently never works.
+
+**`add-medium-tag` expands the template at configuration time.** The tag has
+to match a strict slug pattern, and what lands in `sources.feed_url` is a
+fixed string. Nothing in the fetch path ever assembles a URL from a value it
+did not already have; acceptance criterion 5 depends on that.
+
+**Sources with no topics produce items with no topics.** Items inherit their
+source's default topics at ingest, and `GET /feed?topics=…` is literal — an
+item carrying no topics matches no explicit topic filter. Always pass
+`--topics` when adding a source.
+
+### Refresh status
+
+```bash
+podman exec sre-tab-app sre-tab status
+```
+
+This is the PRD's operator status view. It reads the `source_status` table
+rather than the application's memory, which is what lets a separate process
+answer the question at all — and it exits non-zero when an enabled source is
+failing, so a monitoring job can call it and mean it:
+
+```bash
+podman exec sre-tab-app sre-tab status || echo 'a source is failing'
+```
+
+`source_status` is deliberately not columns on `sources`: `sources` is
+operator-managed configuration and this is scheduler-written runtime state.
+Keeping them apart means `sources.updated_at` still means "the operator
+changed the configuration", and the two writers never contend.
+
 ## Operations
 
 ```bash
