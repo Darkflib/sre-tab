@@ -84,8 +84,11 @@
   padding: 1.25rem 1rem 3rem;
 }
 
+/* Skip-link target: focused programmatically, so it gets no ring and, since
+   `:focus-visible` now also paints a halo, no halo either. */
 .shell__main:focus {
   outline: none;
+  box-shadow: none;
 }
 
 .shell__footer {
@@ -130,6 +133,8 @@
 .landing__panel:focus,
 .onboarding__panel:focus {
   outline: none;
+  /* Keep the panel's own elevation; do not let the focus halo replace it. */
+  box-shadow: var(--shadow);
 }
 
 .landing__title {
@@ -481,8 +486,14 @@
   background: var(--surface-2);
 }
 
-.card[data-read='true'] .card__title,
-.card[data-read='true'] .card__summary {
+/*
+ * The title only. The summary is already `--text-muted`, and dimming it to
+ * 0.72 on top of that put it at 3.22:1 in light — a straight 1.4.3 failure,
+ * and the one this file had. Read state is still carried three ways: the
+ * `--surface-2` fill, the "Read" flag, and this. The title has the headroom
+ * to absorb it (17.95:1 → 6.64:1 light, 14.50:1 → 7.52:1 dark).
+ */
+.card[data-read='true'] .card__title {
   opacity: 0.72;
 }
 
@@ -556,7 +567,9 @@
 .card__source .icon {
   width: 12px;
   height: 12px;
-  opacity: 0.6;
+  /* 0.6 left the chevron at 2.72:1 in light, under 1.4.11's 3:1 for a
+     graphic that signals the control is actionable. 0.75 gives 3.53:1. */
+  opacity: 0.75;
 }
 
 .card__source-icon {

@@ -82,9 +82,23 @@ legend {
   margin-bottom: 0.4rem;
 }
 
+/*
+ * Two concentric rings, not one. `outline-offset` leaves a transparent gap,
+ * so a single ring borrows whatever is behind the control — which on an
+ * accent-filled chip or a danger button is the ring's own colour, leaving
+ * a glow rather than a ring (in dark mode `--focus` and `--accent` are the
+ * same value). `--focus-halo` paints that gap explicitly, so the sequence
+ * is always fill → halo → ring with at least 6.9:1 (light) / 9.1:1 (dark)
+ * between ring and halo, whatever the control is filled with.
+ *
+ * `border-radius` here only reaches elements that set none of their own —
+ * every button, chip, and input declares its own radius later in the
+ * cascade at equal specificity, so their shapes are untouched.
+ */
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--focus-halo);
   border-radius: 3px;
 }
 
@@ -149,8 +163,11 @@ legend {
   background: var(--surface-hover);
 }
 
+/* 0.6, not 0.55: the lower value put the label at 4.00:1 in light. WCAG
+   exempts disabled controls, but "exempt" is not a reason to be unreadable
+   and the extra 0.05 costs nothing visually. Now 4.69:1 / 5.96:1. */
 .button:disabled {
-  opacity: 0.55;
+  opacity: 0.6;
   cursor: not-allowed;
 }
 

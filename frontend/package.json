@@ -13,8 +13,10 @@
     "typecheck": "tsc --build --force",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "generate:api": "openapi-typescript ./openapi.json -o ./src/api/schema.d.ts",
-    "check": "npm run lint && npm run typecheck && npm run build"
+    "check": "npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
     "openapi-fetch": "0.17.0",
@@ -35,6 +37,7 @@
     "openapi-typescript": "7.13.0",
     "typescript": "5.9.3",
     "typescript-eslint": "8.67.0",
-    "vite": "8.2.1"
+    "vite": "8.2.1",
+    "vitest": "3.2.7"
   }
 }

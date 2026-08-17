@@ -4,8 +4,27 @@
  * selectors decide the colours. The media query is the JavaScript-off
  * fallback — with no attribute set, the OS preference still wins.
  *
- * Contrast: every text/background pair below clears WCAG AA (4.5:1) in
- * both themes; muted text on its own surface is the tightest at ~5.5:1.
+ * Contrast, measured rather than estimated (see
+ * `src/theme/__tests__/tokens.test.ts`, which recomputes these from the
+ * file itself and fails the build if a value drifts):
+ *
+ * - Text. Every text/background pair clears WCAG AA 1.4.3 (4.5:1) in both
+ *   themes. Muted text on `--surface-hover` is the tightest at 5.44:1
+ *   (light) and 6.28:1 (dark).
+ * - Interactive boundaries. `--border-strong` draws the edge of a button,
+ *   an input, and an inactive chip — the only thing identifying those
+ *   controls — so it clears 1.4.11 (3:1) against every surface it is
+ *   drawn on: 3.19–3.71:1 light, 3.16–4.29:1 dark.
+ * - Container boundaries. `--border` draws cards, panels, and tags, whose
+ *   identity comes from their content rather than their edge. 1.4.11 does
+ *   not require 3:1 there and a grid of 3:1 card outlines reads as a
+ *   table, so it sits at 1.86:1 light / 2.01:1 dark — clearly visible,
+ *   deliberately quiet. Raise it here if that judgement is wrong; do not
+ *   patch it per component.
+ * - Focus. `--focus` clears 3:1 against every surface, and `--focus-halo`
+ *   fills the `outline-offset` gap so the ring keeps that contrast even
+ *   on an accent- or danger-filled control, where ring and fill would
+ *   otherwise be the same colour. See `:focus-visible` in base.css.
  */
 :root {
   --bg: #f4f5f7;
@@ -14,8 +33,8 @@
   --surface-hover: #e3e6ec;
   --text: #14171d;
   --text-muted: #545b6b;
-  --border: #d3d7e0;
-  --border-strong: #b3bac7;
+  --border: #b9becc;
+  --border-strong: #7d8595;
   --accent: #1a54c4;
   --accent-hover: #14459f;
   --accent-contrast: #ffffff;
@@ -23,10 +42,13 @@
   --danger: #a81d17;
   --danger-contrast: #ffffff;
   --notice-bg: #fdf3dd;
-  --notice-border: #d9b45f;
+  --notice-border: #ad8524;
   --error-bg: #fcebe9;
-  --error-border: #d9a09b;
+  --error-border: #c4736c;
   --focus: #0b4fd0;
+  /* Fills the outline-offset gap so the ring never sits directly against a
+     fill of its own colour. Matches the theme's lightest ground. */
+  --focus-halo: #ffffff;
   --shadow: 0 1px 2px rgb(20 23 29 / 8%), 0 4px 12px rgb(20 23 29 / 6%);
 
   --radius: 8px;
@@ -45,8 +67,8 @@
     --surface-hover: #262c37;
     --text: #e8eaf0;
     --text-muted: #a6aebd;
-    --border: #2b323e;
-    --border-strong: #3c4553;
+    --border: #424c5c;
+    --border-strong: #6e788c;
     --accent: #8ab4ff;
     --accent-hover: #a9c8ff;
     --accent-contrast: #0d1015;
@@ -54,10 +76,11 @@
     --danger: #ff9a90;
     --danger-contrast: #240a08;
     --notice-bg: #2c2513;
-    --notice-border: #6f5c23;
+    --notice-border: #8a7430;
     --error-bg: #33191a;
-    --error-border: #6d3733;
+    --error-border: #a25851;
     --focus: #8ab4ff;
+    --focus-halo: #0d1015;
     --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 4px 14px rgb(0 0 0 / 30%);
 
     color-scheme: dark;
@@ -71,8 +94,8 @@
   --surface-hover: #262c37;
   --text: #e8eaf0;
   --text-muted: #a6aebd;
-  --border: #2b323e;
-  --border-strong: #3c4553;
+  --border: #424c5c;
+  --border-strong: #6e788c;
   --accent: #8ab4ff;
   --accent-hover: #a9c8ff;
   --accent-contrast: #0d1015;
@@ -80,10 +103,11 @@
   --danger: #ff9a90;
   --danger-contrast: #240a08;
   --notice-bg: #2c2513;
-  --notice-border: #6f5c23;
+  --notice-border: #8a7430;
   --error-bg: #33191a;
-  --error-border: #6d3733;
+  --error-border: #a25851;
   --focus: #8ab4ff;
+  --focus-halo: #0d1015;
   --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 4px 14px rgb(0 0 0 / 30%);
 
   color-scheme: dark;
