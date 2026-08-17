@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.security.csrf import generate_csrf_token
 from app.settings import Settings
-from tests.auth.conftest import PreferencesStub, csrf_headers
+from tests.auth.conftest import PreferencesStub, SignIn, csrf_headers
 
 # Mutating endpoints across the whole API. The last three belong to agent
 # C and are untouched by this agent.
@@ -57,7 +57,8 @@ def test_a_validly_signed_but_mismatched_header_is_refused(
     signed_in_client: TestClient, settings: Settings
 ) -> None:
     """Double submit: the two halves must match, not merely both verify."""
-    other = generate_csrf_token(settings.session_secret.get_secret_value())
+    session_token = signed_in_client.cookies[settings.session_cookie_name]
+    other = generate_csrf_token(settings.session_secret.get_secret_value(), session_token)
     response = signed_in_client.post(
         "/api/v1/auth/logout", headers={settings.csrf_header_name: other}
     )
@@ -67,10 +68,46 @@ def test_a_validly_signed_but_mismatched_header_is_refused(
 def test_a_header_signed_with_another_secret_is_refused(
     signed_in_client: TestClient, settings: Settings
 ) -> None:
-    forged = generate_csrf_token("an-attacker-controlled-secret")
+    session_token = signed_in_client.cookies[settings.session_cookie_name]
+    forged = generate_csrf_token("an-attacker-controlled-secret", session_token)
     signed_in_client.cookies.set(settings.csrf_cookie_name, forged)
     response = signed_in_client.post(
         "/api/v1/auth/logout", headers={settings.csrf_header_name: forged}
+    )
+    assert response.status_code == 403
+
+
+def test_a_token_minted_for_a_different_session_is_refused(
+    signed_in_client: TestClient, settings: Settings
+) -> None:
+    """The end-to-end form of the reproduced attack: a token our own
+    server would sign, presented against somebody else's session."""
+    foreign = generate_csrf_token(
+        settings.session_secret.get_secret_value(), "a-session-that-is-not-this-one"
+    )
+    signed_in_client.cookies.set(settings.csrf_cookie_name, foreign)
+    response = signed_in_client.patch(
+        "/api/v1/me/preferences", json={}, headers={settings.csrf_header_name: foreign}
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "CSRF validation failed"
+
+
+def test_the_csrf_cookie_does_not_survive_a_session_rotation(
+    signed_in_client: TestClient, settings: Settings, sign_in: SignIn
+) -> None:
+    """Signing in again revokes the old session and issues a new pair.
+
+    The previous CSRF token was minted against the previous session, so
+    it stops verifying at the moment that session stops existing — the
+    binding tracks rotation for free.
+    """
+    stale = signed_in_client.cookies[settings.csrf_cookie_name]
+    assert sign_in().status_code == 302
+
+    signed_in_client.cookies.set(settings.csrf_cookie_name, stale)
+    response = signed_in_client.post(
+        "/api/v1/auth/logout", headers={settings.csrf_header_name: stale}
     )
     assert response.status_code == 403
 

@@ -96,8 +96,10 @@ Shared-contract files owned by Phase 0 and frozen for Phase 1:
   (`generate_session_token` / `hash_session_token`). Only the hash is
   stored; the raw token exists solely in the cookie.
 - **CSRF** — `app.security.csrf` implements the signed double-submit
-  cookie primitive. Mutating routes take `Depends(require_csrf)`;
-  Agent A issues the cookie at session creation.
+  cookie primitive. The token is bound to the session it was issued for
+  (`generate_csrf_token(secret, session_token)`), so one minted for
+  another session is refused. Mutating routes take
+  `Depends(require_csrf)`; Agent A issues the cookie at session creation.
 - **Probes** — `from app.health import probes;
   probes.register_readiness("scheduler", fn)`. Never touch the healthz
   route.

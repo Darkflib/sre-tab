@@ -102,14 +102,16 @@ def clear_session_cookie(response: Response, settings: Settings) -> None:
     )
 
 
-def issue_csrf_cookie(response: Response, settings: Settings) -> str:
+def issue_csrf_cookie(response: Response, settings: Settings, session_token: str) -> str:
     """Set the CSRF cookie alongside a new session.
 
     Deliberately *not* ``HttpOnly``: the double-submit pattern requires the
-    frontend to read this value and echo it in the CSRF header. The value
-    is signed, so it is useless to script on another origin.
+    frontend to read this value and echo it in the CSRF header. Secrecy is
+    therefore not available as a defence and is not relied upon — the token
+    is bound to ``session_token``, so it verifies against that session and
+    no other, and one lifted from elsewhere is inert here.
     """
-    token = generate_csrf_token(settings.session_secret.get_secret_value())
+    token = generate_csrf_token(settings.session_secret.get_secret_value(), session_token)
     response.set_cookie(
         settings.csrf_cookie_name,
         token,

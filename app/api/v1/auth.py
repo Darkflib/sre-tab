@@ -181,7 +181,7 @@ def github_callback(
         settings.app_base_url.rstrip("/") + "/", status_code=status.HTTP_302_FOUND
     )
     set_session_cookie(response, token, settings)
-    issue_csrf_cookie(response, settings)
+    issue_csrf_cookie(response, settings, token)
     clear_state_cookie(response, settings)
     return response
 
