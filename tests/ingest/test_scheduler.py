@@ -327,19 +327,30 @@ def test_a_stale_tick_fails_readiness(
         scheduler.shutdown(wait=True)
 
 
-@respx.mock
 def test_failing_sources_are_reported_without_failing_readiness(
     ingest_settings: Settings,
     engine: Engine,
     session_factory: sessionmaker[Session],
     ingest_service: IngestService,
-    source: Source,
 ) -> None:
+    """One broken feed must not take the instance out of the pool.
+
+    No source row and no respx route: ``start()`` schedules an immediate
+    first tick on its own thread, and racing that thread for the same
+    source is how this test used to flake. The failure is recorded
+    directly instead, which is what readiness actually reads.
+    """
     enabled = ingest_settings.model_copy(update={"source_refresh_enabled": True})
     scheduler = SchedulerService(
         enabled, engine, session_factory, ingest=ingest_service, lock=SingleProcessLock()
     )
-    respx.get(PINNED_URL).mock(side_effect=httpx.ConnectError("down"))
+    ingest_service.status.record_failure(
+        source_id=1,
+        slug="broken",
+        refresh_minutes=30,
+        error_class="FetchError",
+        detail="down",
+    )
     try:
         scheduler.start()
         scheduler.tick()
