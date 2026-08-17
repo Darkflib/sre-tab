@@ -1,20 +1,19 @@
-"""Item read-state route — Phase 1 agent C replaces the body; contract
-fixed."""
+"""Item read-state route."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser
 from app.api.v1.schemas import ErrorResponse, ReadStateOut, ReadStateUpdate
+from app.db.session import get_db
+from app.services import read_state as read_state_service
+from app.services.errors import ItemNotFoundError
 
 router = APIRouter(prefix="/items", tags=["items"])
-
-_NOT_IMPLEMENTED = HTTPException(
-    status.HTTP_501_NOT_IMPLEMENTED, detail="Not implemented — Phase 1 (agent C)"
-)
 
 _ERRORS: dict[int | str, dict[str, Any]] = {
     401: {"model": ErrorResponse, "description": "Not signed in"},
@@ -23,6 +22,14 @@ _ERRORS: dict[int | str, dict[str, Any]] = {
 
 
 @router.put("/{item_id}/read-state", response_model=ReadStateOut, responses=_ERRORS)
-def put_read_state(user: CurrentUser, item_id: int, update: ReadStateUpdate) -> ReadStateOut:
+def put_read_state(
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    item_id: int,
+    update: ReadStateUpdate,
+) -> ReadStateOut:
     """Mark an item read or unread; idempotent either way."""
-    raise _NOT_IMPLEMENTED
+    try:
+        return read_state_service.set_read_state(db, user, item_id, read=update.read)
+    except ItemNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Unknown item") from exc
