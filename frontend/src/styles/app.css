@@ -159,6 +159,19 @@
   margin: 1.5rem 0 1rem;
 }
 
+/* Sign-in outcome from ?signin=. Informational, not an error: cancelling
+   is a choice, and styling it as a failure would be telling the user off
+   for making it. */
+.landing__notice {
+  margin: 0 0 1.25rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  font-size: 0.9375rem;
+}
+
 .landing__note,
 .onboarding__hint,
 .settings__hint {

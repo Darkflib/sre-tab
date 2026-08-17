@@ -230,9 +230,59 @@ The outer proxy must therefore:
   absolute URLs from that setting rather than from forwarded headers, so no
   `X-Forwarded-Proto` plumbing is needed — but the value has to be right.
 
-`FORWARDED_ALLOW_IPS` in `app.env` is `10.89.61.20`, the fixed address
-`sre-tab-web.container` gives Caddy. It is the only host uvicorn will believe
-about forwarded headers.
+### The client-address chain, and why it needs settings at both ends
+
+Setting `X-Forwarded-For` at the outer proxy is necessary and, on its own,
+not sufficient. There are three links, and all three have to hold or the
+application's per-IP rate limiting quietly becomes one global bucket — with
+nothing in the logs to say so, because every link is behaving exactly as
+documented.
+
+```
+client ─▶ TLS proxy ─▶ Caddy ─────────────▶ uvicorn ─▶ app
+          sets XFF     appends its peer     picks one   rate-limit key
+                       (trusted_proxies)    (FORWARDED_ALLOW_IPS)
+```
+
+1. **The outer proxy sets `X-Forwarded-For`** to the real client, and refuses
+   one the client supplied.
+2. **Caddy appends rather than replaces.** Caddy 2.7 and later will not
+   believe an `X-Forwarded-For` from a peer it does not trust — sensibly —
+   and *replaces* it with the connecting address instead. So without the
+   `servers { trusted_proxies … }` block in `deploy/Caddyfile`, the outer
+   proxy's header is thrown away at the front door and step 1 buys nothing.
+   The default trusts `10.89.61.1/32`, the gateway on `sre-tab.network`,
+   which is the source address a connection to the published
+   `127.0.0.1:8080` port arrives from once Podman has DNATed it.
+3. **uvicorn resolves the chain.** It reads `X-Forwarded-For` only when the
+   peer is in `FORWARDED_ALLOW_IPS`, then walks the chain from the right and
+   takes the first address it does *not* trust. So that list has to name
+   every hop we operate — Caddy at `10.89.61.20` for the peer check, and
+   `10.89.61.1` for the hop Caddy appended — or the walk stops one short and
+   the "client" is a proxy.
+
+Add a hop and both step 2 and step 3 need it. A CDN in front of the TLS proxy
+means its address goes in `trusted_proxies` and in `FORWARDED_ALLOW_IPS`.
+
+Never set `FORWARDED_ALLOW_IPS=*`. That branch makes uvicorn take the
+*leftmost* value in the chain, which is whatever the client wrote, and a
+caller can then pick its own rate-limit bucket.
+
+Check it end to end after any change to either — the application does not log
+the client address on the happy path, so the honest test is to spend the
+budget and see whether it is shared:
+
+```bash
+# From two different client addresses. Twenty starts in five minutes is the
+# limit, per address. If the second client is throttled by the first client's
+# traffic, the chain is broken somewhere above.
+for i in $(seq 1 21); do
+  curl -so /dev/null -w '%{http_code}\n' https://news.example.com/api/v1/auth/github/start
+done | tail -3
+```
+
+A 429 on the twenty-first request from one address, and a 302 from a
+different address at the same moment, is the property working.
 
 ### Two settings that need a frontend rebuild, not a restart
 

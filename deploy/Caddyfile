@@ -10,6 +10,29 @@
 {
 	admin off
 	auto_https off
+
+	# Without this, per-IP rate limiting in the application is per-IP in
+	# name only. Caddy 2.7 and later refuse to believe an X-Forwarded-For
+	# from an untrusted peer — sensibly — and *replace* it with the address
+	# of whoever connected. The host's TLS proxy is untrusted by default, so
+	# its X-Forwarded-For is discarded and every request reaches uvicorn
+	# looking as though it came from one address. The limiter then has a
+	# single bucket for the whole internet, and nothing anywhere says so.
+	#
+	# 10.89.61.1 is the gateway on sre-tab.network, which is the source
+	# address a connection to the published 127.0.0.1:8080 port arrives from
+	# once Podman has DNATed it. Trusting it makes Caddy *append* rather than
+	# replace, so the chain that reaches uvicorn is
+	# `<real client>, 10.89.61.1`.
+	#
+	# The two halves have to agree: FORWARDED_ALLOW_IPS in app.env must list
+	# every hop named here as well as Caddy itself, because uvicorn walks the
+	# chain from the right and stops at the first address it does not trust.
+	# Verify after any change to either — see "TLS termination" in
+	# deploy/README.md.
+	servers {
+		trusted_proxies static 10.89.61.1/32
+	}
 }
 
 # --------------------------------------------------------------------------

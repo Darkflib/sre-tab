@@ -47,6 +47,16 @@
         "responses": {
           "302": {
             "description": "Redirect to GitHub's authorization page"
+          },
+          "429": {
+            "description": "Too many sign-in attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -57,34 +67,90 @@
           "auth"
         ],
         "summary": "Github Callback",
-        "description": "Complete OAuth: validate state, exchange the code server-side, and\nissue the session cookie. The code and token never reach logs or\nbrowser code.",
+        "description": "Complete OAuth: validate state, exchange the code server-side, and\nissue the session cookie. The code and token never reach logs or\nbrowser code.\n\nNothing here is a required query parameter, and that is deliberate.\nGitHub redirects a user who clicks \"Cancel\" to\n``?error=access_denied&error_description=\u2026&state=\u2026`` with no ``code``\nat all. Declaring ``code`` required turns that ordinary, expected\noutcome into FastAPI's 422 validation error \u2014 a wall of JSON where a\n\"sign-in was cancelled\" message belongs.",
         "operationId": "github_callback_api_v1_auth_github_callback_get",
         "parameters": [
           {
             "name": "code",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "string",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
               "title": "Code"
             }
           },
           {
             "name": "state",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "string",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
               "title": "State"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          {
+            "name": "error_description",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error Description"
             }
           }
         ],
         "responses": {
           "302": {
-            "description": "Session created; redirect into the application"
+            "description": "Session created; redirect into the application. Also the response when GitHub reports a user denial, in which case the redirect carries a ?signin= outcome and no session."
           },
           "403": {
             "description": "State mismatch or user not allow-listed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed sign-in attempts",
             "content": {
               "application/json": {
                 "schema": {
@@ -363,6 +429,16 @@
               }
             }
           },
+          "400": {
+            "description": "Malformed cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Not signed in",
             "content": {
@@ -512,6 +588,16 @@
           },
           "401": {
             "description": "Not signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed cursor",
             "content": {
               "application/json": {
                 "schema": {

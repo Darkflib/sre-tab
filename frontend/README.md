@@ -67,9 +67,12 @@ application middleware only decorates responses FastAPI emits.
 `src/api/schema.d.ts` is generated, not written:
 
 ```sh
-uv run python -c "import json; from app.main import create_app; print(json.dumps(create_app().openapi(), indent=2))" > frontend/openapi.json
+LOG_LEVEL=CRITICAL uv run python -c "import json; from app.main import create_app; print(json.dumps(create_app().openapi(), indent=2))" > frontend/openapi.json
 cd frontend && npm run generate:api
 ```
+
+`LOG_LEVEL=CRITICAL` is not optional tidiness: structlog writes to stdout, so
+`create_app()`'s start-up lines land in the middle of the JSON otherwise.
 
 `openapi.json` is committed so the build never depends on a running server
 or a Python toolchain. When the contract changes, regenerate both files in

@@ -45,6 +45,20 @@ class Settings(BaseSettings):
     csrf_cookie_name: str = "csrftoken"
     csrf_header_name: str = "X-CSRF-Token"
 
+    # `Secure` on the session, CSRF, and OAuth-state cookies. True in
+    # every deployment — the PRD requires it and the reverse proxy
+    # terminates TLS.
+    #
+    # The escape hatch exists for one narrow case: development against a
+    # host that is not `localhost`, over plain http. Browsers exempt
+    # localhost from the Secure rule, so ordinary local work needs
+    # nothing here; a colleague testing against http://dev-box.lan does,
+    # and without this the browser silently drops every cookie and
+    # sign-in looks broken rather than misconfigured. Setting it false on
+    # anything reachable from a network hands the session cookie to
+    # anyone on the path.
+    cookie_secure: bool = True
+
     # --- Feed retention and source refresh ------------------------------
     feed_retention_days: int = Field(default=90, ge=1)
     source_refresh_enabled: bool = True

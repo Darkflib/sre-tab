@@ -87,7 +87,7 @@ def set_session_cookie(response: Response, token: str, settings: Settings) -> No
         max_age=settings.session_ttl_days * 24 * 60 * 60,
         path=COOKIE_PATH,
         httponly=True,
-        secure=True,
+        secure=settings.cookie_secure,
         samesite="lax",
     )
 
@@ -97,7 +97,7 @@ def clear_session_cookie(response: Response, settings: Settings) -> None:
         settings.session_cookie_name,
         path=COOKIE_PATH,
         httponly=True,
-        secure=True,
+        secure=settings.cookie_secure,
         samesite="lax",
     )
 
@@ -116,7 +116,7 @@ def issue_csrf_cookie(response: Response, settings: Settings) -> str:
         max_age=settings.session_ttl_days * 24 * 60 * 60,
         path=COOKIE_PATH,
         httponly=False,
-        secure=True,
+        secure=settings.cookie_secure,
         samesite="lax",
     )
     return token
@@ -127,12 +127,12 @@ def clear_csrf_cookie(response: Response, settings: Settings) -> None:
         settings.csrf_cookie_name,
         path=COOKIE_PATH,
         httponly=False,
-        secure=True,
+        secure=settings.cookie_secure,
         samesite="lax",
     )
 
 
-def set_state_cookie(response: Response, state: str, ttl_seconds: int) -> None:
+def set_state_cookie(response: Response, state: str, ttl_seconds: int, settings: Settings) -> None:
     """Bind the OAuth state to this browser for the length of the flow."""
     response.set_cookie(
         STATE_COOKIE_NAME,
@@ -140,16 +140,16 @@ def set_state_cookie(response: Response, state: str, ttl_seconds: int) -> None:
         max_age=ttl_seconds,
         path=STATE_COOKIE_PATH,
         httponly=True,
-        secure=True,
+        secure=settings.cookie_secure,
         samesite="lax",
     )
 
 
-def clear_state_cookie(response: Response) -> None:
+def clear_state_cookie(response: Response, settings: Settings) -> None:
     response.delete_cookie(
         STATE_COOKIE_NAME,
         path=STATE_COOKIE_PATH,
         httponly=True,
-        secure=True,
+        secure=settings.cookie_secure,
         samesite="lax",
     )

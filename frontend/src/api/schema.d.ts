@@ -53,6 +53,13 @@ export interface paths {
          * @description Complete OAuth: validate state, exchange the code server-side, and
          *     issue the session cookie. The code and token never reach logs or
          *     browser code.
+         *
+         *     Nothing here is a required query parameter, and that is deliberate.
+         *     GitHub redirects a user who clicks "Cancel" to
+         *     ``?error=access_denied&error_description=…&state=…`` with no ``code``
+         *     at all. Declaring ``code`` required turns that ordinary, expected
+         *     outcome into FastAPI's 422 validation error — a wall of JSON where a
+         *     "sign-in was cancelled" message belongs.
          */
         get: operations["github_callback_api_v1_auth_github_callback_get"];
         put?: never;
@@ -532,13 +539,24 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Too many sign-in attempts */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     github_callback_api_v1_auth_github_callback_get: {
         parameters: {
-            query: {
-                code: string;
-                state: string;
+            query?: {
+                code?: string | null;
+                state?: string | null;
+                error?: string | null;
+                error_description?: string | null;
             };
             header?: never;
             path?: never;
@@ -546,7 +564,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Session created; redirect into the application */
+            /** @description Session created; redirect into the application. Also the response when GitHub reports a user denial, in which case the redirect carries a ?signin= outcome and no session. */
             302: {
                 headers: {
                     [name: string]: unknown;
@@ -569,6 +587,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Too many failed sign-in attempts */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -753,6 +780,15 @@ export interface operations {
                     "application/json": components["schemas"]["FeedPage"];
                 };
             };
+            /** @description Malformed cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Not signed in */
             401: {
                 headers: {
@@ -846,6 +882,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BookmarkPage"];
+                };
+            };
+            /** @description Malformed cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             /** @description Not signed in */

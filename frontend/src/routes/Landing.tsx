@@ -1,12 +1,24 @@
-import { Navigate } from 'react-router-dom';
+import { Navigate, useSearchParams } from 'react-router-dom';
 
 import { GITHUB_SIGN_IN_PATH } from '../api/endpoints';
 import { GitHubIcon } from '../components/icons';
 import { ErrorState, LoadingState } from '../components/States';
 import { useSession } from '../session/useSession';
 
+/* The callback redirects here with ?signin=… when the flow ended without a
+   session — a user who pressed Cancel on GitHub's consent screen, above all.
+   The server chooses from this fixed set rather than passing GitHub's own
+   error code through, so nothing here renders text from upstream; an
+   unrecognised value shows nothing at all. */
+const SIGN_IN_OUTCOMES: Record<string, string> = {
+  cancelled: 'Sign-in was cancelled. Nothing was shared with this server.',
+  failed: 'GitHub could not complete the sign-in. Please try again.',
+};
+
 export function Landing() {
   const { status, preferences, error, reload } = useSession();
+  const [searchParams] = useSearchParams();
+  const signInMessage = SIGN_IN_OUTCOMES[searchParams.get('signin') ?? ''];
 
   if (status === 'loading') {
     return (
@@ -42,6 +54,12 @@ export function Landing() {
           <li>No ads, no tracking, no recommendation engine, no telemetry.</li>
           <li>Your preferences follow you between browsers because they are stored server-side.</li>
         </ul>
+
+        {signInMessage ? (
+          <p className="landing__notice" role="status">
+            {signInMessage}
+          </p>
+        ) : null}
 
         {status === 'error' && error ? (
           <div className="landing__error">
