@@ -23,15 +23,23 @@ from app.settings import Settings
 CONTRACT = Path(__file__).resolve().parents[1] / "frontend" / "openapi.json"
 
 
-def _as_committed(spec: dict[str, Any]) -> str:
+def _as_committed(spec: dict[str, Any]) -> bytes:
     """Serialise *spec* exactly as frontend/README.md's command writes it.
 
     ``json.dumps`` at indent 2 through ``print``, trailing newline included.
     Matching the documented procedure byte for byte is the point: a test that
     re-serialised the document its own way would compare two things neither
     of which is what a regeneration produces.
+
+    Bytes rather than ``str``, and the caller reads with ``read_bytes``,
+    because ``Path.read_text`` applies universal-newline translation — it
+    would decode a CRLF file to the same string as an LF one and report the
+    two as equal. There is no ``.gitattributes`` pinning line endings here,
+    so a checkout with ``core.autocrlf`` is the way that happens. Saying
+    "byte for byte" and then comparing translated text is the kind of
+    almost-true claim this file exists to stop.
     """
-    return json.dumps(spec, indent=2) + "\n"
+    return (json.dumps(spec, indent=2) + "\n").encode("utf-8")
 
 
 # The PRD's twelve endpoints plus healthz: (path, method) operations.
@@ -102,7 +110,7 @@ def test_committed_contract_matches_the_live_schema(app: FastAPI) -> None:
     no longer exists, and ``tsc`` goes on passing — because it is checking
     the client against the stale copy, faithfully.
     """
-    assert CONTRACT.read_text(encoding="utf-8") == _as_committed(app.openapi()), (
+    assert CONTRACT.read_bytes() == _as_committed(app.openapi()), (
         "frontend/openapi.json no longer matches the live schema. Regenerate "
         "both artefacts in one commit (frontend/README.md):\n"
         '  LOG_LEVEL=CRITICAL uv run python -c "import json; from app.main '

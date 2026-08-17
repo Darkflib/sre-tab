@@ -253,6 +253,17 @@ jobs:
       - name: The generated API types match the committed document
         run: |
           npm run generate:api
+          # `git diff` reports tracked files only, so absence reads as
+          # agreement: delete the committed declaration and this step
+          # regenerates it as an untracked file, diffs nothing, and goes
+          # green — and `tsc` passes too, against the copy just written.
+          # A clean checkout would have neither. Reproduced before this
+          # guard was added, because a gate that checks nothing is the
+          # failure mode this repository keeps meeting.
+          git ls-files --error-unmatch -- src/api/schema.d.ts >/dev/null 2>&1 || {
+            echo "::error::src/api/schema.d.ts is not tracked. It is a committed artefact; regenerate it and commit the result."
+            exit 1
+          }
           git diff --exit-code -- src/api/schema.d.ts || {
             echo "::error::src/api/schema.d.ts is stale. Run 'npm run generate:api' and commit the result."
             exit 1

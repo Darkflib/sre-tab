@@ -94,6 +94,30 @@ mutation attempt was malformed and worth recording: hand-editing
 simply overwrites the edit. That is correct behaviour and a bad test of
 it — the check is for a stale *input*, not a tampered output.
 
+**Review found two holes in the gate, and one of them was the gate's own
+failure mode.** Both bot reviewers independently flagged that `git diff`
+reports tracked files only, so absence reads as agreement: delete the
+committed `schema.d.ts` and the step regenerates it as an untracked file,
+diffs nothing, and goes green — and `tsc` passes too, against the copy
+just written, while a clean checkout would have neither. Reproduced
+before fixing, and the reproduction is the part worth keeping: the job
+went entirely green on a tree that does not build. That is the semgrep
+`p/bash` failure again in a different costume — a gate that checked
+nothing while looking like coverage — which makes it a poor thing to
+have shipped in a change whose entire subject is gates that check
+nothing. `git ls-files --error-unmatch` now asserts the file is tracked
+before the diff is trusted.
+
+The second is smaller and was my claim rather than my code.
+`Path.read_text` applies universal-newline translation, so it decodes a
+CRLF file to the same string as an LF one and reports them equal — while
+the test, this worklog, and CONTRIBUTING.md all said "byte for byte".
+There is no `.gitattributes` pinning line endings here, so a checkout
+with `core.autocrlf` is exactly how that arises. Comparing `read_bytes()`
+makes the stated property true rather than nearly true. Verified by
+rewriting the committed document with CRLF endings and watching the test
+fail, which it did not before.
+
 One documentation claim was falsified in passing. CONTRIBUTING.md said
 `npm run check` was the local equivalent of the `frontend` job, and it no
 longer is: the job now regenerates and diffs, and `check` deliberately
