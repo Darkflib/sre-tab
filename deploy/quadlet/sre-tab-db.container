@@ -33,13 +33,50 @@ ReadOnly=true
 Tmpfs=/tmp:rw,nosuid,nodev,mode=1777
 Tmpfs=/run:rw,nosuid,nodev
 Tmpfs=/var/run/postgresql:rw,nosuid,nodev,mode=0755
-NoNewPrivileges=true
+# NoNewPrivileges is deliberately NOT set here, and this is the only unit in
+# the stack without it. Do not "restore the hardening" — it costs five minutes
+# of boot hang on every start, not just the first.
+#
+# Under no_new_privs this image never finishes starting, because AppArmor then
+# refuses the profile transition crun performs on exec. Some of the container's
+# processes end up confined by `containers-default-<ver>` and some by the
+# `containers-default-<ver>//&crun` sub-profile, and cross-profile signals are
+# denied between them. The kernel says so plainly:
+#
+#   apparmor="DENIED" operation="signal" profile="containers-default-0.62.2"
+#     comm="postgres" requested_mask="send" signal=usr1
+#     peer="containers-default-0.62.2//&crun"
+#
+# Signals are how both halves of this image's start-up talk, so both halves
+# hang, in different ways:
+#
+#   * as root (this configuration): PID 1 sticks at `gosu postgres
+#     /usr/local/bin/docker-entrypoint.sh postgres` at ~99.7% CPU, the Go
+#     runtime (gosu 1.19, go1.24.6) live-locking in an unbounded sched_yield()
+#     loop while its signal proxying is denied (signal=int in the log above);
+#   * with User=999:999, which skips the root branch and gosu entirely: initdb
+#     completes, but the postmaster cannot SIGUSR1 its own backends, so the
+#     entrypoint's `psql` sits against a backend parked in `authentication`
+#     and "PostgreSQL init process complete" never arrives.
+#
+# Measured on Debian 13 / podman 5.4.2 / crun 1.21 / kernel 6.12, on a fresh
+# volume and an existing one. A flag matrix isolated no_new_privs as the only
+# variable that matters: every combination with it wedged — as root, as
+# User=999:999, with and without DropCapability, with and without the
+# read-only rootfs and the tmpfs layout — and every combination without it
+# reached "init process complete" in 3s. `--security-opt apparmor=unconfined`
+# also fixes it, which is what identifies the mechanism, and is a worse trade:
+# it would give up all of podman's confinement to regain a flag whose whole
+# purpose is blocking a setuid escalation this container performs on purpose.
+#
+# Every other unit here keeps NoNewPrivileges=true. They are single-process
+# and never signal across that boundary, so none of them trips it.
 DropCapability=all
 # The official entrypoint starts as root to create and chown PGDATA, then
 # drops to uid 999 with gosu for the server itself. These five are what that
 # sequence needs and nothing more; the postmaster runs unprivileged.
-# No User= here for the same reason — set one and initdb cannot prepare a
-# fresh volume.
+# No User= here: see the no_new_privs note above — it was tried, and it trades
+# one hang for another rather than buying the hardening back.
 AddCapability=CHOWN DAC_OVERRIDE FOWNER SETGID SETUID
 
 # Readiness, not liveness: pg_isready answers only once the postmaster is

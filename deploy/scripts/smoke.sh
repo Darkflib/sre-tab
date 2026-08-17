@@ -81,7 +81,13 @@ step "Preparing $NET"
 "$ENGINE" volume create "$DB_VOL" >/dev/null
 
 step "Starting PostgreSQL on a fresh volume"
-# Flags mirror deploy/quadlet/sre-tab-db.container.
+# Flags mirror deploy/quadlet/sre-tab-db.container — including the absence of
+# --security-opt=no-new-privileges, which is not an oversight in either place.
+# See the note in that unit: under no_new_privs this image never finishes
+# starting on Debian 13 / podman 5.4.2. It happens to survive on the CI
+# runner's older kernel, which is exactly why the flag has to be off here too
+# — otherwise the smoke harness would keep asserting a configuration the
+# deployment cannot use.
 "$ENGINE" run --detach --name sre-tab-db --network "$NET" \
     --volume "$DB_VOL:/var/lib/postgresql:rw" \
     --env POSTGRES_USER=sretab \
@@ -92,7 +98,6 @@ step "Starting PostgreSQL on a fresh volume"
     --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
     --tmpfs /run:rw,nosuid,nodev \
     --tmpfs /var/run/postgresql:rw,nosuid,nodev,mode=0755 \
-    --security-opt=no-new-privileges \
     --cap-drop all \
     --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
     --cap-add SETGID --cap-add SETUID \
@@ -134,6 +139,8 @@ step "Publishing frontend assets"
     sh -ec 'find /srv/www -mindepth 1 -delete; cp -a /opt/sre-tab/web/. /srv/www/'
 
 start_app() {
+    # Flags mirror deploy/quadlet/sre-tab.container, no-new-privileges included
+    # by its absence — see the note in that unit.
     "$ENGINE" rm --force sre-tab-app >/dev/null 2>&1 || true
     "$ENGINE" run --detach --name sre-tab-app --network "$NET" \
         --env "DATABASE_URL=$DATABASE_URL" \
@@ -142,8 +149,8 @@ start_app() {
         --env "LOG_JSON=true" \
         --env "DOCS_ENABLED=false" \
         --env "SOURCE_REFRESH_ENABLED=$1" \
-        --read-only --tmpfs /tmp:rw,nosuid,nodev,size=64M \
-        --security-opt=no-new-privileges --cap-drop all \
+        --read-only --cap-drop all \
+        --tmpfs /tmp:rw,nosuid,nodev,size=64M \
         --user 10001:10001 --pids-limit 256 \
         "$IMAGE" >/dev/null
 }
