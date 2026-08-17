@@ -83,8 +83,42 @@ sudoedit /etc/sre-tab/app.env
 ```
 
 `APP_BASE_URL`, `GITHUB_REDIRECT_URI`, `GITHUB_CLIENT_ID`, and
-`ALLOWED_GITHUB_IDS` all have to be set. **An empty `ALLOWED_GITHUB_IDS`
-denies everyone**: v1 sign-in is allow-list only.
+`ALLOWED_GITHUB_IDS` all have to be set.
+
+### `ALLOWED_GITHUB_IDS` is the first-deploy trap
+
+**An empty `ALLOWED_GITHUB_IDS` denies everyone.** v1 sign-in is allow-list
+only — a comma-separated list of **numeric** GitHub user IDs, checked at the
+OAuth callback before any user record is created — and empty means nobody,
+including the operator who just deployed it.
+
+This is correct fail-closed behaviour and it looks nothing like a policy
+decision from the browser. The GitHub authorisation succeeds, the browser
+returns to `/api/v1/auth/github/callback`, and the response is a bare `403`
+carrying `{"detail": "This GitHub account is not permitted to sign in."}` —
+which reads far more like a broken OAuth application than like an allow-list
+doing its job. Authorisation is checked before any write, so a denied
+identity also leaves no row behind to hint at what happened.
+
+`deploy/app.env.example` ships the initial operator allow-list rather than an
+empty value, so an installation seeded from it works. An installation whose
+`app.env` came from anywhere else — the root `.env.example`, a configuration
+management system, a hand-written file — starts closed. Check it before
+concluding the OAuth app is misconfigured:
+
+```bash
+grep ALLOWED_GITHUB_IDS /etc/sre-tab/app.env
+journalctl -u sre-tab.service --since '5 min ago' \
+  | grep -e oauth_callback_denied -e oauth_denied_not_allow_listed
+```
+
+`oauth_denied_not_allow_listed` carries the `github_id` that was refused,
+which is the fastest way to discover that the number in the list is a
+repository ID, an organisation ID, or a digit short.
+
+The value is the numeric `id` from `https://api.github.com/users/<login>`,
+not the login itself. A login can be changed and reused; a numeric ID cannot,
+which is why the allow-list and the `users` table both key on it.
 
 ## Secrets
 
@@ -418,10 +452,18 @@ frontend is configured at build time; all API paths are relative.
 
 ### Egress
 
-The feed fetcher is the only component that talks to the internet, and it does
-so from `10.89.61.0/24`. If that traffic needs to leave by a specific source
-address, the nftables SNAT approach in `orbit-data/deploy/README.md` applies
-unchanged — substitute this subnet and add the fragment to the host firewall.
+Two things reach the internet, both from `10.89.61.0/24` and both from the
+application container. The feed fetcher is the obvious one, and the only one
+whose destinations an operator configures. The other is the OAuth callback:
+`app/auth/github.py` exchanges the authorisation code at
+`github.com/login/oauth/access_token` and reads the profile from
+`api.github.com/user`, both on a ten-second timeout with redirects not
+followed. An egress policy that allows only the configured feed hosts will
+therefore break sign-in.
+
+If that traffic needs to leave by a specific source address, the nftables
+SNAT approach in `orbit-data/deploy/README.md` applies unchanged — substitute
+this subnet and add the fragment to the host firewall.
 
 ## Backups
 
@@ -447,6 +489,21 @@ ls -l /srv/sre-tab/backups
 backup, not disaster recovery. Copy the directory off-host on whatever
 schedule the operator's risk tolerance justifies; the `.sha256` sidecars exist
 so a copy can be verified at the far end.
+
+**The `Persistent=true` catch-up has not been demonstrated.** What is tested
+is the script: `deploy/scripts/smoke.sh` runs the real `backup.sh` and the
+real `restore.sh` on every push and asserts the dump, its `.sha256` sidecar,
+and a restore that brings back both a marker row and the Alembic revision.
+What is not tested is the scheduling around it. Proving catch-up needs the
+host down across 03:22 UTC and then brought back, and no machine running this
+stack has yet been off overnight.
+
+The behaviour is systemd's rather than ours and this is an unremarkable
+`OnCalendar=` / `Persistent=true` pair, so the risk is small — but small is
+not tested, and an operator whose host is routinely off overnight should
+satisfy themselves before relying on it. `systemctl list-timers 'sre-tab-*'`
+shows the next and last elapse, which is where a missed catch-up would first
+be visible.
 
 ## Restore
 
@@ -545,8 +602,30 @@ https://www.theguardian.com/uk/rss/   → 301 http://www.theguardian.com/uk/rss 
 https://www.theguardian.com/uk/rss    → 200                                     fine
 ```
 
-If a source never fetches, request its feed URL by hand and read the `Location`
-header before concluding the feed is down.
+The whole failure is silent at add time and loud afterwards. `sources add`
+accepts the trailing-slash URL and prints `added source …`. On the first
+refresh the fetch stops at the downgrade, and the source then reads:
+
+```
+SLUG            STATE        LAST FETCH            LAST SUCCESS  LAST ERROR
+guardian-slash  failing (1)  2026-08-17 13:52:46Z  —             UnsafeTargetError
+
+guardian-slash: UnsafeTargetError: refused scheme:
+  http://www.theguardian.com/uk/rss (scheme 'http' is not https)
+```
+
+`sre-tab status` then exits non-zero, so a monitoring job that calls it starts
+alerting on a source that was accepted an hour earlier. That is the intended
+behaviour of every part of this, and it is thoroughly mystifying the first
+time. If a source never fetches, request its feed URL by hand and read the
+`Location` header before concluding the feed is down.
+
+The opposite case — a redirect that stays on `https` — is followed, with the
+destination re-validated and re-pinned in its own right rather than merely
+trusted. Worth knowing that this branch has unit coverage but no real-world
+provenance: none of the nineteen candidate feeds surveyed for the v1
+catalogue redirects at all, so the first source that does will be the first
+live exercise of it.
 
 **`add-medium-tag` expands the template at configuration time.** The tag has
 to match a strict slug pattern, and what lands in `sources.feed_url` is a

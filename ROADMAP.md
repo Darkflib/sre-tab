@@ -4,44 +4,99 @@ Work deliberately deferred past v1. Items are grouped by why they were
 deferred, not by size. See [prd-v1.md](prd-v1.md) for v1 scope and
 [PLAN-v1.md](PLAN-v1.md) for how it was built.
 
+Items marked **landed** stay listed rather than being deleted: the reasoning
+that put them here is usually still worth reading, and a roadmap that only
+ever grows tells you nothing about what moved.
+
 ## Supply-chain hygiene
 
-Raised by the Phase 3 SAST pass. The dependency trees are clean — 90 Python
-packages and 331 npm packages, zero CVEs, zero verified secrets across full
-git history — so this section is about the pipeline, not the code.
+Raised by the Phase 3 SAST pass. The dependency trees came back clean — zero
+CVEs and zero verified secrets across the full git history — so this section
+is about the pipeline, not the code.
 
-- **Digest-pin the application image.** Every third-party image is pinned by
-  tag *and* digest; ours floats on `:latest` with `Pull=newer` across
-  `sre-tab.container`, `sre-tab-migrate.container`, and
-  `sre-tab-assets.container`. It is the single unpinned link in an otherwise
-  fully pinned chain, and CI pushes `:latest` on every merge to main, so a
-  restart silently adopts whatever that currently resolves to. The units
-  already document a `:sha-<commit>` escape hatch; the work is making that
-  the default and giving deploys an explicit promotion step.
-- **Sign and verify.** No cosign signing and no SLSA provenance today, so
-  nothing is checked at admission. This compounds the floating tag: an
-  unpinned reference *and* an unverified one.
-- **Generate an SBOM** per build and retain it with the image.
-- **Extend Renovate to the CI workflows.** It currently tracks `deploy/`
-  only, so GitHub Actions versions drift unwatched.
-- **Fail CI on a non-empty Semgrep `errors[]`.** The `p/bash` ruleset 404s,
-  and that failure aborted a whole scan while still emitting a well-formed
-  report with `results: 0` and `paths.scanned: []` — a green gate that had
-  scanned nothing. Semgrep's OSS rules are thinner than Pro but worth
-  keeping; the risk is a silently broken run, not a shallow one.
-- **Supplement JS/TS coverage.** A canary with `innerHTML = param`,
-  `eval(param)`, and a literal AWS key went unflagged by the anonymous
-  ruleset. ShellCheck already covers the shell scripts (7 files, clean).
+- **Digest-pin the application image** — **landed.** `sre-tab.container`,
+  `sre-tab-migrate.container`, and `sre-tab-assets.container` tracked
+  `:latest` with `Pull=newer`, the single unpinned link in an otherwise fully
+  pinned chain: a restart for any reason — a reboot, an OOM kill, clearing a
+  stuck connection — silently adopted whatever CI had last pushed to main, so
+  the running version was decided by whoever merged most recently. All three
+  now pin `:sha-<commit>@sha256:…` with `Pull=missing`, and an upgrade is a
+  reviewable commit rather than a restart. `deploy/scripts/promote.sh` is the
+  promotion step; it resolves a commit to the digest the registry serves,
+  refuses to write one cosign cannot verify, and moves all three units
+  together, because migrations, the application, and the frontend assets ship
+  in one image precisely so they cannot skew. CI asserts both that the three
+  agree and that the digest they name is signed.
+- **Sign and verify** — **partially landed, and the gap is worth naming.**
+  Images are signed with cosign keyless against GitHub's OIDC identity, and
+  SLSA provenance is attested. What does *not* exist is verification at
+  admission, and it is not an oversight: podman's `containers-policy.json`
+  `sigstoreSigned.fulcio` block requires both `oidcIssuer` and `subjectEmail`,
+  and a GitHub Actions keyless certificate carries a URI SAN
+  (`https://github.com/Darkflib/sre-tab/.github/workflows/ci.yml@refs/heads/main`)
+  rather than an email — so this identity cannot be expressed in a podman
+  signature policy at all. Verification therefore happens before the fact,
+  four times: the publish job re-verifies what it just pushed, `promote.sh`
+  refuses to pin a digest cosign cannot verify, CI re-verifies the pinned
+  digest on every push, and `deploy/scripts/verify-image.sh` lets an operator
+  check before a restart. **A container start still checks nothing.** Closing
+  that needs either a policy format that can express a URI SAN or a
+  verification step wired into the units themselves.
+- **Generate an SBOM** — **landed.** syft produces SPDX JSON from the pushed
+  image, `actions/attest-sbom` publishes it as an attestation alongside the
+  image in the registry, and the document is also retained as a workflow
+  artefact.
+- **Extend Renovate to the CI workflows** — **landed, and the original premise
+  was wrong.** GitHub Actions were never unwatched: `config:recommended`
+  enables the Actions manager, and the dependency dashboard has been listing
+  ci.yml's actions — with pending majors — all along. The genuine blind spots
+  were narrower and are now covered by custom managers: an image named inside
+  a `run:` script (the Caddy image the Caddyfile validation uses) is invisible
+  to every built-in manager, and so was the pinned semgrep version.
+  `helpers:pinGitHubActionDigests` keeps new actions arriving as commit SHAs
+  with the version in a trailing comment, and `.github/workflows/docs.yml`
+  reuses ci.yml's exact pins so both move in one PR.
+- **Fail CI on a non-empty Semgrep `errors[]`** — **landed.** A `sast` job now
+  fails the build on a non-empty `errors[]` *and* on `paths.scanned == 0`. The
+  original failure was reproduced before the guard was written: `p/bash` 404s,
+  and that aborted the whole scan while still emitting a well-formed report
+  with `results: 0`, `scanned: []`, and exit 0 — a green gate that had scanned
+  nothing. Rulesets are named individually rather than via `auto`.
+  `p/dockerfile` is deliberately absent: semgrep does not recognise a file
+  named `Containerfile`, so it would have run zero rules over zero files while
+  looking like coverage.
+- **Supplement JS/TS coverage** — **partially landed, and half the original
+  evidence was a false conclusion.** The canary's AWS key went unflagged
+  because it was AWS's own documentation key, `AKIAIOSFODNN7EXAMPLE`, which
+  `p/secrets` allow-lists on purpose; a realistic `AKIA…` key is flagged. The
+  DOM sinks genuinely were missed by the OSS registry rules and still are,
+  which is what `.semgrep/frontend-dom-sinks.yml` exists for — three local
+  rules covering `innerHTML`/`outerHTML`/`insertAdjacentHTML`,
+  `dangerouslySetInnerHTML`, and `eval`/`new Function`/`document.write`, each
+  verified against a canary. Registry coverage of JS/TS taint flow is still
+  thinner than the Python equivalent. ShellCheck covers the shell scripts
+  (7 files, clean).
 
 ## API surface
 
-- **`docs_enabled` should default to `False`.** It defaults `True` today, so
-  a deployment not derived from `deploy/app.env.example` exposes Swagger UI.
-  Default-closed, opt in for development.
+- **`docs_enabled` should default to `False`** — **landed.** A deployment that
+  inherits only the defaults — a container run by hand, a second instance,
+  anything not derived from `deploy/app.env.example` — no longer publishes an
+  interactive client against its own API because nobody said not to.
+  `.env.example` still sets `DOCS_ENABLED=true`, since that file is the
+  development template. `/api/v1/openapi.json` is unaffected and served
+  either way: the flag governs the UI, not the contract.
 - **Serve a static OpenAPI document in production** rather than generating it
   from the live app. Publishing the schema at `/api/v1/openapi.json` is a v1
   requirement and stays; the change is decoupling it from the running
-  application so the served artefact is a reviewed, versioned file.
+  application so the served artefact is a reviewed, versioned file. It is
+  parked rather than merely unstarted, and the reason is ownership rather than
+  difficulty: `app/main.py` mounts no static files and is frozen Phase 0
+  property, the only place the served artefact could be decoupled from the
+  live app is `deploy/Caddyfile`, and a committed artefact needs a drift check
+  against the live schema whose natural home is `frontend/openapi.json`. The
+  cheap version — CI asserting the live schema matches a reviewed committed
+  file — is worth doing, and wants one owner across those three files.
 
 ## Scaling
 
@@ -64,10 +119,85 @@ prerequisite for going past it.
   database. That is a backup, not disaster recovery.
 - **`OnFailure=` alert unit.** Deliberately not invented in v1 — orbit-data's
   equivalent is a subcommand of its own application, and sre-tab had no CLI
-  at the time. It has one now.
-- **Frontend unit tests.** The build, lint, and typecheck gates pass and the
-  client was driven manually in a browser, but there are no unit tests. The
-  known gap.
+  at the time. It has one now, and `sre-tab status` already exits non-zero
+  when an enabled source is failing, so the alert path has something to call.
+- **Frontend unit tests** — **landed, and they found things.** Vitest, 114
+  tests in three files, no jsdom: the theme tests install by hand the two or
+  three globals the theme layer touches, so a new global dependency shows up
+  as a failure rather than being supplied silently. They cover theme
+  resolution and its `localStorage` fallbacks; the anti-flash script
+  `public/theme-init.js` executed in a `node:vm` context across every stored
+  value × OS preference combination, which is the first thing to check that it
+  agrees with the module it necessarily duplicates; and `tokens.css` parsed so
+  WCAG contrast ratios are recomputed for every text and boundary pair in both
+  themes. Dark mode had never been independently verified and was not clean:
+  button, input, and inactive-chip borders sat at 1.80:1 against 1.4.11's 3:1,
+  and read-card summary text at 3.22:1 in light against 1.4.3's 4.5:1. All
+  fixed at the token layer.
+- **Run the frontend tests in CI.** `npm test` exists and `npm run check` now
+  runs lint, typecheck, tests, and build in that order, but the `frontend` job
+  in `ci.yml` still runs the three it always did. A test suite nothing enforces
+  decays; switching that job to `npm run check` is the whole change.
+
+## Things that are true but unproven
+
+Not deferred work so much as deferred *evidence*. Each is believed correct
+and has not been demonstrated, and saying so is cheaper than discovering it
+during an incident.
+
+- **The backup timer's `Persistent=true` catch-up.** Demonstrating it needs
+  the host down across 03:22 UTC and then brought back. The backup *script* is
+  well covered without it: `deploy/scripts/smoke.sh` runs the real `backup.sh`
+  and the real `restore.sh` on every push, and asserts the dump, its `.sha256`
+  sidecar, and a restore that brings back both a marker row and the Alembic
+  revision. What no automated run covers is the scheduling around it — the
+  timer firing on its own, and the catch-up after downtime.
+- **The fetcher's accept-a-redirect branch, against a live server.** An
+  https → https hop is followed with the destination re-validated and
+  re-pinned in its own right, and that has unit coverage against a mocked
+  transport including a relative `Location`. It has no real-world provenance:
+  none of the nineteen candidate feeds surveyed for the catalogue redirects at
+  all. The refusal branches are the ones with a real example behind them —
+  `https://www.theguardian.com/uk/rss/` answers `301` to `http://`, which is
+  where that whole class of trap was found.
+- **Quadlet runtime behaviour beyond one Linux pass.** CI machine-checks unit
+  *generation* with `podman-system-generator --dryrun`, which catches a
+  malformed key and nothing else. The `After=`/`Requires=` ordering holding at
+  boot, `Notify=healthy`, and the Podman secret plumbing have had a single
+  validation pass on a real host, not a soak.
+
+## Documentation
+
+- **The README's quickstart is executed on every push** — **landed.**
+  `.github/workflows/docs.yml` extracts the commands from `README.md` itself
+  rather than copying them, so the workflow cannot pass while the document it
+  protects has stopped being true. Two wrong procedures preceded it:
+  `install.sh --start` never recreated a removed network, and the documented
+  upgrade sequence was wrong as written.
+- **`deploy/README.md` is not executed.** Its procedures need a Podman host,
+  root, and live systemd. `smoke.sh` covers the migration, health, backup, and
+  restore paths through the same scripts an operator runs, but the install,
+  secret, upgrade, and network-replacement sequences are prose verified by
+  hand. Extending the same marker-and-extract approach to a Linux runner is
+  the obvious next step, and the expensive part is a runner with systemd
+  rather than the harness.
+- **Make `Docs` a required check.** It is new, so it is not in branch
+  protection's required set yet. It should join `python`, `postgres`, `audit`,
+  `frontend`, and `container` once it has a run history.
+
+## Repository
+
+Consequences of the repository being public that are decisions rather than
+tasks.
+
+- **No licence file.** `pyproject.toml` declares `license = "MIT"` and there is
+  no `LICENSE` at the repository root, so the only statement of terms lives in
+  packaging metadata that a reader of the repository never sees. Choosing and
+  adding one is the owner's call and is being handled separately; it is
+  recorded here so it is not rediscovered as a surprise by the first person
+  who wants to use the code.
+- **Issue and pull-request templates.** Neither exists. Worth adding if the
+  repository attracts contributions beyond the operator's own.
 
 ## Product
 

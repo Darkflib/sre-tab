@@ -1,39 +1,298 @@
 # Developer News Dashboard
 
-A self-hosted web application that lets signed-in developers aggregate
-technology news, choose the topics and sources they care about, and keep
-track of saved and read items. See [prd-v1.md](prd-v1.md) for the full
-product requirements and [PLAN-v1.md](PLAN-v1.md) for how the build is
-decomposed.
+[![CI](https://github.com/Darkflib/sre-tab/actions/workflows/ci.yml/badge.svg)](https://github.com/Darkflib/sre-tab/actions/workflows/ci.yml)
+[![Docs](https://github.com/Darkflib/sre-tab/actions/workflows/docs.yml/badge.svg)](https://github.com/Darkflib/sre-tab/actions/workflows/docs.yml)
 
-The backend is Python 3.12+ / FastAPI / SQLAlchemy 2.x (sync) / Alembic,
-managed with `uv`. SQLite is used for local development and tests;
-PostgreSQL is the production database.
+One private place for developer news. **sre-tab** is a small self-hosted
+service that pulls a curated set of RSS and Atom feeds into a single
+filtered stream, and keeps your topic selections, your bookmarks, and
+what you have already read on a server you run.
 
-## Status
+| Light | Dark |
+| --- | --- |
+| ![The feed in the light theme](docs/images/feed-light.png) | ![The feed in the dark theme](docs/images/feed-dark.png) |
 
-Phase 0 (foundation) is complete: the full API contract is stubbed (all
-endpoints return `501 Not Implemented`), the complete schema exists with a
-single Alembic revision, and `/api/v1/openapi.json` is served and complete.
-Phase 1 agents implement behaviour behind this contract — read
-[AGENTS.md](AGENTS.md) before touching anything.
+## Why
 
-## Running the development server
+Developer news is spread across a dozen sites, and the usual fix is a hosted
+aggregator: one page, in exchange for your preferences and your reading
+history living on somebody else's server. Which stories you opened, what you
+kept, what you skipped. For plenty of people that is a fair trade. For the
+rest the fallback has generally been a browser tab full of bookmarks.
+
+sre-tab is the aggregation without the trade — one small service you host
+yourself:
+
+- **Sign-in is GitHub OAuth against an allow-list you control.** There is no
+  public sign-up. An empty allow-list admits nobody — see
+  [the first-deploy trap](#the-two-things-that-look-like-bugs) below.
+- **Preferences, bookmarks, and read state live in your database**, not in
+  someone else's. `DELETE /api/v1/me` removes all of it, including sessions.
+- **Nothing phones home.** No analytics, no ads, no affiliate links, no
+  telemetry. The only outbound traffic is the feed fetcher pulling the
+  sources you configured, and the OAuth exchange with GitHub at sign-in.
+- **Sources are operator-managed, not user-supplied.** That is a deliberate
+  restriction: accepting arbitrary RSS URLs from users would make this an
+  SSRF proxy with a login page. Feed URLs are validated against the full
+  guard when the operator adds them, before anything is ever fetched.
+
+The full framing, scope, and acceptance criteria are in
+[prd-v1.md](prd-v1.md).
+
+## Quickstart
+
+Python 3.12+, [uv](https://docs.astral.sh/uv/), and Node 20.19+. Nothing
+else — v1 development runs against SQLite and needs no container, no
+database server, and no GitHub OAuth app until you want to sign in.
+
+### Set it up
+
+<!-- docs:run -->
 
 ```sh
 uv sync                          # create .venv and install everything
-cp .env.example .env             # then edit as needed; defaults suit dev
-uv run alembic upgrade head      # create the SQLite dev database
+cp .env.example .env             # the defaults suit local development
+uv run alembic upgrade head      # create the SQLite development database
+uv run sre-tab seed              # install the topic and source catalogue
+```
+
+<!-- docs:run -->
+
+```sh
+cd frontend && npm ci            # the client's dependencies
+```
+
+`sre-tab seed` matters more than it looks: a freshly migrated database has
+no sources and no topics, so without it the feed is empty and onboarding
+offers nothing to tick. It is idempotent and never overwrites a row an
+operator has changed.
+
+### Run it
+
+Two processes, two terminals. The API:
+
+<!-- docs:run background ready=http://localhost:8000/api/v1/healthz -->
+
+```sh
 uv run uvicorn app.main:app --reload
 ```
 
-The API is served under `http://localhost:8000/api/v1`; the OpenAPI schema
-is at `/api/v1/openapi.json` and interactive docs at `/docs` (disable with
-`DOCS_ENABLED=false`).
+and the client:
 
-## Quality gate
+<!-- docs:run background ready=http://localhost:5173/ -->
 
-All of these must pass before a commit:
+```sh
+cd frontend && npm run dev
+```
+
+### Check it
+
+<!-- docs:run -->
+
+```sh
+curl --fail --silent http://localhost:8000/api/v1/healthz
+curl --fail --silent http://localhost:5173/api/v1/healthz
+uv run sre-tab sources list
+```
+
+The application is at <http://localhost:5173>. The Vite dev server proxies
+`/api` to the API on port 8000, which is what the second `curl` above
+demonstrates — the browser sees one origin in development exactly as it
+does in production, and no CORS configuration exists anywhere in the
+project.
+
+`/api/v1/healthz` answers liveness and readiness separately and names each
+probe, so a 503 says *which* dependency is unhappy. Every other route under
+`/api/v1` requires a session and answers `401` without one. The OpenAPI
+schema is always served, at `/api/v1/openapi.json`; the interactive Swagger
+UI at `/docs` is governed by `DOCS_ENABLED`, which `.env.example` turns on
+because that file is the development template.
+
+To get past the landing page you need a GitHub OAuth app: register one with
+callback `http://localhost:8000/api/v1/auth/github/callback`, then set
+`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and your own numeric GitHub ID
+in `ALLOWED_GITHUB_IDS`. Every setting is documented in
+[.env.example](.env.example).
+
+Feeds refresh on a timer once the application is running. `uv run sre-tab
+status` reports what each source last did, and exits non-zero when an
+enabled source is failing so a monitoring job can call it and mean it.
+
+## Architecture
+
+```
+                browser
+                   │  one origin: HttpOnly session cookie, CSRF header
+                   ▼
+        ┌──── reverse proxy (Caddy) ────┐
+        │  /            → frontend/dist │
+        │  /api/*,/docs → FastAPI       │
+        └───────────────┬───────────────┘
+                        ▼
+        ┌──── FastAPI (uvicorn, one process) ────┐
+        │  /api/v1 routers → services → session  │
+        │  APScheduler thread: refresh, prune    │
+        └───────────────┬────────────────────────┘
+                        ▼
+              PostgreSQL (SQLite in dev)
+```
+
+- **Backend** — Python 3.12+, FastAPI, Pydantic v2, SQLAlchemy 2.x (sync, 2.0
+  style), Alembic, managed with `uv`. SQLite for local development and the
+  test suite; PostgreSQL in production.
+- **Frontend** — React 19 and Vite, TypeScript generated from the frozen
+  `openapi.json` rather than hand-written, so a contract change surfaces as a
+  type error instead of a runtime surprise. Served same-origin with the API.
+- **Auth** — GitHub OAuth authorisation-code flow, entirely server-side. The
+  browser never sees the client secret or the access token. Sessions are a
+  `HttpOnly`, `Secure`, `SameSite=Lax` cookie; only a hash of the token is
+  stored. Mutating routes require a signed double-submit CSRF token bound to
+  the session it was issued for.
+- **Ingest** — RSS and Atom only. Every fetch runs an SSRF guard first:
+  https only, DNS resolved and private, link-local, and reserved ranges
+  refused, every redirect hop re-checked, short timeouts, a response-size cap
+  counted in wire bytes, and summaries sanitised to text rather than rendered
+  as feed HTML.
+- **Scheduling** — APScheduler in the application process, not a separate
+  worker and emphatically not Celery. A one-minute tick asks the database
+  which sources are due; each is refreshed under a per-source PostgreSQL
+  advisory lock, so replicas never fetch the same source concurrently. On
+  SQLite there is no advisory-lock equivalent, so the lock degrades to
+  process-local and logs a warning once at start-up rather than pretending.
+
+## The two things that look like bugs
+
+Both are correct behaviour. Both are indistinguishable from a fault if you
+have not seen them before, which is why they are here on the front page.
+
+### An empty `ALLOWED_GITHUB_IDS` denies everyone
+
+v1 sign-in is allow-list only: a comma-separated list of **numeric** GitHub
+user IDs, checked at the OAuth callback before any user record is created.
+The list ships empty in [.env.example](.env.example), and empty means nobody
+— including you. The GitHub authorisation succeeds, the browser comes back
+to `/api/v1/auth/github/callback`, and the response is a bare `403` saying
+the account is not permitted to sign in. It reads like a broken OAuth
+application. It is the allow-list working.
+
+Find your ID at `https://api.github.com/users/<login>` — the `id` field, not
+your login name, because a login can be changed and reused and a numeric ID
+cannot.
+
+### A source whose origin redirects to `http://` can never work
+
+The fetcher is https-only on every hop, redirect hops included. A feed URL
+that answers `301` with an `http://` location is therefore refused at the
+downgrade — correctly, and with the reason logged. Nothing about the URL as
+typed predicts it, and `sre-tab sources add` cannot predict it either: doing
+so would need the very request the add-time check deliberately does not make.
+
+A trailing slash is the usual way to land on one. This is real, not
+hypothetical:
+
+```
+https://www.theguardian.com/uk/rss/   → 301 http://www.theguardian.com/uk/rss   refused
+https://www.theguardian.com/uk/rss    → 200                                     fine
+```
+
+The source is accepted at add time, then shows `failing (1)` in `sre-tab
+status` with `UnsafeTargetError: refused scheme … (scheme 'http' is not
+https)`, and the CLI exits non-zero. If a source never fetches, request its
+feed URL by hand and read the `Location` header before concluding the feed
+is down. There is more on this, and on the rest of the operator CLI, in
+[deploy/README.md](deploy/README.md#seeding-the-catalogue-and-the-operator-cli).
+
+## Deploying
+
+A single Podman host with system Quadlets: PostgreSQL, a migration oneshot,
+the application, Caddy, and a nightly backup timer, each container running
+as an unprivileged numeric user with a read-only root filesystem and all
+capabilities dropped. Terminate TLS at your existing proxy and forward to
+`127.0.0.1:8080`.
+
+[deploy/README.md](deploy/README.md) is the operational manual — topology,
+secrets, migrations on deploy, backup and a **tested** restore, the
+client-address chain, and the failure modes that have actually bitten. Read
+it before the first deploy rather than during it.
+
+## Known gaps
+
+What v1 ships without, and what it ships without having proved. The second
+list is the one worth reading — everything on it is believed correct and has
+not been demonstrated, which is a different thing from being tested.
+
+- **The backup timer's catch-up is untested.** `sre-tab-backup.timer` sets
+  `Persistent=true` so a host that was off overnight takes its backup on the
+  way back up; demonstrating that needs the host down across 03:22 UTC, which
+  has not happened yet. The backup and restore *scripts* are exercised on
+  every push — CI runs the real ones against a throwaway database and asserts
+  the data comes back — so what is unproven is the scheduling, not the dump.
+- **The fetcher's accept-a-redirect branch has never run against a real
+  server.** An https → https redirect is followed, with the destination
+  re-validated and re-pinned in its own right. That branch is covered by unit
+  tests against a mocked transport, including a relative `Location`; what it
+  has not had is a live feed, because none of the nineteen candidate sources
+  surveyed redirects at all. The refusal branches — downgrade to `http`, a
+  private or link-local destination, a `file:` URL, a loop, a `Location`-less
+  `302` — are the ones with real-world provenance.
+- **The frontend tests exist but CI does not run them yet.** There is a Vitest
+  suite under `frontend/` — theme resolution, the anti-flash script, and WCAG
+  contrast recomputed from `tokens.css` — and `npm run check` runs it. The
+  `frontend` job in CI still runs only lint, typecheck, and build, so nothing
+  currently enforces the suite. A test suite nothing enforces decays.
+- **Backups sit on the same host as the database.** That is a backup, not
+  disaster recovery. The `.sha256` sidecars exist so a copy taken off-host
+  can be verified at the far end.
+- **The Quadlet units have had one Linux pass, not a long soak.** Unit
+  generation is machine-checked in CI with `podman-system-generator --dryrun`,
+  which catches a malformed key and nothing about runtime behaviour.
+
+[ROADMAP.md](ROADMAP.md) is the full list of what was deliberately deferred
+and why.
+
+## Not in v1
+
+Set expectations before you clone it. v1 deliberately excludes browser
+extensions and new-tab replacement, per-device preference overrides, Google
+or email sign-in, ads, payments, and telemetry, AI ranking and personalised
+recommendations, social features and notifications, user-supplied RSS URLs,
+and any compatibility with the Hackertab application this replaces. The
+reasoning for each is in [prd-v1.md](prd-v1.md#non-goals-for-v1).
+
+## Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [prd-v1.md](prd-v1.md) | Product requirements: scope, data model, acceptance criteria |
+| [PLAN-v1.md](PLAN-v1.md) | How v1 was decomposed across parallel agents, and why |
+| [ROADMAP.md](ROADMAP.md) | Deferred work, grouped by why it was deferred |
+| [deploy/README.md](deploy/README.md) | Operational manual for the Podman deployment |
+| [frontend/README.md](frontend/README.md) | Client architecture, CSP constraints, the generated API client |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | The gate, the PR expectations, how to work on this |
+| [AGENTS.md](AGENTS.md) | Binding rules for agents working in this repository |
+| [CHANGELOG.md](CHANGELOG.md) | What changed, in Keep a Changelog form |
+
+## Layout
+
+| Path | Purpose |
+| --- | --- |
+| `app/api/v1/` | Versioned API: routers and frozen Pydantic schemas |
+| `app/auth/` | OAuth flow, sessions, CSRF, allow-list, rate limiting |
+| `app/ingest/` | SSRF guard, fetch, parse, normalise, store |
+| `app/scheduler/` | APScheduler service and the advisory-lock leader strategy |
+| `app/services/` | Feed, preferences, bookmarks, read state |
+| `app/cli/` | Operator CLI (`sre-tab`) and the seed catalogue |
+| `app/db/` | Engine, session factory, ORM models |
+| `alembic/` | Migration environment and revisions |
+| `frontend/` | React client |
+| `deploy/` | Quadlets, Caddyfile, install and backup/restore scripts |
+| `tests/` | Pytest suite; root `conftest.py` holds shared fixtures |
+
+## Contributing
+
+The gate is five commands, and all five have to pass before a commit:
+
+<!-- docs:run -->
 
 ```sh
 uv run ruff format --check .
@@ -43,16 +302,9 @@ uv run pytest
 uv run bandit -c pyproject.toml -r app
 ```
 
-`uv run pre-commit install` wires the fast checks into git.
+That block is executed by the docs workflow along with the quickstart above,
+so it cannot quietly stop being the real gate.
 
-## Layout
-
-| Path | Purpose |
-| --- | --- |
-| `app/` | FastAPI application package |
-| `app/db/` | Engine, session factory, ORM models |
-| `app/api/v1/` | Versioned API: routers and frozen Pydantic schemas |
-| `app/security/` | Session-token hashing and CSRF primitives |
-| `app/health.py` | Liveness/readiness probe registry |
-| `alembic/` | Migration environment and revisions |
-| `tests/` | Pytest suite; root `conftest.py` holds shared fixtures |
+[CONTRIBUTING.md](CONTRIBUTING.md) has the rest: the client's own checks,
+the PostgreSQL suite and the deployment smoke test, branch protection, commit
+expectations, and how `AGENTS.md` fits in.
