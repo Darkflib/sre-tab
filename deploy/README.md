@@ -308,8 +308,19 @@ expresses a keyless identity only as `fulcio.oidcIssuer` plus
 certificate has no email: its subject is a URI,
 `https://github.com/Darkflib/sre-tab/.github/workflows/ci.yml@refs/heads/main`.
 There is no field to put that in, so this identity cannot be written into a
-podman signature policy at all — checked on Debian 13 with podman 5.4.2, not
-merely read in the man page.
+podman signature policy at all. Checked on Debian 13 with podman 5.4.2 rather
+than read in the man page — podman rejects the policy itself:
+
+```
+$ podman pull --signature-policy /tmp/pol.json ghcr.io/darkflib/sre-tab@sha256:…
+Error: invalid policy in "/tmp/pol.json": subjectEmail not specified
+```
+
+The enforcement machinery works; it is the identity that cannot be expressed.
+A policy of `{"type": "reject"}` scoped to this repository does refuse the
+pull, on the same host, with `Source image rejected: … is rejected by
+policy` — so podman is consulting the policy and would enforce a signature
+requirement it could describe.
 
 What the pin gives you without it is still worth having: podman will refuse
 content that does not hash to the pinned digest, so the *wrong version* case

@@ -28,6 +28,13 @@ Image=ghcr.io/darkflib/sre-tab:sha-fbf0f0ad2aa48e1254902ffb897d85657ab81908@sha2
 # after a reboot does not need the registry to be reachable. `newer` against
 # a digest is a network round trip that can only ever confirm what is
 # already true.
+#
+# Measured on Debian 13 / podman 5.4.2, cold boot with this pin in place: no
+# registry traffic from any unit, and the start ordering unchanged —
+# PostgreSQL accepting connections at T+3.3s, systemd calling the unit
+# started at T+13.5s (the Notify=healthy gate on pg_isready), migrations
+# T+13.5s to T+21.4s, this unit started T+56s. The gap is the property; the
+# pin does not narrow it.
 Pull=missing
 Network=sre-tab.network
 

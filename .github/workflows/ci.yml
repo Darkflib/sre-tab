@@ -225,7 +225,7 @@ jobs:
           fi
 
   frontend:
-    name: Frontend lint, types, build
+    name: Frontend lint, types, tests, build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -241,6 +241,12 @@ jobs:
         working-directory: frontend
       - name: tsc
         run: npm run typecheck
+        working-directory: frontend
+      # Before the build rather than after: the suite is pure logic with no
+      # build dependency and runs in under a second, so failing early costs
+      # nothing. `npm test` is `vitest run` — one-shot, not the watcher.
+      - name: vitest
+        run: npm test
         working-directory: frontend
       - name: vite build
         run: npm run build
