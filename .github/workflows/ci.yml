@@ -150,7 +150,12 @@ jobs:
         run: |
           set -euo pipefail
           podman image inspect sre-tab:ci --format '{{json .}}' > /tmp/image.json
-          jq -e '(.HealthCheck // .Config.Healthcheck) != null' /tmp/image.json > /dev/null
+          # Podman reports this at top-level `Healthcheck` -- capital H,
+          # lowercase c. `.HealthCheck` and `.Config.Healthcheck` are both
+          # absent, so the original spelling asserted nothing and this job
+          # had never once passed. Docker's spellings kept as fallbacks.
+          jq -e '(.Healthcheck // .Config.Healthcheck // .HealthCheck) != null' \
+            /tmp/image.json > /dev/null
           jq -e '.Config.User == "10001:10001"' /tmp/image.json > /dev/null
           test "$(podman run --rm sre-tab:ci id -u)" = "10001"
 
