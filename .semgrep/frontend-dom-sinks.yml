@@ -1,0 +1,66 @@
+# Local rules, run alongside the registry rulesets in .github/workflows/ci.yml.
+#
+# They exist because the anonymous OSS registry does not catch these. The
+# Phase 3 SAST pass built a canary with `innerHTML = param`, `eval(param)`,
+# and an AWS key; p/secrets caught a realistic key (the canary's went unseen
+# only because it used AWS's own documentation example, which the rules
+# allow-list on purpose), and nothing at all caught the DOM sinks. Registry
+# taint rules for these need sources the OSS engine will not infer, so a
+# JS/TS gate built from p/javascript alone flags none of them.
+#
+# Deliberately syntactic rather than taint-tracked: in a frontend that has
+# never had one of these, "there is an innerHTML assignment here" is the
+# review trigger, and a false positive costs one `# nosemgrep` with a reason
+# next to it. React renders text safely; reaching for a raw sink is the thing
+# worth arguing about.
+rules:
+  - id: sre-tab-dom-html-sink
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Assignment to innerHTML/outerHTML parses its value as HTML. If any part
+      of it can come from a feed item, a URL, or an API response, this is XSS.
+      Use textContent, or React's normal rendering, unless the value has been
+      sanitised — and say where, in a nosemgrep comment.
+    paths:
+      include:
+        - frontend/src/**
+        - frontend/public/**
+    patterns:
+      - pattern-either:
+          - pattern: $EL.innerHTML = $VALUE
+          - pattern: $EL.outerHTML = $VALUE
+          - pattern: $EL.insertAdjacentHTML($POS, $VALUE)
+      - pattern-not: $EL.innerHTML = ""
+      - pattern-not: $EL.outerHTML = ""
+
+  - id: sre-tab-react-dangerous-html
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      dangerouslySetInnerHTML bypasses React's escaping. Feed content is
+      third-party HTML by definition; this project renders it as text.
+    paths:
+      include:
+        - frontend/src/**
+    # A bare attribute pattern does not match; the element has to be part of
+    # it, and self-closing and paired elements are different shapes.
+    pattern-either:
+      - pattern: <$EL dangerouslySetInnerHTML={...} />
+      - pattern: <$EL dangerouslySetInnerHTML={...}>...</$EL>
+
+  - id: sre-tab-dynamic-code-execution
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      eval / new Function / setTimeout with a string argument execute their
+      argument as code. There is no use for any of them in this frontend.
+    paths:
+      include:
+        - frontend/src/**
+        - frontend/public/**
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+      - pattern: document.write(...)
+      - pattern: document.writeln(...)

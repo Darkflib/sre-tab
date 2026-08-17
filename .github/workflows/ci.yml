@@ -83,8 +83,8 @@ jobs:
           SRE_TAB_POSTGRES_URL: postgresql+psycopg://sretab:sretab@127.0.0.1:5432/sretab
         run: uv run pytest tests/postgres -v
 
-  # Separate job: pip-audit reaches the network and reports on the dependency
-  # set rather than the code, so a fresh CVE advisory should not hide the test
+  # Separate job: these reach the network and report on the dependency set
+  # rather than the code, so a fresh CVE advisory should not hide the test
   # results behind a red X on the same job.
   audit:
     name: Dependency audit
@@ -104,6 +104,123 @@ jobs:
       # locked set is audited.
       - name: pip-audit
         run: uv run pip-audit --skip-editable --progress-spinner=off
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+
+      # No `npm ci` first, deliberately: npm audit resolves the advisory set
+      # from package-lock.json alone, so this needs neither a node_modules
+      # tree nor the cache the frontend job populates.
+      #
+      # The gate is the production tree at high and critical. The split is a
+      # policy choice, and the policy is chosen to survive contact:
+      #
+      #   * What ships to a browser is `dependencies`. An advisory there is
+      #     reachable by a user and the build should stop.
+      #   * `devDependencies` is vite, eslint, typescript and their
+      #     transitive trees — hundreds of packages that never leave CI. A
+      #     large fraction of their advisories are unfixable for weeks
+      #     (a nested dep two majors behind), apply only to a dev server
+      #     bound to localhost, or both. Failing on those means the job gets
+      #     `continue-on-error`d within a month and then audits nothing, which
+      #     is how a gate dies. So the dev tree is reported, not enforced.
+      #
+      # A dev-tree advisory that genuinely matters — anything with a fix
+      # available, anything in a package that runs at build time and touches
+      # the output bundle — gets fixed by bumping the dependency, and Renovate
+      # opens that PR anyway. The report below is where it is noticed.
+      - name: npm audit — production dependencies (gate)
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: frontend
+
+      - name: npm audit — full tree including dev (report only)
+        continue-on-error: true
+        run: npm audit --audit-level=low
+        working-directory: frontend
+
+  # Semgrep is a separate job for the same reason as the audit above: it
+  # fetches its rules from the registry, so a registry hiccup is not a test
+  # failure.
+  #
+  # The guard after the scan is the point of this job existing at all. A
+  # semgrep run whose ruleset fails to resolve — `p/bash` 404s, which is how
+  # this was found — still exits zero and still writes a well-formed report,
+  # with `results: []` and `paths.scanned: []`. A gate that scanned nothing is
+  # worse than no gate, because it is green. So the report is inspected before
+  # its findings are believed: a non-empty `errors[]`, or a scan that reached
+  # no files, fails the job.
+  sast:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.5"
+          enable-cache: true
+
+      # Run from an ephemeral tool environment rather than the project's
+      # locked dependency set: semgrep is a large tree that the application
+      # does not import, and pulling it into uv.lock would put it in
+      # pip-audit's scope and in the image's build context.
+      #
+      # Rulesets are named individually and none of them is `auto`: `auto`
+      # resolves against semgrep.dev and changes underneath the repository.
+      # p/dockerfile is deliberately absent — semgrep does not recognise a
+      # file named Containerfile as a Dockerfile, so it would have run zero
+      # rules against zero files while looking like coverage.
+      - name: semgrep
+        run: |
+          # `set +e` on purpose: the runner's default shell is `bash -e`, and
+          # semgrep exits non-zero when it finds something. Aborting here
+          # would skip the report inspection below, which is the half that
+          # decides whether the run meant anything.
+          set +e
+          uvx semgrep==1.173.0 scan \
+            --metrics=off --disable-version-check --oss-only \
+            --config p/python \
+            --config p/javascript \
+            --config p/typescript \
+            --config p/github-actions \
+            --config p/secrets \
+            --config .semgrep \
+            --json --output semgrep.json
+          echo "semgrep exit status: $?"
+
+      - name: The scan actually ran
+        run: |
+          set -euo pipefail
+          test -f semgrep.json || {
+            echo "semgrep wrote no report at all"
+            exit 1
+          }
+
+          errors=$(jq '.errors | length' semgrep.json)
+          scanned=$(jq '.paths.scanned | length' semgrep.json)
+          findings=$(jq '.results | length' semgrep.json)
+
+          if [ "$errors" -ne 0 ]; then
+            echo "semgrep reported $errors error(s); the scan is not trustworthy:"
+            jq -r '.errors[] | "  \(.level // "error"): \(.message)"' semgrep.json
+            exit 1
+          fi
+
+          if [ "$scanned" -eq 0 ]; then
+            echo "semgrep scanned no files. A green run over an empty target"
+            echo "set is exactly the failure this check exists to catch."
+            exit 1
+          fi
+
+          echo "scanned $scanned files, $findings finding(s)"
+
+          if [ "$findings" -ne 0 ]; then
+            jq -r '.results[] | "  \(.path):\(.start.line) \(.check_id)\n    \(.extra.message | gsub("\\s+"; " "))"' semgrep.json
+            exit 1
+          fi
 
   frontend:
     name: Frontend lint, types, build
