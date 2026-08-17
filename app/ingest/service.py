@@ -53,7 +53,10 @@ class IngestService:
         self._session_factory = session_factory
         self._settings = settings
         self._fetcher = fetcher or FeedFetcher(settings)
-        self.status = status or SourceStatusRegistry()
+        # The registry gets the session factory so outcomes are written
+        # through to source_status: the operator CLI is a separate process
+        # and can only read what was written down.
+        self.status = status or SourceStatusRegistry(session_factory)
 
     # -- reads -----------------------------------------------------------
 
@@ -81,7 +84,12 @@ class IngestService:
     def due_sources(self, *, now: datetime | None = None) -> list[SourceRef]:
         moment = now or datetime.now(UTC)
         return [
-            source for source in self.enabled_sources() if self.status.is_due(source.id, now=moment)
+            source
+            for source in self.enabled_sources()
+            # refresh_minutes lets the registry turn a persisted
+            # last_fetched_at into a due time when this process has no
+            # memory of the source — after a restart, or on a replica.
+            if self.status.is_due(source.id, refresh_minutes=source.refresh_minutes, now=moment)
         ]
 
     # -- writes ----------------------------------------------------------

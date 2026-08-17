@@ -203,6 +203,37 @@ class Source(TimestampMixin, Base):
     )
 
 
+class SourceStatus(Base):
+    """Scheduler-written refresh state for one source.
+
+    A separate table rather than columns on ``sources``, on purpose:
+    ``sources`` is operator-managed configuration and this is runtime
+    state written by the refresh loop. Keeping them apart means the two
+    writers never contend, and ``sources.updated_at`` keeps meaning "the
+    operator changed the configuration" rather than "a feed was polled".
+
+    1:1 with ``sources`` — ``source_id`` is both primary key and foreign
+    key — and it cascades, so retiring a source takes its status with it.
+
+    Persisting ``last_fetched_at`` is also what stops the refresh
+    schedule living only in one process's memory: a restart or a second
+    replica reads when the source was last attempted instead of treating
+    every source as due immediately.
+    """
+
+    __tablename__ = "source_status"
+
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True
+    )
+    #: Last attempt, successful or not.
+    last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_class: Mapped[str | None] = mapped_column(String(64))
+    last_error_detail: Mapped[str | None] = mapped_column(String(500))
+    consecutive_failures: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)
+
+
 class SourceTopic(Base):
     __tablename__ = "source_topics"
 

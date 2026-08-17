@@ -1,16 +1,24 @@
-"""Per-source refresh outcome.
+"""Per-source refresh outcome, in memory and in the database.
 
-Phase 2's operator CLI needs to answer "which sources are failing, and
-why". The schema Phase 0 froze has nowhere to put that — there is no
-``sources.last_fetched_at`` and no ``source_status`` table — so v1 keeps
-it in process, alongside a structured log line per outcome carrying the
-same fields. That is sufficient for the single-process v1 deployment and
-is flagged as a schema gap for Phase 2; it is *not* sufficient for a
-separate CLI process or for multiple replicas, and the log line is what
-covers those until a table exists.
+Two consumers with different needs, so two representations:
 
-The registry also owns each source's next-due time, since without a
-persisted last-fetch column there is nowhere else for it to live.
+- The **readiness probe** runs in the process that did the fetching and
+  wants full detail — item counts, next-due time, the last error. That
+  is :class:`SourceStatusRegistry`, in memory, thread-safe because the
+  scheduler writes to it from its own thread.
+- The **operator CLI** is a separate process and can see only what was
+  written down. That is the ``source_status`` table, one row per source,
+  written through on every recorded outcome.
+
+The table is also what keeps the refresh schedule honest across a
+restart or a second replica: ``last_fetched_at`` persists, so a cold
+process asks the database when a source was last attempted rather than
+treating every source as due immediately and re-fetching the whole
+catalogue on every deploy.
+
+Persistence is best-effort by design. Status is observability, not the
+work: a database that cannot take the row logs and is ignored, because
+failing the refresh over its own bookkeeping would be the wrong trade.
 """
 
 from __future__ import annotations
@@ -18,6 +26,16 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+
+import structlog
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.db.models import SourceStatus as SourceStatusRow
+
+log = structlog.get_logger("app.ingest.status")
 
 
 @dataclass(frozen=True)
@@ -39,12 +57,79 @@ class SourceStatus:
         return self.consecutive_failures == 0
 
 
-class SourceStatusRegistry:
-    """Thread-safe: the scheduler's worker pool writes concurrently."""
+@dataclass(frozen=True)
+class PersistedStatus:
+    """The durable subset — exactly the columns ``source_status`` holds."""
 
-    def __init__(self) -> None:
+    source_id: int
+    last_fetched_at: datetime | None
+    last_success_at: datetime | None
+    last_error_class: str | None
+    last_error_detail: str | None
+    consecutive_failures: int
+
+
+def persist_source_status(
+    session: Session,
+    *,
+    source_id: int,
+    last_fetched_at: datetime | None,
+    last_success_at: datetime | None,
+    last_error_class: str | None,
+    last_error_detail: str | None,
+    consecutive_failures: int,
+) -> None:
+    """Upsert one row. Flushes; the caller commits."""
+    values = {
+        "source_id": source_id,
+        "last_fetched_at": last_fetched_at,
+        "last_success_at": last_success_at,
+        "last_error_class": last_error_class,
+        "last_error_detail": last_error_detail,
+        "consecutive_failures": consecutive_failures,
+    }
+    updates = {key: value for key, value in values.items() if key != "source_id"}
+
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        statement = postgres_insert(SourceStatusRow).values(values)
+        session.execute(statement.on_conflict_do_update(index_elements=["source_id"], set_=updates))
+    elif dialect == "sqlite":
+        sqlite_statement = sqlite_insert(SourceStatusRow).values(values)
+        session.execute(
+            sqlite_statement.on_conflict_do_update(index_elements=["source_id"], set_=updates)
+        )
+    else:  # pragma: no cover - the PRD scopes the service to these two engines
+        raise RuntimeError(f"persist_source_status has no implementation for dialect {dialect!r}")
+    session.flush()
+
+
+def load_source_status(session: Session, source_id: int) -> PersistedStatus | None:
+    row = session.get(SourceStatusRow, source_id)
+    if row is None:
+        return None
+    return PersistedStatus(
+        source_id=row.source_id,
+        last_fetched_at=_as_utc(row.last_fetched_at),
+        last_success_at=_as_utc(row.last_success_at),
+        last_error_class=row.last_error_class,
+        last_error_detail=row.last_error_detail,
+        consecutive_failures=row.consecutive_failures,
+    )
+
+
+class SourceStatusRegistry:
+    """Thread-safe: the scheduler's worker pool writes concurrently.
+
+    Given a ``session_factory`` it writes through to ``source_status`` and
+    reads back from it when this process has no memory of a source.
+    Without one it is purely in-process, which is what the unit tests use.
+    """
+
+    def __init__(self, session_factory: sessionmaker[Session] | None = None) -> None:
         self._lock = threading.Lock()
         self._statuses: dict[int, SourceStatus] = {}
+        self._session_factory = session_factory
 
     # -- reads -----------------------------------------------------------
 
@@ -59,12 +144,35 @@ class SourceStatusRegistry:
     def failing(self) -> list[SourceStatus]:
         return [status for status in self.snapshot() if not status.healthy]
 
-    def is_due(self, source_id: int, *, now: datetime | None = None) -> bool:
-        """A source never attempted is due immediately."""
+    def is_due(
+        self,
+        source_id: int,
+        *,
+        refresh_minutes: int | None = None,
+        now: datetime | None = None,
+    ) -> bool:
+        """A source never attempted is due immediately.
+
+        Memory answers first — it is the same process that did the work.
+        A source this process has not seen falls back to the persisted
+        ``last_fetched_at``, which is what stops a restart re-fetching
+        the whole catalogue. ``refresh_minutes`` is needed to turn that
+        timestamp into a due time; without it the answer is "due", which
+        is the pre-persistence behaviour.
+        """
         moment = now or datetime.now(UTC)
         with self._lock:
             status = self._statuses.get(source_id)
-        return status is None or status.next_due_at is None or status.next_due_at <= moment
+        if status is not None:
+            return status.next_due_at is None or status.next_due_at <= moment
+
+        persisted = self._load(source_id)
+        if persisted is None or persisted.last_fetched_at is None or refresh_minutes is None:
+            return True
+        due_at = persisted.last_fetched_at + _interval(
+            refresh_minutes, persisted.consecutive_failures
+        )
+        return due_at <= moment
 
     # -- writes ----------------------------------------------------------
 
@@ -105,11 +213,21 @@ class SourceStatusRegistry:
         moment = now or datetime.now(UTC)
         with self._lock:
             previous = self._statuses.get(source_id)
-            failures = (previous.consecutive_failures if previous else 0) + 1
+        if previous is not None:
+            failures = previous.consecutive_failures + 1
+            last_success_at = previous.last_success_at
+        else:
+            # Cold process. Without this the first failure after a restart
+            # would reset the back-off to one and erase the last known
+            # success from the operator's view.
+            persisted = self._load(source_id)
+            failures = (persisted.consecutive_failures if persisted else 0) + 1
+            last_success_at = persisted.last_success_at if persisted else None
         return self._update(
             source_id,
             slug,
             last_attempt_at=moment,
+            last_success_at=last_success_at,
             last_failure_at=moment,
             last_error_class=error_class,
             last_error_detail=detail[:500],
@@ -127,7 +245,60 @@ class SourceStatusRegistry:
             current = self._statuses.get(source_id) or SourceStatus(source_id=source_id, slug=slug)
             updated = replace(current, slug=slug, **fields)  # type: ignore[arg-type]
             self._statuses[source_id] = updated
-            return updated
+        self._persist(updated)
+        return updated
+
+    # -- persistence -----------------------------------------------------
+
+    def _persist(self, status: SourceStatus) -> None:
+        if self._session_factory is None:
+            return
+        try:
+            with self._session_factory() as session:
+                persist_source_status(
+                    session,
+                    source_id=status.source_id,
+                    last_fetched_at=status.last_attempt_at,
+                    last_success_at=status.last_success_at,
+                    last_error_class=status.last_error_class,
+                    last_error_detail=status.last_error_detail,
+                    consecutive_failures=status.consecutive_failures,
+                )
+                session.commit()
+        except SQLAlchemyError as exc:
+            log.warning(
+                "source_status_persist_failed",
+                source_id=status.source_id,
+                source_slug=status.slug,
+                error_class=type(exc).__name__,
+            )
+
+    def _load(self, source_id: int) -> PersistedStatus | None:
+        if self._session_factory is None:
+            return None
+        try:
+            with self._session_factory() as session:
+                return load_source_status(session, source_id)
+        except SQLAlchemyError as exc:
+            log.warning(
+                "source_status_load_failed",
+                source_id=source_id,
+                error_class=type(exc).__name__,
+            )
+            return None
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """SQLite hands back naive datetimes for ``DateTime(timezone=True)``."""
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _interval(refresh_minutes: int, consecutive_failures: int) -> timedelta:
+    if consecutive_failures == 0:
+        return timedelta(minutes=refresh_minutes)
+    return _backoff(refresh_minutes, consecutive_failures)
 
 
 def _backoff(refresh_minutes: int, consecutive_failures: int) -> timedelta:
