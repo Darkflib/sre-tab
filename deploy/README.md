@@ -62,7 +62,15 @@ sudo deploy/install.sh
 Idempotent. It installs the Quadlets to `/etc/containers/systemd`, the backup
 timer to `/etc/systemd/system`, and the Caddyfile and backup script to
 `/etc/sre-tab`. It creates `/srv/sre-tab/backups` owned by `999:999`, mode
-`0750` — dumps contain every user record, so they are not world-readable.
+`0700`.
+
+Those ids mean `postgres` *inside the postgres image*, not on the host —
+**on Debian 13 gid 999 is `systemd-journal`**, a group operators do add people
+to. Hence `0700` and not `0750`, and hence `umask 077` in `backup.sh`: a dump
+is a complete copy of every user record, and neither the directory mode nor
+the file mode should be the only thing protecting it. Nothing legitimate needs
+group access — the backup container writes as uid 999 and `restore.sh` runs as
+root.
 
 It seeds `/etc/sre-tab/app.env` from `deploy/app.env.example` **once** and
 never overwrites it afterwards. Everything else it installs is replaced on
@@ -200,6 +208,32 @@ A deploy causes a sub-second blip while Caddy restarts and the assets volume
 is replaced. That is expected for a single-instance self-hosted service. If it
 ever needs to be zero-downtime, the pattern to reach for is orbit-data's
 atomic release symlink rather than a destructive copy.
+
+### Changes to `sre-tab.network` need the network removed
+
+`sre-tab-network.service` runs `podman network create --ignore` and has no
+`ExecStop`, so it is a no-op against a network that already exists. Editing
+`sre-tab.network` — the subnet, the gateway, `IPRange=` — therefore changes
+nothing until the network object itself is removed, and `podman network reload`
+does not do it either. Containers hold the network, so they come down first:
+
+```bash
+sudo systemctl stop sre-tab-web.service sre-tab.service sre-tab-db.service
+sudo podman network rm systemd-sre-tab
+sudo deploy/install.sh --start
+```
+
+Quadlet names the network `systemd-` plus the unit name, hence
+`systemd-sre-tab` rather than `sre-tab`. Confirm the result with
+`podman network inspect systemd-sre-tab`; an upgrade that skips this leaves the
+old, rangeless network in place and the address-collision fix inert.
+
+Note the second step is `podman network rm`, not `systemctl stop
+sre-tab-network.service`. The unit is a `RemainAfterExit` oneshot and stays
+`active (exited)` whether or not its network still exists, which is why
+`install.sh --start` restarts it explicitly — without that, removing the
+network by hand leaves every container failing with `unable to find network
+with name or ID systemd-sre-tab` and no unit looking guilty.
 
 ## TLS termination and what the outer proxy must not do
 
@@ -416,6 +450,21 @@ or non-public hostname — and refuses GraphQL and sitemap endpoints, which are
 the v2 deferral. A URL the fetcher would reject is rejected here, with the
 reason, rather than becoming a source that silently never works.
 
+There is one failure it cannot predict, because predicting it would need the
+request the check deliberately does not make: **a URL whose origin redirects to
+`http://` can never be fetched.** The guard is https-only on every hop,
+redirect hops included, so the fetch stops at the downgrade — correctly, and
+the CLI exits non-zero with the reason — but nothing about the URL as typed
+says it will happen. A trailing slash is the usual way to land on one:
+
+```
+https://www.theguardian.com/uk/rss/   → 301 http://www.theguardian.com/uk/rss   refused
+https://www.theguardian.com/uk/rss    → 200                                     fine
+```
+
+If a source never fetches, request its feed URL by hand and read the `Location`
+header before concluding the feed is down.
+
 **`add-medium-tag` expands the template at configuration time.** The tag has
 to match a strict slug pattern, and what lands in `sources.feed_url` is a
 fixed string. Nothing in the fetch path ever assembles a URL from a value it
@@ -459,7 +508,12 @@ curl --fail http://127.0.0.1:8080/api/v1/healthz | jq
 
 `/api/v1/healthz` distinguishes liveness from readiness and names each probe,
 so a 503 says which dependency is unhappy rather than merely that something
-is.
+is. The database check is bounded at five seconds: a database that has been
+*frozen* rather than stopped — a paused container, a stalled volume, a
+black-holed route — answers nothing at all and has no socket error to report,
+so without a deadline the probe simply never returns and a sick dependency
+reads as a sick application. It now degrades promptly instead, well inside the
+proxy's 30-second header timeout.
 
 The oneshot units set `LogDriver=none`: systemd already captures the
 container's stdout into the journal under its own unit, and Podman's journald
@@ -471,6 +525,43 @@ There is no `OnFailure=` alert unit, unlike orbit-data — that project's alert
 path is a subcommand of its own application, and this one has no equivalent
 yet. Until it does, failures surface through `systemctl --failed` and the
 journal. Wiring an alert to the operator CLI is a reasonable Phase 2 follow-up.
+
+`systemctl --failed` is only worth watching if it is empty when nothing is
+wrong, so a clean `systemctl stop` has to leave it clean. That is what the
+`NoNewPrivileges` note below is protecting.
+
+### Why two units do not set `NoNewPrivileges=true`
+
+`sre-tab-db.container` and `sre-tab.container` are the two, and neither is an
+oversight. On Debian 13 with podman 5.4.2, setting `no_new_privs` on a
+container blocks the AppArmor profile transition that `crun` performs on exec,
+leaving the container's processes split across `containers-default-<ver>` and
+its `//&crun` sub-profile — and AppArmor then denies signals between them:
+
+```
+apparmor="DENIED" operation="signal" profile="containers-default-0.62.2"
+  comm="postgres" requested_mask="send" signal=usr1
+  peer="containers-default-0.62.2//&crun"
+```
+
+Both units need signals to work. PostgreSQL's entrypoint drops privilege with
+`gosu` and its postmaster wakes backends with `SIGUSR1`; uvicorn re-raises the
+signal it caught so its exit status reports a clean shutdown. With the flag
+set, the database never finishes starting (five minutes, then
+`TimeoutStartSec`) and every application stop exits 1 and lands in
+`systemctl --failed`.
+
+An init process does not help — it needs the same signal delivery, and podman's
+own `--init` makes it worse, turning each stop into a 30-second hang ending in
+`SIGKILL`. Each unit's comment carries the full flag matrix. In place of the
+flag, the application image strips every setuid and setgid bit at build time,
+which removes the escalation rather than disarming it; `DropCapability=all`,
+`User=`, and the read-only rootfs are unchanged on both. Every other unit in
+the stack still sets `NoNewPrivileges=true`.
+
+If a future podman, kernel, or AppArmor policy fixes the transition, both flags
+can come back — check by starting the database with the flag and watching for
+`PostgreSQL init process complete` within a few seconds.
 
 ## Database major-version upgrades
 

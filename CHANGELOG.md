@@ -35,6 +35,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- Database dumps are written `0600` under `umask 077`, and
+  `/srv/sre-tab/backups` is created `0700` rather than `0750`. The
+  directory is owned by gid 999, which is `postgres` inside the postgres
+  image but `systemd-journal` on Debian 13 — so on that distribution the
+  old modes let anyone with journal access read every user record in the
+  instance. The comment claiming otherwise is corrected.
+- The application image strips every setuid and setgid bit at build time
+  (eleven of them in `python:3.12-slim-trixie`), which is what lets
+  `sre-tab.container` drop `NoNewPrivileges=true` without losing the
+  protection that flag was there for.
 - The CSRF token is bound to the session it was issued for. Previously
   the signature proved only that the server had minted the token, so a
   validly signed token minted for no session at all was accepted on
@@ -58,6 +68,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- PostgreSQL now starts. `NoNewPrivileges=true` on `sre-tab-db.container`
+  stopped it ever reaching `pg_isready`: podman's AppArmor profile denies
+  signal delivery under `no_new_privs` on Debian 13, so `gosu` live-locked
+  in a `sched_yield()` loop for the full five-minute `TimeoutStartSec`, on
+  every start rather than only the first.
+- `sre-tab-web` no longer fails permanently after an unrelated restart.
+  Caddy's pinned `10.89.61.20` sat inside the network's dynamic pool, so
+  any container that happened to be handed that address left Caddy looping
+  on `IPAM error: requested ip address 10.89.61.20 is already allocated`.
+  `IPRange=` now confines dynamic allocation to `.32-.254`.
+- A clean `systemctl stop` leaves `systemctl --failed` empty. uvicorn's
+  re-raise of the captured signal returned `EPERM` under the same AppArmor
+  interaction, so every deliberate stop recorded `exit-code/1` and made
+  the project's stated failure-surfacing mechanism useless.
+- The `/api/v1/healthz` readiness check is bounded at five seconds. A
+  *frozen* database — as opposed to a stopped one — never answers and
+  never errors, so the probe used to hang past 25 seconds and a sick
+  dependency was indistinguishable from a sick application.
 - `GET /auth/github/callback` returned a 422 validation error when a
   user declined authorisation on GitHub; it now redirects to the landing
   page with a message.

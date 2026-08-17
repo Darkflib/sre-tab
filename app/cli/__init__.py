@@ -264,7 +264,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     sources.add_parser("list", help="List every source.").set_defaults(handler=_cmd_sources_list)
 
-    add = sources.add_parser("add", help="Add a source.")
+    add = sources.add_parser(
+        "add",
+        help="Add a source.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "The feed URL is checked here with the same guard the fetcher uses, so a\n"
+            "URL that could never be fetched is refused now rather than becoming a\n"
+            "source that silently never works.\n"
+            "\n"
+            "One case the check cannot predict: a URL whose origin answers with a\n"
+            "redirect to http://. The guard is https-only on every hop, redirect hops\n"
+            "included, so such a source can never be fetched — but nothing about the\n"
+            "URL you type says so, and finding out needs a request the add-time check\n"
+            "deliberately does not make.\n"
+            "\n"
+            "A trailing slash is the usual way to land on one. For example\n"
+            "https://www.theguardian.com/uk/rss/ answers 301 to\n"
+            "http://www.theguardian.com/uk/rss, while the same URL without the slash\n"
+            "is fine. If a source you have added never fetches, request the feed URL\n"
+            "by hand and look at the Location header before assuming the feed is down."
+        ),
+    )
     add.add_argument("--slug", required=True)
     add.add_argument("--name", required=True)
     add.add_argument("--feed-url", required=True, help="RSS or Atom URL; https only.")
