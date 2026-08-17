@@ -201,11 +201,22 @@ reading the rule back and trusting it looked right.
 
 `Publish, sign, and attest image` is deliberately excluded. It carries
 `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`, so it
-never runs on a pull request. Whether requiring a job skipped that way would
-*block* the request or quietly pass is untested here — GitHub reports a
-job-level `if:` skip with a `skipped` conclusion, which has historically
-counted as success, whereas a context that never reports sits pending forever
-— so it is excluded on the asymmetry, not on a known deadlock.
+never runs on a pull request. It is excluded on an asymmetry rather than on a
+known deadlock, and the first pull request here (#4) measured half of that
+asymmetry away:
+
+- **Measured.** On a pull request the job *does* report. It appears in the
+  check rollup as `Publish, sign, and attest image` with state `SKIPPED`. So
+  the bad case — a required context that never reports and leaves every pull
+  request pending forever, which is exactly what the broken rule did with the
+  job keys — is ruled out for this job.
+- **Still not measured.** Whether branch protection accepts that `skipped`
+  conclusion as *satisfying* a required context. It cannot be measured while
+  the job is not in the required set, and adding it to find out risks
+  deadlocking the only merge path.
+
+That is enough to keep it excluded: the exclusion costs nothing, and the
+remaining unknown can only be resolved by taking the risk it exists to avoid.
 
 **If you rename a job, update branch protection in the same change.** Nothing
 in this repository can detect that you didn't: protection lives in GitHub's

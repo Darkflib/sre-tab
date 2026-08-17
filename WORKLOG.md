@@ -43,6 +43,20 @@ answer, but what saving an empty selection *ought* to mean is a product
 decision, and inventing one inside a testing task is how a defect becomes
 a behaviour. It is on the roadmap with the reproduction.
 
+This also became the repository's first pull request, which finally
+exercised the corrected branch-protection rule on a real merge path
+instead of by set-differencing the required contexts against the reported
+ones. All eight reported and passed, and the request came back
+`MERGEABLE` — the property the set-difference could only infer. The
+excluded `Publish, sign, and attest image` reported as `SKIPPED` rather
+than not reporting at all, which rules out the failure mode the broken
+rule actually had; whether protection would *accept* a skipped conclusion
+is still unmeasured, and can only be measured by taking the risk the
+exclusion exists to avoid. `mergeStateStatus` was `UNSTABLE` rather than
+`CLEAN`, which turned out to be CodeRabbit posting a non-required check
+and not a protection failure — worth knowing before someone reads that
+word as a problem.
+
 Two documentation corrections alongside: `CONTRIBUTING.md` carried the
 same paragraph about `audit` and `sast` twice, and the roadmap still
 listed "make `Docs` a required check" as pending when it had landed inside

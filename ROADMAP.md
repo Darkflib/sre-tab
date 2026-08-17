@@ -275,8 +275,24 @@ tasks.
 
   `Publish, sign, and attest image` is deliberately excluded: it never runs
   on a pull request, and whether requiring a job skipped that way blocks the
-  request or quietly passes is untested here, so it is excluded on the
+  request or quietly passes was untested here, so it was excluded on the
   asymmetry rather than on a known deadlock.
+
+  The repository's first pull request (#4) then exercised the corrected rule
+  on a real merge path rather than by set-difference. All eight required
+  contexts reported and passed, and the request came back `MERGEABLE` — which
+  is the property the set-difference could only infer. It also measured half
+  the asymmetry away: the excluded job *does* report on a pull request, as
+  `SKIPPED`, so it is not the never-reports case that leaves a request pending
+  forever. Whether protection would accept that `skipped` as satisfying a
+  required context is still unmeasured, and stays that way — it can only be
+  tested by requiring the job, which is the risk the exclusion exists to
+  avoid.
+
+  Worth knowing for the next reader of a rollup: `mergeStateStatus` came back
+  `UNSTABLE` rather than `CLEAN`, because a third-party reviewer (CodeRabbit)
+  posts a check that is not in the required set. `UNSTABLE` means mergeable
+  with a non-required check outstanding; it is not a protection failure.
 
   The lesson generalises past this instance. **A job rename is a
   branch-protection change**, and nothing in the repository can detect it,
