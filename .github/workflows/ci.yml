@@ -352,14 +352,20 @@ jobs:
       packages: write # push the image and its sigstore attachments
       id-token: write # keyless signing: the OIDC token IS the identity
       attestations: write # provenance and SBOM, recorded against this repo
-    env:
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
       # cosign, syft, and the attest actions all read registry credentials
       # from a docker-style config directory. Podman's login writes an
       # equivalent file, so pointing them all at one place is enough — no
       # second login, and no credential in more than one file.
-      DOCKER_CONFIG: ${{ runner.temp }}/docker
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      #
+      # Exported here rather than in a job-level `env:`, which cannot see the
+      # runner context at all. Under $RUNNER_TEMP rather than the workspace,
+      # so a credential file can never be swept into the image build context.
+      - name: Share one registry credential
+        run: echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
+
       - name: Install Podman
         run: sudo apt-get update && sudo apt-get install --yes podman
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
