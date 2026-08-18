@@ -364,13 +364,34 @@ during an incident.
   traffic, and the shape — silent drops after a container is recreated — points
   at the NAT layer rather than at any of the three services.
 
-  What is not known, and would need measuring before anyone acts. Every
-  observation was taken from the host's own loopback through podman's DNAT, so
-  whether an off-host client sees this at all is unmeasured; a NAT-layer effect
-  is exactly the kind that might not reproduce from outside. Testing that needs
-  the published port reachable from another machine, which it was not on the
-  validation host. Worth doing before assuming users experience a 36-second
-  deploy rather than a 15-second one.
+  The obvious next measurement turned out to be malformed, which is worth
+  recording so nobody spends the afternoon on it. The observations came from
+  the host's own loopback through podman's DNAT, and the first write-up
+  hedged that an off-host client might not see the tail at all. There are no
+  off-host clients: `sre-tab-web.container` publishes `127.0.0.1:8080:8080`
+  deliberately, because TLS is terminated by the host's existing proxy, and
+  that proxy reaches Caddy over loopback exactly as the polling did. So the
+  hedge was backwards — nothing insulates users from this, it reaches them as
+  502s — and opening the port to test it would have measured a topology this
+  deployment does not have.
+
+  The mechanism is narrowed, and it is not conntrack, which was the first
+  guess. Two things serve `127.0.0.1:8080`. netavark installs a hostport rule
+  — `ip daddr 127.0.0.1 tcp dport 8080 dnat ip to 10.89.61.20:8080`, pointing
+  at Caddy's pinned address — and podman separately holds a *reservation*
+  listener on the same port, visible as `conmon` in `ss -lntp`, so nothing
+  else can take it while the container is down.
+
+  Probing across a restart walks through all three states in order: `refused`
+  while both are gone, then **`accepted then hung`** — a connection the
+  reservation listener takes and never forwards, because the DNAT rule is not
+  back yet — then serving. The tail is that middle state. It looks like an
+  outage with a listener present, which is why it reads as black-holing from
+  the client side and why nothing in the three services' logs mentions it.
+
+  Not yet established: whether the ordering is fixable from the unit files at
+  all, or is podman's to fix. `PublishPort=127.0.0.1:8080:8080` is the same
+  line orbit-data uses, so anything learned here applies there too.
 
 ## Documentation
 

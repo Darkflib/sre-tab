@@ -302,18 +302,34 @@ different files, which is how they drifted apart unnoticed. The image is now
 **A deploy is not over when `systemctl` returns.** It is the second row that
 matters to anyone watching, and lowering the healthcheck interval does not
 address it: the service stays unreachable for roughly 20s *after* the command
-comes back. During that window a TCP connection to the published port is
-**black-holed rather than refused**, while Caddy's own log shows it serving
-50ms after its container started. So this is not Caddy being slow to boot,
-and it is not the application: something between the published port and the
-container is not carrying traffic yet. It has not been root-caused.
+comes back, while Caddy's own log shows it serving 50ms after its container
+started. So it is neither Caddy booting nor the application.
 
-Two caveats on those numbers. Every measurement was taken from the host's own
-loopback, through podman's published-port DNAT; whether a client on another
-machine sees the same tail is **unmeasured**, and the black-holing is
-suggestive of a NAT-layer effect that might not apply identically off-host.
-And this is a 4-core cloud instance, so the absolute figures are that host's,
-not a constant.
+Two things serve `127.0.0.1:8080`, which is what makes this confusing to
+diagnose. netavark installs a hostport rule —
+`ip daddr 127.0.0.1 tcp dport 8080 dnat ip to 10.89.61.20:8080` — and podman
+separately holds a reservation listener on the same port so nothing else can
+claim it, visible as `conmon` in `ss -lntp`. Probing across a restart walks
+through three states: `refused` while both are gone, then **accepted and then
+hung** — the reservation listener takes the connection and never forwards it,
+because the DNAT rule is not back yet — and finally serving. The tail is that
+middle state, which is why it looks like black-holing from the client and why
+none of the three services' logs mention it.
+
+Whether the ordering can be fixed from the unit files, or is podman's to fix,
+is not yet established.
+
+The measurements were taken from the host's own loopback, which was first
+written up as a caveat — the tail might be a loopback-and-DNAT artefact a
+real client would not see. **It is not a caveat, it is the client path.**
+`sre-tab-web.container` publishes `127.0.0.1:8080:8080` deliberately, because
+TLS is terminated by the host's existing proxy, and that proxy reaches Caddy
+over loopback exactly as the polling did. There is no off-host client of this
+port to compare against, so nothing insulates users from the tail: it is what
+the outer proxy sees, and it reaches them as 502s for the duration.
+
+One caveat does stand: this is a 4-core cloud instance, so the absolute
+figures are that host's, not a constant.
 
 The practical consequence is unchanged by any of it: **wait for `healthz` to
 answer rather than treating the prompt returning as the all-clear.** The

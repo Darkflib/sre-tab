@@ -57,11 +57,32 @@ nor the application: something between the published port and the
 container is not carrying traffic yet. Not root-caused, and written down
 as unexplained rather than guessed at.
 
-Two honest limits on all of it. The polling was from the host's own
-loopback through podman's DNAT, so whether an off-host client sees the
-same tail is unmeasured — and the black-holing hints at a NAT-layer
-effect that might not. And the box is a 4-core cloud instance, so the
-absolute numbers are that host's.
+**The obvious follow-up measurement was malformed, and finding that out
+improved the finding.** The tail was first written up hedged: polling came
+from the host's own loopback, so perhaps an off-host client would not see
+it. There are no off-host clients. `sre-tab-web.container` publishes
+`127.0.0.1:8080:8080` deliberately, because TLS terminates at the host's
+existing proxy — which reaches Caddy over loopback, exactly as the polling
+did. The hedge was backwards: nothing insulates users from this, it
+reaches them as 502s. Opening the port to test it would have measured a
+topology this deployment does not have.
+
+Chasing the mechanism on the host instead was the right spend, and it is
+not conntrack, which was the first guess. Two things serve
+`127.0.0.1:8080`: netavark's hostport DNAT rule to Caddy's pinned
+`10.89.61.20`, and a *reservation* listener podman holds on the same port
+so nothing else claims it — `conmon`, in `ss -lntp`. Probing across a
+restart walks all three states in order: `refused` while both are gone,
+then **accepted and then hung**, then serving. The middle state is the
+tail: the reservation listener takes the connection and never forwards
+it, because the DNAT rule is not back yet. That is why it reads as
+black-holing, and why none of the three services logs anything about it.
+Whether the ordering is fixable from the unit files or is podman's to fix
+is still open — and since `PublishPort=127.0.0.1:8080:8080` is the same
+line orbit-data uses, whatever the answer is applies to both.
+
+The remaining limit is ordinary: a 4-core cloud instance, so the absolute
+numbers are that host's.
 
 The operational conclusion survives every one of those caveats, and is
 now in the document: a deploy is not over when `systemctl` returns, so
