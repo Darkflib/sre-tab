@@ -482,17 +482,25 @@ jobs:
           name: tested-image
           path: ${{ runner.temp }}/image.tar
           retention-days: 1
-          # Uncompressed, and measured rather than assumed. The claim this
-          # replaced — "already compressed layers, recompressing buys
-          # nothing" — came from a `docker save` of the same image, which
-          # writes 71 MB. Podman's docker-archive stores layer tars
-          # uncompressed and writes 212 MB, so that reasoning did not
-          # survive the tool actually used here.
+          # Uncompressed. What is actually known: podman's docker-archive
+          # stores layer tars uncompressed and writes 212 MB for this
+          # image, and at level 0 the hop cost 4s up and 7s down inside
+          # GitHub's own storage.
           #
-          # Level 0 is still right, for the other reason: the hop runs
-          # inside GitHub's own storage and cost 4s up and 7s down for
-          # those 212 MB, which is not worth spending CPU on both ends to
-          # shrink.
+          # What is *not* known is whether a nonzero level would be
+          # faster overall — no compressed run has been measured, so the
+          # compression cost, the transfer saving, and the net effect are
+          # all unquantified. This is therefore a deliberate default and
+          # not a tuned optimum, and the numbers above are a baseline
+          # rather than a comparison.
+          #
+          # Two earlier versions of this comment each asserted an
+          # optimum. The first reasoned from a `docker save` of the same
+          # image (71 MB, because Docker stores the compressed layers) —
+          # the wrong tool. The second cited the timings above as though a
+          # baseline were a comparison. Both conclusions may well be
+          # right; neither was supported, which is the distinction
+          # AGENTS.md draws.
           compression-level: 0
 
   # Everything a deployment is later asked to trust is produced here: the
