@@ -11,11 +11,38 @@ The harness half, after the hand-run below. `docs.yml` gained a
 verification, network replacement, and an assertion that the recreated
 range starts above Caddy's pinned `.20`.
 
-**The roadmap had the cost in the wrong place.** It said the expensive
-part was a runner with systemd rather than the harness. `ubuntu-latest`
-has systemd, root, and podman a package away; the real obstacle was that
-two documented commands cannot run as written — `sudoedit`, and a client
-secret written as `/path/to/github-client-secret`.
+**The roadmap was right that the runner was the expensive part, and
+wrong about why — and I was wrong to say it had been wrong.** The entry
+said a runner with systemd was the obstacle. `ubuntu-latest` has systemd,
+root, and podman a package away, so the job got written and the roadmap
+got a line saying the cost had been misplaced. Then the job failed:
+
+    [conmon:e]: Include journald in compilation path to log to systemd journal
+    Error: conmon failed: exit status 1
+    sre-tab-web.service: Main process exited, code=exited, status=126
+
+Ubuntu's `conmon` is built without journald support, and the three
+long-running units set `LogDriver=journald` on purpose — the Operations
+section argues for it, because `podman logs` is worth having on those
+three. So the stack cannot start on a GitHub runner at all, and nothing
+downstream of that was ever going to be tested.
+
+Making it pass would mean overriding `LogDriver` for CI, which is testing
+a deployment other than the one that ships. A green gate over the wrong
+artefact is worse than no gate — that is the same argument the semgrep
+`p/bash` guard exists for — so the job came out and the error text stays
+in `docs.yml` where the next person to write it will find it first.
+
+The lesson is narrower than "CI cannot run this": it is that "the
+runner has systemd" and "the runner can run these units" are different
+claims, and only the first one is easy to check. Closing it needs a
+runner whose conmon has journald.
+
+The harness itself is real and stays: seven blocks, exit 0 end to end on
+Debian 13 with podman 5.4.2, and the command is in CONTRIBUTING.md. The
+other half of the original cost was two documented commands that cannot
+run as written — `sudoedit`, and a client secret written as
+`/path/to/github-client-secret`.
 
 Both were fixed by naming the input rather than scaffolding around it.
 The path became `${GITHUB_CLIENT_SECRET_FILE:?}` — a variable holding a

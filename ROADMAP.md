@@ -401,12 +401,29 @@ during an incident.
   protects has stopped being true. Two wrong procedures preceded it:
   `install.sh --start` never recreated a removed network, and the documented
   upgrade sequence was wrong as written.
-- **`deploy/README.md` is executed now** — **landed, and the runner was never
-  the expensive part.** Its procedures need a Podman host, root, and live
-  systemd, which this entry treated as the obstacle. An `ubuntu-latest` runner
-  has all three; the actual cost was that two documented commands could not
-  run as written — `sudoedit /etc/sre-tab/app.env`, and a client-secret path
-  written as `/path/to/…`.
+- **`deploy/README.md` is executable now, and CI still cannot run it** —
+  **half landed, and the original entry was right for the wrong reason.** It
+  said the expensive part was a runner with systemd. `ubuntu-latest` has
+  systemd, root, and podman a package away, so that looked wrong — and then
+  the job failed anyway, on something narrower: Ubuntu's `conmon` is built
+  without journald support, and the three long-running units set
+  `LogDriver=journald` deliberately, so `sre-tab-web.service` dies with
+  `conmon failed: exit status 1` before a single procedure is exercised.
+
+  Making it pass would mean overriding `LogDriver` for CI, which tests a
+  deployment other than the one that ships. A green gate over the wrong
+  artefact is worse than no gate, so the job was removed and the reason left
+  in `docs.yml` where the next person to try will find it. What would close
+  this is a runner whose conmon has journald: a Debian-based self-hosted
+  runner, or podman from a repository that ships one.
+
+  The markers and the harness are real and stay. The procedures run end to end
+  on Debian 13 with podman 5.4.2 — verified, exit 0 through all seven blocks —
+  and [CONTRIBUTING.md](CONTRIBUTING.md) carries the command.
+
+  The other half of the original cost was two documented commands that could
+  not run as written — `sudoedit /etc/sre-tab/app.env`, and a client-secret
+  path written as `/path/to/…`.
 
   Resolved by naming them rather than by scaffolding around them. The secret's
   path is `${GITHUB_CLIENT_SECRET_FILE:?}`, which is a variable holding a
@@ -416,12 +433,9 @@ during an incident.
   anyway. Both are improvements to the document in their own right, which is
   the test of whether bending it toward execution was legitimate.
 
-  `docs.yml` gained a `deploy-procedures` job, separate from the quickstart
-  because it needs podman and root, pulls the pinned image, and takes minutes
-  rather than seconds — a failure there should not look like the README's own
-  commands breaking. Seven blocks run: preparation, configuration, secrets,
-  first start, verification, network replacement, and an assertion that the
-  recreated range starts above Caddy's pinned `.20`.
+  Seven blocks run: preparation, configuration, secrets, first start,
+  verification, network replacement, and an assertion that the recreated range
+  starts above Caddy's pinned `.20`.
 
   The verification block changed as a consequence of the deploy-window
   measurement above: it polls for `healthz` instead of requesting it once,

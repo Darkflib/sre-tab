@@ -60,15 +60,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   against the stale copy.
 - `LICENSE` (MIT), matching the declaration that was already in
   `pyproject.toml` but had no corresponding grant in the repository.
-- `deploy/README.md`'s procedures are executed on every push, not
-  proofread. A `deploy-procedures` job runs seven blocks extracted from
-  the document itself — host preparation, configuration, secrets, first
-  start, verification, network replacement, and an assertion that the
-  recreated address range starts above Caddy's pinned `.20`. Two commands
-  changed so the document can be run as written: the client secret's path
-  is now a named variable rather than `/path/to/…`, and the
+- `deploy/README.md`'s procedures are executable rather than prose. Seven
+  blocks carry `docs:run` markers — host preparation, configuration,
+  secrets, first start, verification, network replacement, and an
+  assertion that the recreated address range starts above Caddy's pinned
+  `.20` — and run end to end on a Debian 13 host with podman 5.4.2. Two
+  commands changed so the document can be run as written: the client
+  secret's path is a named variable rather than `/path/to/…`, and the
   non-interactive form of the `app.env` edit is documented alongside
-  `sudoedit`.
+  `sudoedit`. Not run by CI: Ubuntu's `conmon` lacks journald support and
+  the long-running units set `LogDriver=journald` deliberately, so a
+  GitHub runner cannot start the stack without testing a different
+  deployment. See `CONTRIBUTING.md` for the command.
 - `CONTRIBUTING.md`, and a `Docs` workflow that extracts the README's
   quickstart from the README itself and executes it on a clean checkout
   on every push. Two documented procedures here have been wrong while
