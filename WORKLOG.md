@@ -80,6 +80,16 @@ One thing improved in the runner itself: it labelled log groups with the
 document's basename, so two different `README.md` files both appeared as
 `README.md:58`. It uses the path now.
 
+**And one found by watching a run stall.** `apt-get install podman` in
+the container job sat for eight minutes against a normal thirty seconds,
+and nothing in `ci.yml` bounded it: not one of its seven jobs set
+`timeout-minutes`, while both jobs in `docs.yml` do. GitHub's default is
+360 minutes, so a hung network step burns six hours of runner before
+anyone gets a red cross — and on a pull request it reads as "still
+running" the whole time, which is the same shape as the branch-protection
+rule that failed safe by never reporting. All seven now carry a budget:
+15 minutes for the fast jobs, 30 for the two that build images.
+
 ## 2026-08-18 — The deploy documents, executed on a real host
 
 A second Debian 13 host with podman 5.4.2, and a hand-run of the four
