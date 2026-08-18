@@ -527,9 +527,13 @@ jobs:
           set -euo pipefail
           test -n "$TESTED_ID" || { echo "::error::container job published no image id"; exit 1; }
           podman load --input "$RUNNER_TEMP/image.tar"
-          loaded_id=$(podman image inspect "$TESTED_ID" --format '{{.Id}}')
+          # By tag, not by ID. Inspecting by the ID and then comparing the
+          # result to that same ID asserts almost nothing — it can only
+          # succeed or error. What matters is that the tag the next step
+          # pushes resolves to the ID the smoke test ran against.
+          loaded_id=$(podman image inspect sre-tab:ci --format '{{.Id}}')
           if [ "$loaded_id" != "$TESTED_ID" ]; then
-            echo "::error::loaded image $loaded_id is not the tested image $TESTED_ID"
+            echo "::error::sre-tab:ci is $loaded_id, but the tested image was $TESTED_ID"
             exit 1
           fi
           echo "loaded the tested image $TESTED_ID"
@@ -538,7 +542,6 @@ jobs:
         id: publish
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TESTED_ID: ${{ needs.container.outputs.image-id }}
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
@@ -556,8 +559,8 @@ jobs:
           printf '%s' "$GHCR_TOKEN" | podman login ghcr.io \
             --username "$GITHUB_ACTOR" --password-stdin --authfile "$authfile"
 
-          podman tag "$TESTED_ID" "$image:sha-${GITHUB_SHA}"
-          podman tag "$TESTED_ID" "$image:latest"
+          podman tag sre-tab:ci "$image:sha-${GITHUB_SHA}"
+          podman tag sre-tab:ci "$image:latest"
           # --digestfile rather than inspecting the local image: this is the
           # digest the registry accepted, and it is what every signature,
           # attestation, and deployment pin below refers to.
