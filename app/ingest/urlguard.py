@@ -39,11 +39,13 @@ from __future__ import annotations
 import ipaddress
 import socket
 from collections.abc import Callable, Collection, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 
 import httpx
 
-from app.ingest.errors import SourceConfigurationError, UnsafeTargetError
+from app.ingest.errors import FetchTimeoutError, SourceConfigurationError, UnsafeTargetError
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
@@ -282,6 +284,12 @@ def assert_supported_endpoint(url: httpx.URL) -> None:
         )
 
 
+#: Workers for bounded DNS. Small on purpose: the refresh loop is serial,
+#: so one lookup is in flight at a time and this exists only to absorb
+#: the threads that outlive a timeout.
+_RESOLVER_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="urlguard-dns")
+
+
 class UrlGuard:
     """Validates fetch targets. Holds no state beyond its resolver."""
 
@@ -331,10 +339,20 @@ class UrlGuard:
         return normalised
 
     def validate(
-        self, raw_url: str, *, allowed_urls: Collection[str] | None = None
+        self,
+        raw_url: str,
+        *,
+        allowed_urls: Collection[str] | None = None,
+        timeout: float | None = None,
     ) -> ValidatedTarget:
         """Full check. ``allowed_urls`` is supplied for the entry URL and
-        omitted for redirect hops, which cannot be pre-declared."""
+        omitted for redirect hops, which cannot be pre-declared.
+
+        ``timeout`` bounds the DNS lookup. Optional because
+        ``check_static`` and config-time validation have no deadline to
+        answer to, but :class:`~app.ingest.fetch.FeedFetcher` always
+        passes what is left of its budget — see ``_resolve_within``.
+        """
         if allowed_urls is not None and raw_url not in allowed_urls:
             raise SourceConfigurationError(
                 "refused target that is not the feed URL of an enabled source"
@@ -351,7 +369,7 @@ class UrlGuard:
             assert_address_allowed(literal, url=raw_url)
             return ValidatedTarget(url=url, host=host, port=port, ip=literal, resolved=(literal,))
 
-        answers = self._resolve(host, port)
+        answers = self._resolve_within(host, port, timeout, url=raw_url)
         if not answers:
             raise UnsafeTargetError(raw_url, "unresolvable", "no addresses returned")
 
@@ -368,6 +386,41 @@ class UrlGuard:
         return ValidatedTarget(
             url=url, host=host, port=port, ip=resolved[0], resolved=tuple(resolved)
         )
+
+    def _resolve_within(
+        self, host: str, port: int, timeout: float | None, *, url: str
+    ) -> Sequence[str]:
+        """Resolve *host*, giving up after *timeout* seconds.
+
+        ``getaddrinfo`` takes no timeout argument and ignores
+        ``socket.setdefaulttimeout``, so the only way to bound it is to
+        stop waiting on it. It used to be called inline, outside the
+        deadline ``FeedFetcher`` had already started — glibc bounds it by
+        ``resolv.conf`` rather than leaving it unbounded, but ten to
+        forty seconds in front of a serial refresh loop is one slow
+        resolver stalling every source behind it.
+
+        The lookup itself cannot be cancelled: the worker thread runs to
+        completion whatever we do here, and only the *waiting* is bounded.
+        That is the trade being made, and it is bounded on both sides —
+        the pool is small, and a stuck thread is released when the
+        platform resolver gives up. If every worker is stuck, later
+        lookups time out while queued, which is still the right answer:
+        a refresh cycle that returns nothing beats one that never returns.
+        """
+        if timeout is None:
+            return self._resolve(host, port)
+        if timeout <= 0:
+            raise FetchTimeoutError(f"fetch deadline expired before resolving {host}")
+        future = _RESOLVER_POOL.submit(self._resolve, host, port)
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError as exc:
+            future.cancel()
+            raise FetchTimeoutError(
+                f"dns lookup for {host} exceeded the remaining {timeout:.1f}s of the "
+                f"fetch deadline ({url})"
+            ) from exc
 
 
 def _literal_address(host: str) -> IPAddress | None:

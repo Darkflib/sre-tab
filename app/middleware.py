@@ -39,6 +39,21 @@ _DOCS_CSP = (
 )
 
 _STATIC_HEADERS = {
+    # One year, and deliberately without `includeSubDomains` or `preload`.
+    #
+    # Caddy serves this stack over plain HTTP on 127.0.0.1:8080 and the
+    # operator's proxy terminates TLS, so the header only ever reaches a
+    # browser over HTTPS — which is the condition for it being honoured, and
+    # the reason deploy/README.md now lists it among the headers that proxy
+    # must not strip.
+    #
+    # `includeSubDomains` is the right setting for the documented topology, a
+    # dedicated host like news.example.com, and is the wrong thing to *default*
+    # to: on an apex deployment it forces HTTPS across every unrelated
+    # subdomain the operator owns, for a year, with no way to take it back
+    # early. That is an outage a self-hoster inherits from a default they never
+    # chose. deploy/README.md says how to add it and when it is safe.
+    "Strict-Transport-Security": "max-age=31536000",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "X-Frame-Options": "DENY",

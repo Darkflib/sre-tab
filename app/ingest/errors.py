@@ -85,3 +85,13 @@ class UnsafeDocumentError(ParseError):
 
 class UnsupportedFeedFormatError(ParseError):
     """Parsed, but not RSS or Atom."""
+
+
+class DocumentTooComplexError(ParseError):
+    """More elements or entries than ``MAX_ELEMENTS`` / ``MAX_ENTRY_ELEMENTS``.
+
+    Distinct from ``ResponseTooLargeError``, which counts bytes on the
+    wire. This one counts *nodes*, because that is what a DOM parser
+    allocates against: a document can sit inside the byte cap and still
+    expand by a factor of twenty on the way to a tree.
+    """

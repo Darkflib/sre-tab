@@ -171,7 +171,40 @@ if [ "$assume_yes" = false ]; then
     fi
 fi
 
+# The backup timer is not part of "stopping the application", and it is the
+# one unit that must not fire during the window below. Between DROP DATABASE
+# and pg_restore finishing, the database is empty and perfectly healthy, so a
+# backup landing in there dumps nothing, passes backup.sh's own
+# `pg_restore --list` validation, and gets promoted from .partial to a final
+# dump with a sha256 sidecar and today's date on it. Retention is by age, so
+# it then sits in the directory for fourteen days looking exactly like a
+# good backup.
+#
+# An in-flight run has to go too, not just the schedule. That is safe to
+# interrupt: backup.sh writes to a .partial and only mv's it into place after
+# validating, and it sweeps stale .partial files on its next run.
+backup_timer_was_active=false
+restore_backup_timer() {
+    if [ "$backup_timer_was_active" = true ]; then
+        # Persistent=true, so if the scheduled hour passed while the restore
+        # was running this fires straight away — which is what we want: the
+        # first backup after a restore should be of the restored database.
+        systemctl start sre-tab-backup.timer || true
+    fi
+}
+
 if [ "$use_systemd" = true ]; then
+    if systemctl is-active --quiet sre-tab-backup.timer; then
+        backup_timer_was_active=true
+    fi
+    # Before the first destructive step, and restored however this script
+    # exits — including the failure paths, which are the ones that leave an
+    # operator with a half-restored database and no wish to discover the
+    # timer re-armed itself only on success.
+    trap restore_backup_timer EXIT INT TERM
+    echo "Pausing the backup timer so it cannot dump the empty database..."
+    systemctl stop sre-tab-backup.timer sre-tab-backup.service
+
     echo "Stopping the application so nothing writes during the restore..."
     systemctl stop sre-tab.service sre-tab-migrate.service
 fi

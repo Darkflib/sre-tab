@@ -86,20 +86,6 @@ RUN groupadd --system --gid 10001 sre-tab \
     && mkdir -p /app /srv/www \
     && chown sre-tab:sre-tab /app /srv/www
 
-# Strip every setuid and setgid bit. python:3.12-slim-trixie ships eleven —
-# mount, umount, su, passwd, chsh, chfn, chage, expiry, gpasswd, newgrp,
-# unix_chkpwd — and nothing here runs any of them: the application is one
-# unprivileged uid on a read-only rootfs with all capabilities dropped.
-#
-# This is what deploy/quadlet/sre-tab.container relies on in place of
-# NoNewPrivileges=true, which that unit cannot set (podman's AppArmor profile
-# denies signal delivery under no_new_privs on Debian 13, so uvicorn cannot
-# shut down cleanly — the note in the unit has the measurements). Removing the
-# bits deletes the escalation outright rather than disarming it at runtime, and
-# because it runs at build time it re-applies itself if a base-image bump ever
-# introduces a new one.
-RUN find / -xdev -perm /6000 -type f -exec chmod a-s '{}' + || true
-
 WORKDIR /app
 
 # The virtualenv carries the application as an installed (non-editable)
@@ -122,6 +108,43 @@ COPY --chown=sre-tab:sre-tab alembic ./alembic
 # volume. Without it the volume arrives root-owned and the publish step —
 # which runs unprivileged, as everything here does — cannot write to it.
 COPY --from=frontend --chown=sre-tab:sre-tab /build/dist /opt/sre-tab/web
+
+# Strip every setuid and setgid bit. python:3.12-slim-trixie ships eleven —
+# mount, umount, su, passwd, chsh, chfn, chage, expiry, gpasswd, newgrp,
+# unix_chkpwd — and nothing here runs any of them: the application is one
+# unprivileged uid on a read-only rootfs with all capabilities dropped.
+#
+# This is what deploy/quadlet/sre-tab.container relies on in place of
+# NoNewPrivileges=true, which that unit cannot set (podman's AppArmor profile
+# denies signal delivery under no_new_privs on Debian 13, so uvicorn cannot
+# shut down cleanly — the note in the unit has the measurements). Removing the
+# bits deletes the escalation outright rather than disarming it at runtime, and
+# because it runs at build time it re-applies itself if a base-image bump ever
+# introduces a new one.
+#
+# Two things about the shape of this, both learned the hard way:
+#
+#   * It used to end in `|| true`, which made the stand-in for
+#     NoNewPrivileges fail open. `find` exiting non-zero after a partial
+#     traversal would have been swallowed silently, and the image would have
+#     shipped with the bits it claims to have removed. Nothing downstream
+#     checked, so there was no second line of defence either — the
+#     `no setuid or setgid files survive` step in ci.yml is now that line,
+#     asserting against the built image rather than trusting this layer.
+#   * It runs *last* in the stage, after every COPY, rather than straight
+#     after the base image. Stripping before the copies leaves whatever they
+#     bring in unstripped — the venv above all — so the assertion would have
+#     been true of a filesystem that is not the one that ships.
+#
+# The `find` that follows the chmod is the load-bearing half: it asserts the
+# end state instead of the exit status of the traversal that produced it.
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s '{}' + \
+    && remaining="$(find / -xdev -perm /6000 -type f)" \
+    && if [ -n "$remaining" ]; then \
+           echo "setuid/setgid bits survived the strip:" >&2; \
+           echo "$remaining" >&2; \
+           exit 1; \
+       fi
 
 USER 10001:10001
 

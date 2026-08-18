@@ -113,6 +113,10 @@ def test_security_headers_present(client: TestClient) -> None:
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
     assert response.headers["X-Frame-Options"] == "DENY"
+    # Not `includeSubDomains` — see the note in app/middleware.py. Asserted
+    # exactly rather than by substring so that adding it becomes a deliberate
+    # change to the documented topology and not a quiet one.
+    assert response.headers["Strict-Transport-Security"] == "max-age=31536000"
 
 
 def test_request_id_generated_and_incoming_honoured(client: TestClient) -> None:

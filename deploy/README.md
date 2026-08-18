@@ -93,11 +93,12 @@ sudo sed -i \
   -e "s|^APP_BASE_URL=.*|APP_BASE_URL=${APP_BASE_URL:?}|" \
   -e "s|^GITHUB_REDIRECT_URI=.*|GITHUB_REDIRECT_URI=${APP_BASE_URL:?}/api/v1/auth/github/callback|" \
   -e "s|^GITHUB_CLIENT_ID=.*|GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:?}|" \
+  -e "s|^ALLOWED_GITHUB_IDS=.*|ALLOWED_GITHUB_IDS=${ALLOWED_GITHUB_IDS:?}|" \
   /etc/sre-tab/app.env
 ```
 
-`ALLOWED_GITHUB_IDS` is not in that list because `app.env.example` already
-ships the operator allow-list, which is the next section's subject.
+`ALLOWED_GITHUB_IDS` is in that list, and the next section is about what
+happens when it is left out.
 
 ### `ALLOWED_GITHUB_IDS` is the first-deploy trap
 
@@ -114,11 +115,17 @@ which reads far more like a broken OAuth application than like an allow-list
 doing its job. Authorisation is checked before any write, so a denied
 identity also leaves no row behind to hint at what happened.
 
-`deploy/app.env.example` ships the initial operator allow-list rather than an
-empty value, so an installation seeded from it works. An installation whose
-`app.env` came from anywhere else — the root `.env.example`, a configuration
-management system, a hand-written file — starts closed. Check it before
-concluding the OAuth app is misconfigured:
+**Every** installation starts closed, including one seeded straight from
+`deploy/app.env.example`. That template used to ship the upstream project's
+own operator allow-list, so a fresh install worked out of the box — and so
+did a fresh install by somebody else, because GitHub user IDs are global
+rather than scoped to an OAuth application. Registering your own OAuth app
+and replacing every credential in the file did not revoke the three accounts
+named in it; only noticing the line and editing it did. Filling this in is
+now a step, which is the correct trade: a deployment that refuses its own
+operator on the first sign-in is a five-minute problem, and one that silently
+admits three strangers is not. Check it before concluding the OAuth app is
+misconfigured:
 
 ```bash
 grep ALLOWED_GITHUB_IDS /etc/sre-tab/app.env
@@ -493,11 +500,17 @@ CI fails on drift.
 
 The outer proxy must therefore:
 
-- **Not strip or rewrite** `Content-Security-Policy`, `X-Content-Type-Options`,
-  `Referrer-Policy`, `X-Frame-Options`, `Cross-Origin-Opener-Policy`,
+- **Not strip or rewrite** `Content-Security-Policy`,
+  `Strict-Transport-Security`, `X-Content-Type-Options`, `Referrer-Policy`,
+  `X-Frame-Options`, `Cross-Origin-Opener-Policy`,
   `Cross-Origin-Resource-Policy`, or `Permissions-Policy`. Several proxies
   helpfully add their own CSP; two `Content-Security-Policy` headers are
   intersected by the browser, and the result is usually a broken page.
+- **Not terminate TLS and then serve the origin over plain HTTP.**
+  `Strict-Transport-Security: max-age=31536000` is set by the application and
+  by Caddy, but a browser only honours it on a response it received over
+  HTTPS. Both layers here sit behind the outer proxy on plain HTTP, so that
+  proxy is the only thing that decides whether the header means anything.
 - **Not add its own `Cache-Control`.** `index.html` is deliberately
   `no-store` and `/assets/*` deliberately `immutable`; overriding either is
   how a deployment lands and nobody sees it.
@@ -505,6 +518,15 @@ The outer proxy must therefore:
   the inner of two proxies. If the outer one does not populate it, every
   request reaches the application looking as though it came from the proxy,
   and per-IP rate limiting silently becomes global rate limiting.
+`includeSubDomains` is deliberately **not** set. On the documented topology —
+a dedicated host such as `news.example.com` — adding it is correct and worth
+doing, in `app/middleware.py` and in the mirrored block in `Caddyfile`
+together, since `deploy/scripts/check-header-parity.sh` fails CI if only one
+of them changes. On an apex deployment it is a trap: it forces HTTPS on every
+other subdomain of that registrable domain, for `max-age` seconds, and cannot
+be withdrawn early from the server side. Decide which of those two you are
+before adding it.
+
 - **Serve the origin in `APP_BASE_URL` over HTTPS.** The application builds
   absolute URLs from that setting rather than from forwarded headers, so no
   `X-Forwarded-Proto` plumbing is needed — but the value has to be right.

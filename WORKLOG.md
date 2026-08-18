@@ -3,6 +3,104 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-18 — An external review, measured rather than believed
+
+Codex reviewed the tree and returned three High findings, twelve Medium,
+and four lower. Every one was checked against the code and against what
+this deployment actually is — single instance, three allow-listed
+operators, an operator-curated source catalogue with no route that adds a
+feed. Most of the review survives that check. Two claims did not, and one
+finding turned out to be considerably worse than it was filed as.
+
+**The reused `HTTPException` is not a leak, it is an unauthenticated
+denial of service.** `app/api/deps.py` and `app/api/v1/auth.py` each held
+a module-global exception instance and raised it on every failure. Python
+appends a frame to `__traceback__` on each raise, and the object is a
+module global, so nothing ever collects it. The review reported traceback
+depths of 9, 18, 27, 36, and 45 across five requests; that reproduces
+exactly. What it did not do was carry the number forward:
+
+    2000 unauthenticated 401s
+      traceback depth: 18009 frames
+      RSS growth:      65.4 MB  (32,719 bytes/request)
+
+Each retained frame pins the `Request`, the raw token, and the
+SQLAlchemy `Session`. Against `MemoryMax=768M` that is roughly 23,000
+requests to an OOM, on `/api/v1/me`, which needs no credentials and has
+no rate limiter — the two limiters cover the auth routes only.
+`Restart=always` makes it a crash loop rather than a kill, which is a
+distinction worth exactly as much as it sounds.
+
+**Two corrections to how the review framed that one, both in the
+direction of precision.** The session tokens retained via `deps.py` are
+invalid by construction: `_UNAUTHENTICATED` only raises once resolution
+has already failed, so "retains credentials" is not true of that half.
+The real credential retention is the other instance — `github_callback`
+raises the shared 429 at the top of the function, where `code` and
+`state` are already bound, so genuine OAuth codes were being pinned in
+frame locals. Narrow, since the failure limiter has to have tripped
+first, but it sits directly against the AGENTS.md rule about never
+logging OAuth codes, and for the same reason.
+
+**The parser cap does not cap the parser.** `assert_safe_document` parses
+the whole document with defusedxml, `feedparser.parse` parses it again,
+and only then does `[:MAX_ENTRIES]` apply. A valid RSS document built to
+sit just under `source_fetch_max_bytes`:
+
+    feed: 5.24 MB, 91978 entries (MAX_ENTRIES=500)
+    RSS peak after parse: +97 MB, 2.27s, kept 500 entries
+
+The review measured 197 MB from a denser document; the ratio is the
+finding either way. `refresh_all` is a serial list comprehension, so this
+is one hostile or compromised upstream against a 768 MB ceiling.
+
+**DNS resolution sits outside the fetch deadline.** `fetch()` starts a
+deadline, then calls `UrlGuard.validate()`, which calls `getaddrinfo()`
+with no bound, before anything checks the clock. The review called this
+"indefinitely", which is not right — glibc bounds it by `resolv.conf`,
+typically ten to forty seconds — but outside a deadline and in front of a
+serial loop is enough.
+
+**One finding was simply stale.** "Generated API types have no drift
+gate" is answered by the entry two below this one: `tests/test_openapi.py`
+compares the committed document against the live schema byte for byte,
+and `ci.yml` regenerates `schema.d.ts` and diffs it, with a
+`git ls-files --error-unmatch` guard precisely because an untracked file
+would otherwise diff clean. That landed in d608291. The review read
+`package.json` and stopped there, which is a fair way to be wrong and
+still worth recording: a gate that lives in CI is invisible to anyone
+reading the package manifest for it.
+
+**What the security model genuinely does absorb**, and which is therefore
+filed rather than fixed. The OAuth state cookie can be tossed from a
+sibling subdomain, but the exploit needs the attacker's own GitHub ID on
+the allow-list, which makes it inert at three operators; `__Host-` is
+also not free, since it mandates `Path=/` and would trade the current
+`/api/v1/auth` scoping for domain integrity. Feed image URLs get a weaker
+check than item URLs — no IP-literal rejection, no dot requirement — and
+`img-src https:` lets the browser fetch them, but sources are CLI-curated,
+the request is blind, and `referrerPolicy="no-referrer"` is already set.
+The application connects as the PostgreSQL superuser, which upgrades an
+application compromise to `COPY … PROGRAM`; that one is real and is the
+only deferred item with real cost, because role separation touches
+migrations, restore, and the smoke test. Unpruned sessions and the
+`upsert_user` insert race are both true and both negligible at three
+users.
+
+**Fixed here**, in the order the fix is small and the security model
+gives nothing back: fresh exceptions per raise, with a regression test
+that asserts traceback depth stays flat; the backup timer stopped for the
+duration of a restore, which it was not; `|| true` off the setuid strip,
+which was the fail-open guarding the thing that stands in for
+`NoNewPrivileges`; the tested image carried through to `publish` so the
+signed bytes are the bytes that passed the smoke test; the parser bounded
+before expansion; DNS bounded by the deadline; HSTS, which was nowhere at
+all — not in the middleware, not in the Caddyfile mirror, not in the list
+of things `deploy/README.md` tells the outer proxy it must not get wrong;
+and the deploy template's allow-list emptied, since it shipped three real
+GitHub accounts directly underneath a banner explaining that empty is the
+correct fail-closed default.
+
 ## 2026-08-18 — The deploy documents, now executed by CI too
 
 The harness half, after the hand-run below. `docs.yml` gained a

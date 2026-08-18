@@ -107,8 +107,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `deploy/Caddyfile` trusts the gateway as a proxy and
   `FORWARDED_ALLOW_IPS` names both hops, so per-IP rate limiting sees
   the real client address instead of collapsing into one bucket.
-- `ALLOWED_GITHUB_IDS` ships with the initial operator allow-list rather
-  than empty.
+- `ALLOWED_GITHUB_IDS` ships **empty** in `deploy/app.env.example`, and
+  configuring it is now a documented step of the install rather than
+  something to notice. It briefly shipped populated with the upstream
+  operators, which worked out of the box for them and for anybody else:
+  GitHub user IDs are global rather than scoped to an OAuth application,
+  so a self-hoster who registered their own app and replaced every
+  credential in the file would still have been authorising three
+  accounts they had never heard of.
 - Dark and light themes meet WCAG AA on interactive boundaries, not just
   on body text. Button, input, and inactive-chip borders sat at 1.80:1 in
   dark and 1.95:1 in light against 1.4.11's 3:1, and read-card summary
@@ -120,6 +126,57 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **Exceptions are constructed per raise, never shared.**
+  `get_current_user` and the sign-in rate limiter each raised one
+  module-global `HTTPException`. Python appends a frame to
+  `__traceback__` on every raise and a module global is never collected,
+  so each 401 permanently pinned its `Request`, its raw token, and its
+  `Session`: 2,000 unauthenticated requests grew the object to 18,009
+  frames and the process by 65.4 MB — 32,719 bytes per request, on
+  `/api/v1/me`, which needs no credentials and has no rate limiter.
+  Against `MemoryMax=768M` that is roughly 23,000 requests to a cgroup
+  kill. The 429 path was worse in kind if not in size: it is raised at
+  the top of `github_callback`, where `code` and `state` are bound, so
+  live OAuth codes were retained in frame locals.
+- **Feed parsing is bounded by element count, not just by body size.**
+  `MAX_ENTRIES` capped what was kept and never the parse that produced
+  it, and the document was expanded twice — once by defusedxml as a
+  gate, once by feedparser. A valid 5.24 MB feed inside
+  `source_fetch_max_bytes` cost about 97 MB and 2.3 seconds to reduce to
+  500 entries, in front of a serial refresh loop. The gate now streams,
+  which keeps the same guarantee — the `forbid_*` checks fire on parser
+  events rather than on a finished tree — and refuses a document over
+  `MAX_ELEMENTS` or `MAX_ENTRY_ELEMENTS`: 0.01 seconds and 1 MB for the
+  same feed. Entry count alone would not have been enough, since a
+  document of tiny non-entry elements has no entries and costs the same.
+- **DNS resolution is inside the fetch deadline.** `getaddrinfo` takes no
+  timeout and ignores `socket.setdefaulttimeout`, and was called before
+  anything consulted the clock — bounded by `resolv.conf` rather than
+  unbounded, but ten to forty seconds in front of a serial refresh loop
+  is one slow resolver stalling every source behind it.
+- **`Strict-Transport-Security` is set, mirrored, and verified.** It was
+  absent from `app/middleware.py`, from the Caddyfile mirror, and from
+  the list of headers `deploy/README.md` tells the outer proxy not to
+  strip. `max-age=31536000` without `includeSubDomains`, which is
+  correct for the documented single-host topology and a year-long
+  outage for an apex deployment; the README says which is which.
+- **The setuid strip fails closed.** The layer that removes every setuid
+  and setgid bit — the stand-in for the `NoNewPrivileges=true` that
+  `sre-tab.container` cannot set — ended in `|| true`, and nothing
+  downstream checked. It now asserts the resulting filesystem, runs
+  after every `COPY` rather than before them, and CI asserts the same
+  property against the built image.
+- **The signed image is the tested image.** `publish` rebuilt from the
+  Containerfile on its own runner, so the signature, the SLSA
+  provenance, and the SBOM all described bytes no smoke test had seen.
+  The tested image now travels between the jobs and `publish` refuses to
+  push anything whose image ID is not the one `container` tested.
+- **`restore.sh` stops the backup timer.** It stopped the application but
+  not the schedule, and between `DROP DATABASE` and `pg_restore`
+  finishing the database is empty and perfectly healthy — so a backup
+  landing there dumps nothing, passes `backup.sh`'s own validation, and
+  is promoted to a final dump with a checksum and today's date. Restored
+  on every exit path, not only the successful one.
 - Feed fetches refuse content-codings. The size cap counted bytes `httpx`
   had already decompressed and `Content-Length` was checked against the
   compressed length, so neither bounded what actually got allocated: a

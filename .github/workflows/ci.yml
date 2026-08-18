@@ -295,6 +295,10 @@ jobs:
     name: Container build and deployment smoke
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      # The identity of the bytes this job actually tested. `publish` asserts
+      # the image it loads still has this ID before it pushes anything.
+      image-id: ${{ steps.build.outputs.image-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -308,7 +312,13 @@ jobs:
       # Containerfile, no engine-specific syntax; if that ever stops being
       # true, this is where it surfaces.
       - name: Build image
-        run: podman build --format docker --tag sre-tab:ci .
+        id: build
+        run: |
+          set -euo pipefail
+          podman build --format docker --tag sre-tab:ci .
+          image_id=$(podman image inspect sre-tab:ci --format '{{.Id}}')
+          echo "image-id=$image_id" >> "$GITHUB_OUTPUT"
+          echo "built $image_id"
 
       # --format docker above is load-bearing: OCI format has no HEALTHCHECK
       # field, and sre-tab.container's Notify=healthy waits on the image's
@@ -326,6 +336,28 @@ jobs:
             /tmp/image.json > /dev/null
           jq -e '.Config.User == "10001:10001"' /tmp/image.json > /dev/null
           test "$(podman run --rm sre-tab:ci id -u)" = "10001"
+
+      # sre-tab.container cannot set NoNewPrivileges=true — podman's AppArmor
+      # profile denies signal delivery under no_new_privs on Debian 13, and
+      # the unit carries the measurements. Stripping every setuid and setgid
+      # bit at build time is the stand-in, so this is a load-bearing property
+      # of the image and not hardening trivia.
+      #
+      # Asserted here, from outside, because the Containerfile layer that
+      # removes them used to end in `|| true` and nothing checked the result.
+      # A step that reports the UID while the escalation bits ship intact is
+      # exactly the shape of green check this repository keeps finding.
+      - name: No setuid or setgid files survive in the image
+        run: |
+          set -euo pipefail
+          found=$(podman run --rm --user 0:0 sre-tab:ci \
+            find / -xdev -perm /6000 -type f)
+          if [ -n "$found" ]; then
+            echo "::error::image ships setuid/setgid binaries:"
+            echo "$found"
+            exit 1
+          fi
+          echo "no setuid or setgid files in the image"
 
       # The PostgreSQL and Caddy digests appear in the units, in the scripts,
       # and in this workflow, so that a restore, a smoke test, and CI all run
@@ -431,6 +463,27 @@ jobs:
       - name: Deployment smoke test — migrations, health, backup, restore
         run: SRE_TAB_IMAGE=sre-tab:ci deploy/scripts/smoke.sh
 
+      # Everything above this line tested `sre-tab:ci`. `publish` used to run
+      # `podman build .` again on its own runner and sign whatever came out,
+      # so the signature, the provenance, and the SBOM all described bytes
+      # that no smoke test had ever seen. Two builds of one commit agreeing
+      # is a reasonable expectation and not a verified one — base-image tags
+      # move, apt mirrors differ, and the whole point of signing is to stop
+      # relying on reasonable expectations.
+      #
+      # So the tested image travels instead of the recipe. Only reached when
+      # every check above passed, because a failing step fails the job.
+      - name: Export the tested image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: podman save --format docker-archive --output "$RUNNER_TEMP/image.tar" sre-tab:ci
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: tested-image
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 1
+          compression-level: 0 # already compressed layers; recompressing buys nothing
+
   # Everything a deployment is later asked to trust is produced here: the
   # image, a signature over its digest, SLSA provenance, and an SBOM. All
   # three attachments are bound to the *digest*, never to a tag, because a tag
@@ -454,10 +507,38 @@ jobs:
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
-      - name: Build and publish
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tested-image
+          path: ${{ runner.temp }}
+
+      # The load-bearing assertion of this job. `container` published the ID
+      # of the image it smoke-tested; if what arrives here is not that image,
+      # nothing gets signed. save/load round-trips the config and the layer
+      # diff IDs, so the image ID is stable across the transfer — the digest
+      # the registry hands back after the push is a different identifier and
+      # is what the signature and attestations bind to, which is correct:
+      # they describe what was pushed, and what was pushed is what was
+      # tested.
+      - name: Load the tested image and check it is the one that was tested
+        env:
+          TESTED_ID: ${{ needs.container.outputs.image-id }}
+        run: |
+          set -euo pipefail
+          test -n "$TESTED_ID" || { echo "::error::container job published no image id"; exit 1; }
+          podman load --input "$RUNNER_TEMP/image.tar"
+          loaded_id=$(podman image inspect "$TESTED_ID" --format '{{.Id}}')
+          if [ "$loaded_id" != "$TESTED_ID" ]; then
+            echo "::error::loaded image $loaded_id is not the tested image $TESTED_ID"
+            exit 1
+          fi
+          echo "loaded the tested image $TESTED_ID"
+
+      - name: Publish
         id: publish
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TESTED_ID: ${{ needs.container.outputs.image-id }}
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
@@ -475,7 +556,8 @@ jobs:
           printf '%s' "$GHCR_TOKEN" | podman login ghcr.io \
             --username "$GITHUB_ACTOR" --password-stdin --authfile "$authfile"
 
-          podman build --format docker --tag "$image:sha-${GITHUB_SHA}" --tag "$image:latest" .
+          podman tag "$TESTED_ID" "$image:sha-${GITHUB_SHA}"
+          podman tag "$TESTED_ID" "$image:latest"
           # --digestfile rather than inspecting the local image: this is the
           # digest the registry accepted, and it is what every signature,
           # attestation, and deployment pin below refers to.

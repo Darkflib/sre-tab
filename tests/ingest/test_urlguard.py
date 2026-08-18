@@ -9,11 +9,18 @@ under respx.
 from __future__ import annotations
 
 import ipaddress
+import threading
+import time
 from collections.abc import Sequence
 
 import pytest
 
-from app.ingest.errors import IngestError, SourceConfigurationError, UnsafeTargetError
+from app.ingest.errors import (
+    FetchTimeoutError,
+    IngestError,
+    SourceConfigurationError,
+    UnsafeTargetError,
+)
 from app.ingest.urlguard import (
     UrlGuard,
     ValidatedTarget,
@@ -354,3 +361,48 @@ def test_default_resolver_reports_failure_as_unsafe() -> None:
     with pytest.raises(UnsafeTargetError) as excinfo:
         default_resolver("invalid.invalid.", 443)
     assert excinfo.value.reason == "unresolvable"
+
+
+# --- DNS is inside the fetch deadline -----------------------------------
+
+
+def test_a_hanging_resolver_does_not_outlast_the_timeout() -> None:
+    """``getaddrinfo`` is uninterruptible, so the wait has to be bounded.
+
+    It takes no timeout argument and ignores ``socket.setdefaulttimeout``,
+    and it used to be called with no bound at all — outside the deadline
+    ``FeedFetcher`` had already started. In front of a serial refresh
+    loop that is one slow resolver stalling every source behind it.
+    """
+    started = threading.Event()
+
+    def hangs(host: str, port: int) -> Sequence[str]:
+        started.set()
+        time.sleep(30)
+        return ["93.184.216.34"]
+
+    guard = UrlGuard(resolver=hangs)
+    began = time.monotonic()
+    with pytest.raises(FetchTimeoutError):
+        guard.validate("https://feeds.example.com/rss", timeout=0.2)
+    elapsed = time.monotonic() - began
+
+    assert started.is_set(), "the resolver was never called"
+    # Generous against a loaded CI runner while still far below the 30s
+    # the lookup itself takes: the claim is "bounded", not "instant".
+    assert elapsed < 5.0, f"validate() waited {elapsed:.1f}s on a hanging resolver"
+
+
+def test_an_already_expired_deadline_does_not_start_a_lookup() -> None:
+    resolver = RecordingResolver({"feeds.example.com": ["93.184.216.34"]})
+    guard = UrlGuard(resolver=resolver)
+    with pytest.raises(FetchTimeoutError):
+        guard.validate("https://feeds.example.com/rss", timeout=0.0)
+    assert resolver.calls == []
+
+
+def test_omitting_the_timeout_resolves_as_before() -> None:
+    """``check_static`` and config-time validation have no deadline."""
+    guard = UrlGuard(resolver=RecordingResolver({"feeds.example.com": ["93.184.216.34"]}))
+    target = guard.validate("https://feeds.example.com/rss")
+    assert str(target.ip) == "93.184.216.34"
