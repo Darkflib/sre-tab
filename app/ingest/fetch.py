@@ -126,8 +126,14 @@ class FeedFetcher:
 
         with self._build_client() as client:
             for hop in range(max_redirects + 1):
+                # The remaining budget, not a separate one: DNS used to sit
+                # outside this deadline entirely, so a slow resolver could
+                # outlast the whole-fetch timeout and — the loop being serial
+                # — stall every source queued behind this one.
                 target = self._guard.validate(
-                    current, allowed_urls=allowed_urls if hop == 0 else None
+                    current,
+                    allowed_urls=allowed_urls if hop == 0 else None,
+                    timeout=deadline - time.monotonic(),
                 )
                 hops.append(str(target.url))
                 self._rate_limiter.wait(target.host)

@@ -14,6 +14,7 @@ Public surface, in the order a refresh uses it:
 from __future__ import annotations
 
 from app.ingest.errors import (
+    DocumentTooComplexError,
     FetchError,
     FetchTimeoutError,
     IngestError,
@@ -28,6 +29,7 @@ from app.ingest.errors import (
 )
 
 __all__ = [
+    "DocumentTooComplexError",
     "FetchError",
     "FetchTimeoutError",
     "IngestError",

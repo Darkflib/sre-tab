@@ -171,7 +171,90 @@ if [ "$assume_yes" = false ]; then
     fi
 fi
 
+# The backup timer is not part of "stopping the application", and it is the
+# one unit that must not fire during the window below. Between DROP DATABASE
+# and pg_restore finishing, the database is empty and perfectly healthy, so a
+# backup landing in there dumps nothing, passes backup.sh's own
+# `pg_restore --list` validation, and gets promoted from .partial to a final
+# dump with a sha256 sidecar and today's date on it. Retention is by age, so
+# it then sits in the directory for fourteen days looking exactly like a
+# good backup.
+#
+# An in-flight run has to go too, not just the schedule. That is safe to
+# interrupt: backup.sh writes to a .partial and only mv's it into place after
+# validating, and it sweeps stale .partial files on its next run.
+backup_timer_was_active=false
+database_restored=false
+
+release_backup_timer() {
+    [ "$backup_timer_was_active" = true ] || return 0
+
+    if [ "$database_restored" = true ]; then
+        # Persistent=true, so if the scheduled hour passed while the restore
+        # was running this fires straight away — which is what we want: the
+        # first backup after a restore should be of the restored database.
+        #
+        # Not `|| true`. A swallowed failure here reports a successful
+        # restore over a host whose backup schedule this script switched off
+        # and never switched back on, and nothing would notice until someone
+        # looked for a dump that was never taken. This branch is reached from
+        # an EXIT trap, so `exit` is how the status gets changed.
+        if ! systemctl start sre-tab-backup.timer; then
+            cat >&2 <<'FAILED'
+
+ERROR: the database was restored, but sre-tab-backup.timer could not be
+       started again — this host currently has no backup schedule. Start it
+       by hand and check why:
+
+           systemctl start sre-tab-backup.timer
+           systemctl status sre-tab-backup.timer
+
+FAILED
+            exit 1
+        fi
+        return 0
+    fi
+
+    # Deliberately left stopped. Re-arming on a restore that did not finish
+    # would hand the next backup an empty or half-restored database — the
+    # exact state the pause exists to keep it away from — and the result
+    # would look like an ordinary dump, because it is a valid one. Silence
+    # would be the other way to get this wrong, so it is said loudly rather
+    # than left for the operator to notice in a fortnight.
+    cat >&2 <<'WARNING'
+
+WARNING: the restore did not complete, so sre-tab-backup.timer has been left
+         stopped on purpose — backing up the database in its current state
+         could overwrite good dumps with a bad one. Once the database is
+         sound again, re-enable it:
+
+           systemctl start sre-tab-backup.timer
+
+WARNING
+}
+
+# A trap on INT or TERM runs the handler and then *carries on from where the
+# signal landed*; it does not exit. Handling the signals with the same
+# function as EXIT would therefore release the timer and then continue into
+# DROP DATABASE with the schedule live again, which is worse than never
+# having paused it. Disarm, clean up, re-raise: the re-raise is what gives
+# the caller the conventional 128+signal status.
+on_signal() {
+    trap - EXIT "$1"
+    release_backup_timer
+    kill -s "$1" $$
+}
+
 if [ "$use_systemd" = true ]; then
+    if systemctl is-active --quiet sre-tab-backup.timer; then
+        backup_timer_was_active=true
+    fi
+    trap release_backup_timer EXIT
+    trap 'on_signal INT' INT
+    trap 'on_signal TERM' TERM
+    echo "Pausing the backup timer so it cannot dump the empty database..."
+    systemctl stop sre-tab-backup.timer sre-tab-backup.service
+
     echo "Stopping the application so nothing writes during the restore..."
     systemctl stop sre-tab.service sre-tab-migrate.service
 fi
@@ -203,6 +286,12 @@ run_client psql --quiet --no-psqlrc --tuples-only --no-align \
 run_client psql --quiet --no-psqlrc --tuples-only --no-align \
     --dbname "$database" \
     --command "SELECT 'alembic_version=' || version_num FROM alembic_version"
+
+# Past this line the database is restored and verified, so the backup timer
+# can safely be released. Set here rather than at the end of the script: the
+# application failing to come back up afterwards is a problem, but it is not
+# a reason to keep the database unbacked.
+database_restored=true
 
 if [ "$use_systemd" = true ]; then
     echo "Starting the application..."

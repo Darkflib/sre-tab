@@ -46,9 +46,19 @@ log = structlog.get_logger(__name__)
 start_limiter = SlidingWindowLimiter(limit=20, window_seconds=300)
 callback_failure_limiter = SlidingWindowLimiter(limit=10, window_seconds=900)
 
-_TOO_MANY_REQUESTS = HTTPException(
-    status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many sign-in attempts; try again shortly."
-)
+
+def _too_many_requests() -> HTTPException:
+    """A *fresh* 429 every time — see ``app.api.deps._unauthenticated``.
+
+    Sharper here than on the 401 path: this is raised at the top of
+    ``github_callback``, where ``code`` and ``state`` are already bound,
+    so a shared instance pinned real OAuth codes in frame locals for the
+    life of the process. That is the same thing the logging rule in
+    AGENTS.md forbids, arriving by a different route.
+    """
+    return HTTPException(
+        status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many sign-in attempts; try again shortly."
+    )
 
 
 def _client_ip(request: Request) -> str:
@@ -95,7 +105,7 @@ def github_start(request: Request) -> RedirectResponse:
     """Initiate the GitHub OAuth authorization-code flow."""
     settings: Settings = request.app.state.settings
     if not start_limiter.hit(_client_ip(request)):
-        raise _TOO_MANY_REQUESTS
+        raise _too_many_requests()
 
     authorization = start_authorization(settings)
     response = RedirectResponse(authorization.url, status_code=status.HTTP_302_FOUND)
@@ -142,7 +152,7 @@ def github_callback(
     settings: Settings = request.app.state.settings
     client_ip = _client_ip(request)
     if callback_failure_limiter.is_limited(client_ip):
-        raise _TOO_MANY_REQUESTS
+        raise _too_many_requests()
 
     if error is not None or code is None or state is None:
         # No credential was presented, so there is nothing to verify and

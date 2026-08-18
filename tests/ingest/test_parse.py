@@ -6,8 +6,19 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.ingest.errors import ParseError, UnsafeDocumentError, UnsupportedFeedFormatError
-from app.ingest.parse import MAX_ENTRIES, parse_feed
+from app.ingest.errors import (
+    DocumentTooComplexError,
+    ParseError,
+    UnsafeDocumentError,
+    UnsupportedFeedFormatError,
+)
+from app.ingest.parse import (
+    MAX_ATTRIBUTES_PER_ELEMENT,
+    MAX_ELEMENTS,
+    MAX_ENTRIES,
+    MAX_ENTRY_ELEMENTS,
+    parse_feed,
+)
 
 XXE = b"""<?xml version="1.0"?>
 <!DOCTYPE rss [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
@@ -127,6 +138,96 @@ def test_entry_count_is_bounded() -> None:
         f"<?xml version='1.0'?><rss version='2.0'><channel><title>t</title>{items}</channel></rss>"
     ).encode()
     assert len(parse_feed(body).entries) == MAX_ENTRIES
+
+
+def _rss(inner: str) -> bytes:
+    return (
+        f"<?xml version='1.0'?><rss version='2.0'><channel><title>t</title>{inner}</channel></rss>"
+    ).encode()
+
+
+def test_a_document_over_the_entry_ceiling_is_refused_not_truncated() -> None:
+    """The byte cap is not a work cap.
+
+    ``MAX_ENTRIES`` bounds what is kept, never the parse that produced
+    it: a document just under ``source_fetch_max_bytes`` used to cost
+    about 97 MB and 2.3 seconds to reduce to 500 entries, against a unit
+    capped at ``MemoryMax=768M`` and a serial refresh loop. Refusing is
+    the right answer rather than truncating, because nothing legitimate
+    ships ten times what we would keep.
+    """
+    body = _rss(
+        "<item><title>t</title><link>https://example.org/x</link></item>" * (MAX_ENTRY_ELEMENTS + 1)
+    )
+    with pytest.raises(DocumentTooComplexError):
+        parse_feed(body)
+
+
+def test_an_element_bomb_with_no_entries_is_refused() -> None:
+    """Entry count alone does not bound a DOM parser.
+
+    This document has zero entries and would sail past any entry-based
+    ceiling, while costing exactly what the entries would have.
+    """
+    with pytest.raises(DocumentTooComplexError):
+        parse_feed(_rss("<a><b/></a>" * MAX_ELEMENTS))
+
+
+def test_an_attribute_bomb_on_one_element_is_refused() -> None:
+    """The bound that stops a stall rather than an allocation.
+
+    feedparser is quadratic in the attribute count of a single element:
+    20,000 attributes on one tag is 0.21 MB and 2.27s, and 60,000 is
+    0.65 MB and 21.3s — an eighth of a permitted body stopping a serial
+    refresh cycle for twenty seconds. Node counting does not see it,
+    because there is only one element; the streaming gate reaches the
+    same 60,000 attributes in 0.03s, so the gate is where it belongs.
+    """
+    attributes = " ".join(f'a{n}="v"' for n in range(MAX_ATTRIBUTES_PER_ELEMENT + 1))
+    with pytest.raises(DocumentTooComplexError):
+        parse_feed(_rss(f"<item {attributes}><link>https://example.org/x</link></item>"))
+
+
+def test_ordinary_attribute_use_is_unaffected() -> None:
+    """The cap has to be invisible to anything real.
+
+    `<enclosure>` is the usual reason an entry carries attributes at all,
+    and three of them is the shape of a podcast feed rather than an
+    attack.
+    """
+    body = _rss(
+        "<item><title>x</title><link>https://example.org/x</link>"
+        "<enclosure url='https://example.org/a.mp3' length='1' type='audio/mpeg'/></item>"
+    )
+    assert len(parse_feed(body).entries) == 1
+
+
+def test_deep_nesting_is_refused_before_the_tree_is_built() -> None:
+    """End events arrive innermost-first, so counting there is too late.
+
+    A document that only nests produces no end event until it has
+    stopped descending. Measured on 200,000 nested tags — 1.40 MB, well
+    inside every byte limit here — the first end arrived after 200,002
+    starts with 57 MB already allocated, and an end-counted ceiling had
+    not been consulted once.
+    """
+    depth = MAX_ELEMENTS + 1
+    with pytest.raises(DocumentTooComplexError):
+        parse_feed(_rss("<a>" * depth + "</a>" * depth))
+
+
+def test_a_large_but_legitimate_feed_still_parses() -> None:
+    """The ceiling must not be reachable by anything real.
+
+    The failure mode being guarded against here is a bound tight enough
+    to start refusing ordinary sources, which would be reported as a
+    broken feed rather than as a limit doing its job.
+    """
+    items = "".join(
+        f"<item><title>t{n}</title><link>https://example.org/{n}</link></item>"
+        for n in range(MAX_ENTRIES - 1)
+    )
+    assert len(parse_feed(_rss(items)).entries) == MAX_ENTRIES - 1
 
 
 def test_entry_without_a_date_reports_none() -> None:

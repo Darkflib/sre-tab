@@ -3,6 +3,187 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-18 — An external review, measured rather than believed
+
+Codex reviewed the tree and returned three High findings, twelve Medium,
+and four lower. Every one was checked against the code and against what
+this deployment actually is — single instance, three allow-listed
+operators, an operator-curated source catalogue with no route that adds a
+feed. Most of the review survives that check. Two claims did not, and one
+finding turned out to be considerably worse than it was filed as.
+
+**The reused `HTTPException` is not a leak, it is an unauthenticated
+denial of service.** `app/api/deps.py` and `app/api/v1/auth.py` each held
+a module-global exception instance and raised it on every failure. Python
+appends a frame to `__traceback__` on each raise, and the object is a
+module global, so nothing ever collects it. The review reported traceback
+depths of 9, 18, 27, 36, and 45 across five requests; that reproduces
+exactly. What it did not do was carry the number forward:
+
+    2000 unauthenticated 401s
+      traceback depth: 18009 frames
+      RSS growth:      65.4 MB  (32,719 bytes/request)
+
+Each retained frame pins the `Request`, the raw token, and the
+SQLAlchemy `Session`. Against `MemoryMax=768M` that is roughly 23,000
+requests to an OOM, on `/api/v1/me`, which needs no credentials and has
+no rate limiter — the two limiters cover the auth routes only.
+`Restart=always` makes it a crash loop rather than a kill, which is a
+distinction worth exactly as much as it sounds.
+
+**Two corrections to how the review framed that one, both in the
+direction of precision.** The session tokens retained via `deps.py` are
+invalid by construction: `_UNAUTHENTICATED` only raises once resolution
+has already failed, so "retains credentials" is not true of that half.
+The real credential retention is the other instance — `github_callback`
+raises the shared 429 at the top of the function, where `code` and
+`state` are already bound, so genuine OAuth codes were being pinned in
+frame locals. Narrow, since the failure limiter has to have tripped
+first, but it sits directly against the AGENTS.md rule about never
+logging OAuth codes, and for the same reason.
+
+**The parser cap does not cap the parser.** `assert_safe_document` parses
+the whole document with defusedxml, `feedparser.parse` parses it again,
+and only then does `[:MAX_ENTRIES]` apply. A valid RSS document built to
+sit just under `source_fetch_max_bytes`:
+
+    feed: 5.24 MB, 91978 entries (MAX_ENTRIES=500)
+    RSS peak after parse: +97 MB, 2.27s, kept 500 entries
+
+The review measured 197 MB from a denser document; the ratio is the
+finding either way. `refresh_all` is a serial list comprehension, so this
+is one hostile or compromised upstream against a 768 MB ceiling.
+
+**DNS resolution sits outside the fetch deadline.** `fetch()` starts a
+deadline, then calls `UrlGuard.validate()`, which calls `getaddrinfo()`
+with no bound, before anything checks the clock. The review called this
+"indefinitely", which is not right — glibc bounds it by `resolv.conf`,
+typically ten to forty seconds — but outside a deadline and in front of a
+serial loop is enough.
+
+**One finding was simply stale.** "Generated API types have no drift
+gate" is answered by the entry two below this one: `tests/test_openapi.py`
+compares the committed document against the live schema byte for byte,
+and `ci.yml` regenerates `schema.d.ts` and diffs it, with a
+`git ls-files --error-unmatch` guard precisely because an untracked file
+would otherwise diff clean. That landed in d608291. The review read
+`package.json` and stopped there, which is a fair way to be wrong and
+still worth recording: a gate that lives in CI is invisible to anyone
+reading the package manifest for it.
+
+**What the security model genuinely does absorb**, and which is therefore
+filed rather than fixed. The OAuth state cookie can be tossed from a
+sibling subdomain, but the exploit needs the attacker's own GitHub ID on
+the allow-list, which makes it inert at three operators; `__Host-` is
+also not free, since it mandates `Path=/` and would trade the current
+`/api/v1/auth` scoping for domain integrity. Feed image URLs get a weaker
+check than item URLs — no IP-literal rejection, no dot requirement — and
+`img-src https:` lets the browser fetch them, but sources are CLI-curated,
+the request is blind, and `referrerPolicy="no-referrer"` is already set.
+The application connects as the PostgreSQL superuser, which upgrades an
+application compromise to `COPY … PROGRAM`; that one is real and is the
+only deferred item with real cost, because role separation touches
+migrations, restore, and the smoke test. Unpruned sessions and the
+`upsert_user` insert race are both true and both negligible at three
+users.
+
+**Fixed here**, in the order the fix is small and the security model
+gives nothing back: fresh exceptions per raise, with a regression test
+that asserts traceback depth stays flat; the backup timer stopped for the
+duration of a restore, which it was not; `|| true` off the setuid strip,
+which was the fail-open guarding the thing that stands in for
+`NoNewPrivileges`; the tested image carried through to `publish` so the
+signed bytes are the bytes that passed the smoke test; the parser bounded
+before expansion; DNS bounded by the deadline; HSTS, which was nowhere at
+all — not in the middleware, not in the Caddyfile mirror, not in the list
+of things `deploy/README.md` tells the outer proxy it must not get wrong;
+and the deploy template's allow-list emptied, since it shipped three real
+GitHub accounts directly underneath a banner explaining that empty is the
+correct fail-closed default.
+
+**The backup-timer fix was itself wrong, and review caught it.** A trap on
+`INT`/`TERM` runs its handler and then carries on from where the signal
+landed — it does not exit. Sharing one handler with `EXIT`, which is what
+the first version did, therefore released the timer and continued
+straight into `DROP DATABASE` with the schedule live again, ran the
+handler a second time on the way out, and returned 0. Ctrl-C during a
+restore was the one input that reopened the window the pause exists to
+close, and it reported success while doing it:
+
+    === first version ===        === after ===
+    paused timer                 paused timer
+    TIMER RESTARTED              TIMER LEFT STOPPED (restore incomplete)
+    REACHED DROP DATABASE        exit=130
+    TIMER RESTARTED
+    exit=0
+
+Fixing that surfaced a second one nobody had reported, and broader: the
+`EXIT` trap re-armed the timer on *every* exit, so a failed `pg_restore`
+also handed the next scheduled backup an empty database. Releasing the
+schedule is now conditional on the restore having been verified, and when
+it has not been the timer is left stopped with an instruction rather than
+silently — a schedule disabled forever being the other way to get this
+wrong. Worth recording that the guard against "a backup of an empty
+database" shipped, in its first form, with two paths that produced
+exactly that.
+
+**And the parser bound had a hole, found by probing the fix rather than
+the original.** Counting nodes bounds memory and says nothing about
+time. feedparser is quadratic in the attribute count of a *single*
+element, so a document with four elements and 380,000 attributes on one
+of them sailed through a ceiling built for a million tiny tags: 20,000
+attributes is 0.21 MB and 2.27s, 60,000 is 0.65 MB and 21.3s, and the
+5 MiB version ran for minutes. An eighth of a permitted body stopping a
+serial refresh cycle for twenty seconds is a better attack than the one
+that started this. The streaming gate reaches the same 60,000 attributes
+in 0.03s, which is what makes it the right place to refuse them — the
+expense is entirely downstream. Capped at 256 per element, far past
+anything real, and the 5 MiB bomb now stops in 0.24s.
+
+The general lesson is the one this repository keeps relearning in
+different clothes: a limit bounds the quantity it counts and nothing
+else. `MAX_ENTRIES` bounded rows and not the parse; the node ceiling
+that replaced it bounded allocation and not time. Both looked like
+"the parser is bounded" from the outside.
+
+**Then review found a third version of the same mistake, in the same
+function.** The counters ran on `end` events, and end events arrive
+innermost-first — so a document that only nests produces none at all
+until it has stopped descending. 200,000 nested tags is 1.40 MB, inside
+every byte limit here, and the first `end` arrived after 200,002
+`start` events with 57 MB already allocated and the ceiling not
+consulted once. Counting moved to `start`, which is also where expat
+delivers a tag's attributes, so both counts are now taken at the
+earliest point either can be known. The same document is refused in
+0.05s.
+
+Three rounds on one function, each fixing a bound that was real and
+measured, and each leaving another quantity unbounded. Worth writing
+down as the shape rather than the incident: "bounded" is not a property
+a parser has, it is a property of one quantity at a time.
+
+**And the DNS fix held the process open at shutdown.** CPython joins
+live `ThreadPoolExecutor` workers during interpreter shutdown, so an
+abandoned lookup kept the whole process alive until the resolver gave
+up: a test file pytest reported as taking 0.25s took **31 seconds** of
+wall clock, and in production the same mechanism would have delayed
+every SIGTERM arriving while a resolver was wedged — bounding the
+request path by leaking the cost onto the shutdown path. A bare daemon
+thread is discarded at exit instead, and one per lookup is affordable
+because the refresh loop is serial. Same file, 1.1s. The regression test
+runs a subprocess and times its exit, because "does the process
+actually exit" is the claim and nothing about inspecting the thread
+would have said so.
+
+**Two more from the same round, both fair.** The empty allow-list still
+shipped three real GitHub IDs in a comment directly above it, which is
+an identity somebody pastes into a live deployment without meaning to;
+they are placeholders now, and no real account is named in the template
+at all. And `release_backup_timer` ended in `|| true` — the same
+fail-open this branch removed from the Containerfile, reintroduced by
+me four files away. A restore would have reported success over a host
+whose backup schedule it had switched off and never switched back on.
+
 ## 2026-08-18 — The deploy documents, now executed by CI too
 
 The harness half, after the hand-run below. `docs.yml` gained a

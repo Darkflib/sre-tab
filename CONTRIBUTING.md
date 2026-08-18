@@ -119,6 +119,7 @@ On a throwaway Debian host, as root:
 ```sh
 export APP_BASE_URL=http://127.0.0.1:8080
 export GITHUB_CLIENT_ID=not-a-real-oauth-app
+export ALLOWED_GITHUB_IDS=1234567
 export GITHUB_CLIENT_SECRET_FILE=/tmp/github-client-secret
 umask 077 && printf 'not-a-real-secret' > "$GITHUB_CLIENT_SECRET_FILE"
 python3 .github/scripts/run-doc-examples.py deploy/README.md --root .

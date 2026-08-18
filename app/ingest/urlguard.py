@@ -38,12 +38,13 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import threading
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 
 import httpx
 
-from app.ingest.errors import SourceConfigurationError, UnsafeTargetError
+from app.ingest.errors import FetchTimeoutError, SourceConfigurationError, UnsafeTargetError
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
@@ -331,10 +332,20 @@ class UrlGuard:
         return normalised
 
     def validate(
-        self, raw_url: str, *, allowed_urls: Collection[str] | None = None
+        self,
+        raw_url: str,
+        *,
+        allowed_urls: Collection[str] | None = None,
+        timeout: float | None = None,
     ) -> ValidatedTarget:
         """Full check. ``allowed_urls`` is supplied for the entry URL and
-        omitted for redirect hops, which cannot be pre-declared."""
+        omitted for redirect hops, which cannot be pre-declared.
+
+        ``timeout`` bounds the DNS lookup. Optional because
+        ``check_static`` and config-time validation have no deadline to
+        answer to, but :class:`~app.ingest.fetch.FeedFetcher` always
+        passes what is left of its budget — see ``_resolve_within``.
+        """
         if allowed_urls is not None and raw_url not in allowed_urls:
             raise SourceConfigurationError(
                 "refused target that is not the feed URL of an enabled source"
@@ -351,7 +362,7 @@ class UrlGuard:
             assert_address_allowed(literal, url=raw_url)
             return ValidatedTarget(url=url, host=host, port=port, ip=literal, resolved=(literal,))
 
-        answers = self._resolve(host, port)
+        answers = self._resolve_within(host, port, timeout, url=raw_url)
         if not answers:
             raise UnsafeTargetError(raw_url, "unresolvable", "no addresses returned")
 
@@ -368,6 +379,63 @@ class UrlGuard:
         return ValidatedTarget(
             url=url, host=host, port=port, ip=resolved[0], resolved=tuple(resolved)
         )
+
+    def _resolve_within(
+        self, host: str, port: int, timeout: float | None, *, url: str
+    ) -> Sequence[str]:
+        """Resolve *host*, giving up after *timeout* seconds.
+
+        ``getaddrinfo`` takes no timeout argument and ignores
+        ``socket.setdefaulttimeout``, so the only way to bound it is to
+        stop waiting on it. It used to be called inline, outside the
+        deadline ``FeedFetcher`` had already started — glibc bounds it by
+        ``resolv.conf`` rather than leaving it unbounded, but ten to
+        forty seconds in front of a serial refresh loop is one slow
+        resolver stalling every source behind it.
+
+        The lookup itself cannot be cancelled — the thread runs to
+        completion whatever happens here, and only the *waiting* is
+        bounded. That is why the thread is a bare daemon one rather than
+        a ``ThreadPoolExecutor`` worker: CPython joins live executor
+        workers during interpreter shutdown, so an abandoned lookup would
+        hold the whole process open until the platform resolver gave up.
+        Measured: a test file pytest reported as taking 0.25s took 31
+        seconds of wall clock, waiting on one abandoned 30-second lookup
+        at exit. The same mechanism would have delayed every SIGTERM the
+        service received while a resolver was wedged.
+
+        A daemon thread is discarded at exit instead, and one per lookup
+        is affordable because the refresh loop is serial: a handful per
+        cycle, not a rate.
+        """
+        if timeout is None:
+            return self._resolve(host, port)
+        if timeout <= 0:
+            raise FetchTimeoutError(f"fetch deadline expired before resolving {host}")
+
+        answers: list[Sequence[str]] = []
+        failure: list[BaseException] = []
+
+        def lookup() -> None:
+            try:
+                answers.append(self._resolve(host, port))
+            # Caught wholesale and re-raised on the calling thread, so a
+            # resolver failure surfaces where the caller can classify it
+            # rather than as an unhandled exception in a daemon thread.
+            except BaseException as exc:
+                failure.append(exc)
+
+        thread = threading.Thread(target=lookup, name=f"urlguard-dns-{host}", daemon=True)
+        thread.start()
+        thread.join(timeout)
+        if thread.is_alive():
+            raise FetchTimeoutError(
+                f"dns lookup for {host} exceeded the remaining {timeout:.1f}s of the "
+                f"fetch deadline ({url})"
+            )
+        if failure:
+            raise failure[0]
+        return answers[0]
 
 
 def _literal_address(host: str) -> IPAddress | None:
