@@ -9,6 +9,9 @@ under respx.
 from __future__ import annotations
 
 import ipaddress
+import subprocess
+import sys
+import textwrap
 import threading
 import time
 from collections.abc import Sequence
@@ -391,6 +394,40 @@ def test_a_hanging_resolver_does_not_outlast_the_timeout() -> None:
     # Generous against a loaded CI runner while still far below the 30s
     # the lookup itself takes: the claim is "bounded", not "instant".
     assert elapsed < 5.0, f"validate() waited {elapsed:.1f}s on a hanging resolver"
+
+
+def test_an_abandoned_lookup_does_not_hold_the_process_open() -> None:
+    """The abandoned thread must not be joined at interpreter shutdown.
+
+    CPython joins live ``ThreadPoolExecutor`` workers on the way out, so
+    the first version of this — a module-level pool — kept the whole
+    process alive until the resolver gave up. It cost 31 seconds of wall
+    clock on a test file pytest reported as 0.25s, and it would have
+    delayed every SIGTERM the service received while a resolver was
+    wedged. Measured end to end here rather than by inspecting the
+    thread, because "does the process actually exit" is the claim.
+    """
+    program = textwrap.dedent("""
+        import time
+        from app.ingest.urlguard import UrlGuard
+        from app.ingest.errors import FetchTimeoutError
+        guard = UrlGuard(resolver=lambda host, port: time.sleep(60) or ["93.184.216.34"])
+        try:
+            guard.validate("https://feeds.example.com/rss", timeout=0.1)
+        except FetchTimeoutError:
+            pass
+    """)
+    began = time.monotonic()
+    completed = subprocess.run(
+        [sys.executable, "-c", program], check=False, capture_output=True, timeout=30
+    )
+    elapsed = time.monotonic() - began
+
+    assert completed.returncode == 0, completed.stderr.decode()
+    assert elapsed < 10.0, (
+        f"the interpreter took {elapsed:.1f}s to exit with a lookup still running; "
+        "the resolver thread is being joined at shutdown"
+    )
 
 
 def test_an_already_expired_deadline_does_not_start_a_lookup() -> None:

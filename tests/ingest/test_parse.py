@@ -202,6 +202,20 @@ def test_ordinary_attribute_use_is_unaffected() -> None:
     assert len(parse_feed(body).entries) == 1
 
 
+def test_deep_nesting_is_refused_before_the_tree_is_built() -> None:
+    """End events arrive innermost-first, so counting there is too late.
+
+    A document that only nests produces no end event until it has
+    stopped descending. Measured on 200,000 nested tags — 1.40 MB, well
+    inside every byte limit here — the first end arrived after 200,002
+    starts with 57 MB already allocated, and an end-counted ceiling had
+    not been consulted once.
+    """
+    depth = MAX_ELEMENTS + 1
+    with pytest.raises(DocumentTooComplexError):
+        parse_feed(_rss("<a>" * depth + "</a>" * depth))
+
+
 def test_a_large_but_legitimate_feed_still_parses() -> None:
     """The ceiling must not be reachable by anything real.
 

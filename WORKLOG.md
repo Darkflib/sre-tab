@@ -146,6 +146,44 @@ else. `MAX_ENTRIES` bounded rows and not the parse; the node ceiling
 that replaced it bounded allocation and not time. Both looked like
 "the parser is bounded" from the outside.
 
+**Then review found a third version of the same mistake, in the same
+function.** The counters ran on `end` events, and end events arrive
+innermost-first — so a document that only nests produces none at all
+until it has stopped descending. 200,000 nested tags is 1.40 MB, inside
+every byte limit here, and the first `end` arrived after 200,002
+`start` events with 57 MB already allocated and the ceiling not
+consulted once. Counting moved to `start`, which is also where expat
+delivers a tag's attributes, so both counts are now taken at the
+earliest point either can be known. The same document is refused in
+0.05s.
+
+Three rounds on one function, each fixing a bound that was real and
+measured, and each leaving another quantity unbounded. Worth writing
+down as the shape rather than the incident: "bounded" is not a property
+a parser has, it is a property of one quantity at a time.
+
+**And the DNS fix held the process open at shutdown.** CPython joins
+live `ThreadPoolExecutor` workers during interpreter shutdown, so an
+abandoned lookup kept the whole process alive until the resolver gave
+up: a test file pytest reported as taking 0.25s took **31 seconds** of
+wall clock, and in production the same mechanism would have delayed
+every SIGTERM arriving while a resolver was wedged — bounding the
+request path by leaking the cost onto the shutdown path. A bare daemon
+thread is discarded at exit instead, and one per lookup is affordable
+because the refresh loop is serial. Same file, 1.1s. The regression test
+runs a subprocess and times its exit, because "does the process
+actually exit" is the claim and nothing about inspecting the thread
+would have said so.
+
+**Two more from the same round, both fair.** The empty allow-list still
+shipped three real GitHub IDs in a comment directly above it, which is
+an identity somebody pastes into a live deployment without meaning to;
+they are placeholders now, and no real account is named in the template
+at all. And `release_backup_timer` ended in `|| true` — the same
+fail-open this branch removed from the Containerfile, reintroduced by
+me four files away. A restore would have reported success over a host
+whose backup schedule it had switched off and never switched back on.
+
 ## 2026-08-18 — The deploy documents, now executed by CI too
 
 The harness half, after the hand-run below. `docs.yml` gained a

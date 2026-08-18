@@ -38,9 +38,8 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import threading
 from collections.abc import Callable, Collection, Iterable, Sequence
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 
 import httpx
@@ -284,12 +283,6 @@ def assert_supported_endpoint(url: httpx.URL) -> None:
         )
 
 
-#: Workers for bounded DNS. Small on purpose: the refresh loop is serial,
-#: so one lookup is in flight at a time and this exists only to absorb
-#: the threads that outlive a timeout.
-_RESOLVER_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="urlguard-dns")
-
-
 class UrlGuard:
     """Validates fetch targets. Holds no state beyond its resolver."""
 
@@ -400,27 +393,49 @@ class UrlGuard:
         forty seconds in front of a serial refresh loop is one slow
         resolver stalling every source behind it.
 
-        The lookup itself cannot be cancelled: the worker thread runs to
-        completion whatever we do here, and only the *waiting* is bounded.
-        That is the trade being made, and it is bounded on both sides —
-        the pool is small, and a stuck thread is released when the
-        platform resolver gives up. If every worker is stuck, later
-        lookups time out while queued, which is still the right answer:
-        a refresh cycle that returns nothing beats one that never returns.
+        The lookup itself cannot be cancelled — the thread runs to
+        completion whatever happens here, and only the *waiting* is
+        bounded. That is why the thread is a bare daemon one rather than
+        a ``ThreadPoolExecutor`` worker: CPython joins live executor
+        workers during interpreter shutdown, so an abandoned lookup would
+        hold the whole process open until the platform resolver gave up.
+        Measured: a test file pytest reported as taking 0.25s took 31
+        seconds of wall clock, waiting on one abandoned 30-second lookup
+        at exit. The same mechanism would have delayed every SIGTERM the
+        service received while a resolver was wedged.
+
+        A daemon thread is discarded at exit instead, and one per lookup
+        is affordable because the refresh loop is serial: a handful per
+        cycle, not a rate.
         """
         if timeout is None:
             return self._resolve(host, port)
         if timeout <= 0:
             raise FetchTimeoutError(f"fetch deadline expired before resolving {host}")
-        future = _RESOLVER_POOL.submit(self._resolve, host, port)
-        try:
-            return future.result(timeout=timeout)
-        except FutureTimeoutError as exc:
-            future.cancel()
+
+        answers: list[Sequence[str]] = []
+        failure: list[BaseException] = []
+
+        def lookup() -> None:
+            try:
+                answers.append(self._resolve(host, port))
+            # Caught wholesale and re-raised on the calling thread, so a
+            # resolver failure surfaces where the caller can classify it
+            # rather than as an unhandled exception in a daemon thread.
+            except BaseException as exc:
+                failure.append(exc)
+
+        thread = threading.Thread(target=lookup, name=f"urlguard-dns-{host}", daemon=True)
+        thread.start()
+        thread.join(timeout)
+        if thread.is_alive():
             raise FetchTimeoutError(
                 f"dns lookup for {host} exceeded the remaining {timeout:.1f}s of the "
                 f"fetch deadline ({url})"
-            ) from exc
+            )
+        if failure:
+            raise failure[0]
+        return answers[0]
 
 
 def _literal_address(host: str) -> IPAddress | None:

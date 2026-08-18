@@ -193,7 +193,25 @@ release_backup_timer() {
         # Persistent=true, so if the scheduled hour passed while the restore
         # was running this fires straight away — which is what we want: the
         # first backup after a restore should be of the restored database.
-        systemctl start sre-tab-backup.timer || true
+        #
+        # Not `|| true`. A swallowed failure here reports a successful
+        # restore over a host whose backup schedule this script switched off
+        # and never switched back on, and nothing would notice until someone
+        # looked for a dump that was never taken. This branch is reached from
+        # an EXIT trap, so `exit` is how the status gets changed.
+        if ! systemctl start sre-tab-backup.timer; then
+            cat >&2 <<'FAILED'
+
+ERROR: the database was restored, but sre-tab-backup.timer could not be
+       started again — this host currently has no backup schedule. Start it
+       by hand and check why:
+
+           systemctl start sre-tab-backup.timer
+           systemctl status sre-tab-backup.timer
+
+FAILED
+            exit 1
+        fi
         return 0
     fi
 

@@ -506,11 +506,14 @@ The outer proxy must therefore:
   `Cross-Origin-Resource-Policy`, or `Permissions-Policy`. Several proxies
   helpfully add their own CSP; two `Content-Security-Policy` headers are
   intersected by the browser, and the result is usually a broken page.
-- **Not terminate TLS and then serve the origin over plain HTTP.**
+- **Not serve the site to clients over plain HTTP.** Forwarding to Caddy on
+  `127.0.0.1:8080` over HTTP is the design and is expected; what must not
+  happen is a browser reaching the site over HTTP.
   `Strict-Transport-Security: max-age=31536000` is set by the application and
   by Caddy, but a browser only honours it on a response it received over
-  HTTPS. Both layers here sit behind the outer proxy on plain HTTP, so that
-  proxy is the only thing that decides whether the header means anything.
+  HTTPS — and both of those layers sit behind the outer proxy on plain HTTP.
+  That proxy is therefore the only thing deciding whether the header means
+  anything at all.
 - **Not add its own `Cache-Control`.** `index.html` is deliberately
   `no-store` and `/assets/*` deliberately `immutable`; overriding either is
   how a deployment lands and nobody sees it.
