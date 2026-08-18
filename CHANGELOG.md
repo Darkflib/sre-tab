@@ -175,8 +175,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not the schedule, and between `DROP DATABASE` and `pg_restore`
   finishing the database is empty and perfectly healthy — so a backup
   landing there dumps nothing, passes `backup.sh`'s own validation, and
-  is promoted to a final dump with a checksum and today's date. Restored
-  on every exit path, not only the successful one.
+  is promoted to a final dump with a checksum and today's date. The timer
+  comes back only when the restore actually finished: an interrupted or
+  failed one leaves it stopped, and says so, rather than handing the next
+  backup a database in an unknown state.
 - Feed fetches refuse content-codings. The size cap counted bytes `httpx`
   had already decompressed and `Content-Length` was checked against the
   compressed length, so neither bounded what actually got allocated: a
