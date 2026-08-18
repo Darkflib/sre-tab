@@ -55,6 +55,7 @@ new API is serving an old bundle. One image, one digest, no skew.
 
 ## Host preparation
 
+<!-- docs:run -->
 ```bash
 sudo deploy/install.sh
 ```
@@ -76,14 +77,27 @@ It seeds `/etc/sre-tab/app.env` from `deploy/app.env.example` **once** and
 never overwrites it afterwards. Everything else it installs is replaced on
 every run: keep intentional changes in the repository, not in `/etc`.
 
-Then edit the configuration:
+Then set the configuration. `APP_BASE_URL`, `GITHUB_REDIRECT_URI`,
+`GITHUB_CLIENT_ID`, and `ALLOWED_GITHUB_IDS` all have to be set. By hand:
 
 ```bash
 sudoedit /etc/sre-tab/app.env
 ```
 
-`APP_BASE_URL`, `GITHUB_REDIRECT_URI`, `GITHUB_CLIENT_ID`, and
-`ALLOWED_GITHUB_IDS` all have to be set.
+or non-interactively, which is what a configuration-management run does and
+what this document's own CI execution does:
+
+<!-- docs:run -->
+```bash
+sudo sed -i \
+  -e "s|^APP_BASE_URL=.*|APP_BASE_URL=${APP_BASE_URL:?}|" \
+  -e "s|^GITHUB_REDIRECT_URI=.*|GITHUB_REDIRECT_URI=${APP_BASE_URL:?}/api/v1/auth/github/callback|" \
+  -e "s|^GITHUB_CLIENT_ID=.*|GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:?}|" \
+  /etc/sre-tab/app.env
+```
+
+`ALLOWED_GITHUB_IDS` is not in that list because `app.env.example` already
+ships the operator allow-list, which is the next section's subject.
 
 ### `ALLOWED_GITHUB_IDS` is the first-deploy trap
 
@@ -137,12 +151,16 @@ The database password appears inside `sre-tab-database-url` as well as in
 to lose an afternoon. `create-secrets.sh` generates it once and writes both,
 so they cannot disagree:
 
+<!-- docs:run -->
 ```bash
-sudo deploy/scripts/create-secrets.sh < /path/to/github-client-secret
+sudo deploy/scripts/create-secrets.sh < "${GITHUB_CLIENT_SECRET_FILE:?}"
 ```
 
-The GitHub client secret is read from standard input, never from an argument
-or an environment variable — argv is visible to every process on the host.
+`GITHUB_CLIENT_SECRET_FILE` is the file holding the secret — named as a
+variable rather than written as `/path/to/…` so that this document can be
+executed rather than proofread. The secret is read from standard input, never
+from an argument or an environment variable: argv is visible to every process
+on the host, and the variable above holds a *path*, not the secret itself.
 Delete the file afterwards.
 
 `SESSION_SECRET` matters more than it looks: without it the application
@@ -164,6 +182,7 @@ sudo systemctl restart sre-tab.service sre-tab-migrate.service
 
 ## First start
 
+<!-- docs:run -->
 ```bash
 sudo deploy/install.sh --start
 ```
@@ -173,12 +192,21 @@ the backup timer and restarts all five units in a single `systemctl`
 transaction, which is what makes systemd resolve the ordering between them
 rather than starting them in the order typed.
 
-Verify:
+Verify. Note the wait: `systemctl` returning is not the all-clear, for the
+reasons measured under [Upgrading](#how-long-a-deploy-actually-takes), so
+polling is the correct check rather than a single request:
 
+<!-- docs:run -->
 ```bash
-systemctl status sre-tab-db.service sre-tab.service sre-tab-web.service
-curl --fail http://127.0.0.1:8080/api/v1/healthz
-curl --fail --silent http://127.0.0.1:8080/ | head -5
+systemctl status --no-pager sre-tab-db.service sre-tab.service sre-tab-web.service
+for _ in $(seq 1 60); do
+    curl --fail --silent --max-time 5 --output /dev/null \
+        http://127.0.0.1:8080/api/v1/healthz && break
+    sleep 2
+done
+curl --fail --silent http://127.0.0.1:8080/api/v1/healthz
+curl --fail --silent --output /tmp/sre-tab-index.html http://127.0.0.1:8080/
+head -5 /tmp/sre-tab-index.html
 ```
 
 Quadlet services are transient generated units and cannot be enabled with
@@ -408,6 +436,7 @@ not the default.
 nothing until the network object itself is removed, and `podman network reload`
 does not do it either. Containers hold the network, so they come down first:
 
+<!-- docs:run -->
 ```bash
 sudo systemctl stop sre-tab-web.service sre-tab.service sre-tab-db.service
 sudo podman network rm systemd-sre-tab
@@ -415,9 +444,19 @@ sudo deploy/install.sh --start
 ```
 
 Quadlet names the network `systemd-` plus the unit name, hence
-`systemd-sre-tab` rather than `sre-tab`. Confirm the result with
-`podman network inspect systemd-sre-tab`; an upgrade that skips this leaves the
-old, rangeless network in place and the address-collision fix inert.
+`systemd-sre-tab` rather than `sre-tab`. Confirm the result — and note that
+the range must start above Caddy's pinned `.20`, or the address-collision fix
+is inert:
+
+<!-- docs:run -->
+```bash
+sudo podman network inspect systemd-sre-tab \
+    --format '{{range .Subnets}}subnet={{.Subnet}} gateway={{.Gateway}} range={{.LeaseRange}}{{end}}'
+sudo podman network inspect systemd-sre-tab | grep -q '"start_ip": "10.89.61.32"'
+```
+
+An upgrade that skips this leaves the old, rangeless network in place and the
+fix inert.
 
 Note the second step is `podman network rm`, not `systemctl stop
 sre-tab-network.service`. The unit is a `RemainAfterExit` oneshot and stays

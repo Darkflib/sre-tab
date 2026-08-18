@@ -63,6 +63,60 @@ jobs:
       - name: Execute it
         run: python3 .github/scripts/run-doc-examples.py README.md
 
+  # deploy/README.md's procedures were prose verified by hand until a run on a
+  # real Debian 13 host executed them. That pass found the deploy-window claim
+  # wrong by a factor of forty and a Containerfile comment contradicting the
+  # unit it described — neither of which reading had caught, in a document
+  # that has been read carefully several times. So it is executed here too.
+  #
+  # A separate job from the quickstart above: this one needs podman, root, and
+  # live systemd, it pulls the pinned application image, and it takes minutes
+  # rather than seconds. Failing it should not be indistinguishable from the
+  # README's own commands breaking.
+  deploy-procedures:
+    name: deploy/README.md procedures run on a clean host
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # The three values the document requires an operator to set. They are
+      # supplied here exactly as the document says to supply them, through the
+      # environment, rather than by rewriting what the document says.
+      APP_BASE_URL: http://127.0.0.1:8080
+      GITHUB_CLIENT_ID: docs-execution-not-a-real-oauth-app
+      GITHUB_CLIENT_SECRET_FILE: /tmp/github-client-secret
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Podman
+        run: sudo apt-get update && sudo apt-get install --yes podman
+
+      # A path, not the secret: the document is explicit that argv never
+      # carries it, and this job has to honour that or it is testing a
+      # different procedure from the documented one.
+      - name: A client secret for the run
+        run: |
+          umask 077
+          printf 'docs-execution-client-secret' > "$GITHUB_CLIENT_SECRET_FILE"
+
+      - name: The script extracted from deploy/README.md
+        run: python3 .github/scripts/run-doc-examples.py deploy/README.md --root . --print
+
+      # --root . because the document's commands are written to run from the
+      # repository root (`deploy/install.sh`), while the runner would otherwise
+      # default to the directory holding the document.
+      - name: Execute it
+        run: python3 .github/scripts/run-doc-examples.py deploy/README.md --root .
+
+      - name: What the journal saw, on failure
+        if: failure()
+        run: |
+          systemctl --failed --no-pager || true
+          for unit in sre-tab-db sre-tab-migrate sre-tab-assets sre-tab sre-tab-web; do
+            echo "::group::$unit"
+            sudo journalctl -u "$unit.service" -n 60 --no-pager || true
+            echo "::endgroup::"
+          done
+
   links:
     name: Relative links resolve
     runs-on: ubuntu-latest

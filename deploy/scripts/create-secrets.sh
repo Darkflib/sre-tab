@@ -36,9 +36,15 @@ Options:
                    (default: sre-tab-db)
   -h, --help       this message
 
-Existing secrets are replaced. Secrets are per-user under rootless podman and
-system-wide under rootful podman; run this as the same user that runs the
-quadlet units — root, for the reference deployment.
+Refuses to run if sre-tab-postgres-password already exists, because a new
+password is one the existing database does not have; --rotate-db is how you
+say you mean it. The other three are rewritten in place. (This text used to
+claim existing secrets were simply replaced, which described the podman
+call rather than what this script does with it.)
+
+Secrets are per-user under rootless podman and system-wide under rootful
+podman; run this as the same user that runs the quadlet units — root, for the
+reference deployment.
 EOF
 }
 

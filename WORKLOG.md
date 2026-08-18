@@ -3,6 +3,56 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-18 — The deploy documents, now executed by CI too
+
+The harness half, after the hand-run below. `docs.yml` gained a
+`deploy-procedures` job that runs seven `docs:run` blocks out of
+`deploy/README.md` — preparation, configuration, secrets, first start,
+verification, network replacement, and an assertion that the recreated
+range starts above Caddy's pinned `.20`.
+
+**The roadmap had the cost in the wrong place.** It said the expensive
+part was a runner with systemd rather than the harness. `ubuntu-latest`
+has systemd, root, and podman a package away; the real obstacle was that
+two documented commands cannot run as written — `sudoedit`, and a client
+secret written as `/path/to/github-client-secret`.
+
+Both were fixed by naming the input rather than scaffolding around it.
+The path became `${GITHUB_CLIENT_SECRET_FILE:?}` — a variable holding a
+*path*, so the document's own rule that argv never carries the secret
+survives intact — and the configuration section documents the
+non-interactive edit next to `sudoedit`, which is what a
+configuration-management run does anyway. The test of whether bending a
+document toward execution is legitimate is whether the result reads
+better to a human, and `/path/to/…` was always a substitution the reader
+had to make silently.
+
+**The verification block changed for a reason from the entry below.** It
+polled instead of requesting once, because `systemctl` returning is not
+the all-clear. The document had been telling an operator to run a check
+that fails a good fraction of the time — which is how the deploy-window
+finding was made in the first place.
+
+**The harness found something on its first run.**
+`create-secrets.sh` refuses when `sre-tab-postgres-password` exists,
+because a new password is one the existing database does not have — good
+behaviour, and its own usage text said the opposite: "Existing secrets
+are replaced." That sentence described the `podman secret create
+--replace` call inside the helper rather than what the script does before
+reaching it. Corrected.
+
+Then it found the same thing again, about me. Clearing the secrets by
+hand and re-running produced a failed migration unit: the regenerated
+password did not match a database volume initialised with the old one,
+which is precisely the state the guard exists to prevent and which I had
+walked around to get a clean run. A genuinely clean host means secrets,
+volumes, *and* containers. Recorded on the roadmap, because the next
+person to reproduce this will make the same mistake in the same order.
+
+One thing improved in the runner itself: it labelled log groups with the
+document's basename, so two different `README.md` files both appeared as
+`README.md:58`. It uses the path now.
+
 ## 2026-08-18 — The deploy documents, executed on a real host
 
 A second Debian 13 host with podman 5.4.2, and a hand-run of the four

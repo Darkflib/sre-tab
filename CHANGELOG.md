@@ -60,6 +60,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   against the stale copy.
 - `LICENSE` (MIT), matching the declaration that was already in
   `pyproject.toml` but had no corresponding grant in the repository.
+- `deploy/README.md`'s procedures are executed on every push, not
+  proofread. A `deploy-procedures` job runs seven blocks extracted from
+  the document itself — host preparation, configuration, secrets, first
+  start, verification, network replacement, and an assertion that the
+  recreated address range starts above Caddy's pinned `.20`. Two commands
+  changed so the document can be run as written: the client secret's path
+  is now a named variable rather than `/path/to/…`, and the
+  non-interactive form of the `app.env` edit is documented alongside
+  `sudoedit`.
 - `CONTRIBUTING.md`, and a `Docs` workflow that extracts the README's
   quickstart from the README itself and executes it on a clean checkout
   on every push. Two documented procedures here have been wrong while

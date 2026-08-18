@@ -401,13 +401,44 @@ during an incident.
   protects has stopped being true. Two wrong procedures preceded it:
   `install.sh --start` never recreated a removed network, and the documented
   upgrade sequence was wrong as written.
-- **`deploy/README.md` is not executed.** Its procedures need a Podman host,
-  root, and live systemd. `smoke.sh` covers the migration, health, backup, and
-  restore paths through the same scripts an operator runs, but the install,
-  secret, upgrade, and network-replacement sequences are prose verified by
-  hand. Extending the same marker-and-extract approach to a Linux runner is
-  the obvious next step, and the expensive part is a runner with systemd
-  rather than the harness.
+- **`deploy/README.md` is executed now** — **landed, and the runner was never
+  the expensive part.** Its procedures need a Podman host, root, and live
+  systemd, which this entry treated as the obstacle. An `ubuntu-latest` runner
+  has all three; the actual cost was that two documented commands could not
+  run as written — `sudoedit /etc/sre-tab/app.env`, and a client-secret path
+  written as `/path/to/…`.
+
+  Resolved by naming them rather than by scaffolding around them. The secret's
+  path is `${GITHUB_CLIENT_SECRET_FILE:?}`, which is a variable holding a
+  *path* and so keeps the document's own rule that argv never carries the
+  secret; and the configuration section now documents the non-interactive edit
+  alongside `sudoedit`, which is what a configuration-management run does
+  anyway. Both are improvements to the document in their own right, which is
+  the test of whether bending it toward execution was legitimate.
+
+  `docs.yml` gained a `deploy-procedures` job, separate from the quickstart
+  because it needs podman and root, pulls the pinned image, and takes minutes
+  rather than seconds — a failure there should not look like the README's own
+  commands breaking. Seven blocks run: preparation, configuration, secrets,
+  first start, verification, network replacement, and an assertion that the
+  recreated range starts above Caddy's pinned `.20`.
+
+  The verification block changed as a consequence of the deploy-window
+  measurement above: it polls for `healthz` instead of requesting it once,
+  because `systemctl` returning is not the all-clear. A document that told an
+  operator to run a single request was telling them to run a flaky check.
+
+  What is still not executed: the upgrade sequence, which needs a second
+  published build to promote to, and the backup and restore procedures, which
+  `smoke.sh` already covers through the same scripts.
+
+  The procedure is once-only per host by design and the harness inherits that:
+  `create-secrets.sh` refuses to run against an existing database password, so
+  a re-run on a host that has already been installed fails at that step. CI
+  gets a clean runner for free. Anyone reproducing this on a real host has to
+  remove the secrets, the volumes, and the containers first — removing only
+  the secrets leaves a database whose password nobody holds, which is exactly
+  what that guard exists to prevent.
 - **Make `Docs` a required check** — **landed, as a side effect of fixing the
   branch-protection rule.** Both of its check-runs — `README quickstart runs
   on a clean checkout` and `Relative links resolve` — are in the required set

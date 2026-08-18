@@ -98,10 +98,28 @@ verbatim rather than against a renamed copy.
 ## Documentation is executed, not proofread
 
 `.github/workflows/docs.yml` runs the README's quickstart on a clean checkout
-on every push. This is not decoration. Two documented procedures in this
-repository have been wrong while reading perfectly: `install.sh --start`
-never recreated a removed network, and the upgrade procedure was wrong as
-written. Both were found by running them on Linux, not by reviewing them.
+on every push, and `deploy/README.md`'s procedures in a second job. This is
+not decoration. Several documented procedures here have been wrong while
+reading perfectly: `install.sh --start` never recreated a removed network, the
+upgrade procedure was wrong as written, and `deploy/README.md` described a
+deploy as a "sub-second blip" that measured 43.7 seconds. All were found by
+running them on Linux, not by reviewing them.
+
+The deployment job is deliberately **not** in the required set, unlike the
+other two docs checks, and that is a judgement rather than an oversight. It
+pulls the pinned application image from a registry, so it can go red for
+reasons that have nothing to do with the change under review — the same
+availability argument that already applies to `audit` and `sast`, but with a
+longer runtime and a worse failure story. Making it required is a one-line
+change to the rule if that trade looks wrong; the commands are in
+[Branch protection](#branch-protection).
+
+It also inherits a property of the procedure it runs: `create-secrets.sh`
+refuses to run against an existing database password, so the sequence is
+once-only per host. CI gets a clean runner every time. Reproducing it on a
+real host means removing the secrets, the volumes, *and* the containers first
+— removing only the secrets leaves a database whose password nobody holds,
+which is what that guard exists to prevent.
 
 The commands are extracted from `README.md` rather than copied into the
 workflow, because a copy drifts and then the workflow protects nothing. A

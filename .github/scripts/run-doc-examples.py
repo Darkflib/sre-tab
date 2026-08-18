@@ -281,7 +281,9 @@ def main(argv: list[str] | None = None) -> int:
         _say(f"error: {document} contains no docs:run blocks")
         return 2
 
-    script = render(blocks, doc=document.name, root=root)
+    # The path rather than the basename: two different README.md files are
+    # executed now, and `README.md:58` in a CI log does not say which.
+    script = render(blocks, doc=str(document), root=root)
     if args.print_only:
         sys.stdout.write(f"{script}\n")
         return 0
