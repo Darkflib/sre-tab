@@ -37,7 +37,14 @@ jobs:
       # by editing what the document says.
       SOURCE_REFRESH_ENABLED: "false"
     steps:
+      # persist-credentials: false because this job's whole purpose is running
+      # commands extracted from a file in the repository. The default leaves
+      # the checkout token in .git/config where those commands would find it.
+      # The workflow's `contents: read` already caps what it could do; not
+      # handing it over in the first place is cheaper than reasoning about it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       # Same pins as ci.yml so Renovate moves both in one PR.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7

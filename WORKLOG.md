@@ -90,7 +90,7 @@ running" the whole time, which is the same shape as the branch-protection
 rule that failed safe by never reporting. All seven now carry a budget:
 15 minutes for the fast jobs, 30 for the two that build images.
 
-## 2026-08-18 — The deploy documents, executed on a real host
+## 2026-08-17 — The deploy documents, executed on a real host
 
 A second Debian 13 host with podman 5.4.2, and a hand-run of the four
 `deploy/README.md` sequences that nothing has ever executed: host

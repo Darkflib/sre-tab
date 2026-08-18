@@ -196,16 +196,31 @@ Verify. Note the wait: `systemctl` returning is not the all-clear, for the
 reasons measured under [Upgrading](#how-long-a-deploy-actually-takes), so
 polling is the correct check rather than a single request:
 
+Every request is bounded, including the ones after the loop. That is not
+belt-and-braces: the state described under Upgrading is a listener that
+*accepts* a connection and never answers, so a `curl` without `--max-time`
+against it waits indefinitely rather than failing.
+
 <!-- docs:run -->
 ```bash
 systemctl status --no-pager sre-tab-db.service sre-tab.service sre-tab-web.service
+
+ready=false
 for _ in $(seq 1 60); do
-    curl --fail --silent --max-time 5 --output /dev/null \
-        http://127.0.0.1:8080/api/v1/healthz && break
+    if curl --fail --silent --max-time 5 --output /dev/null \
+            http://127.0.0.1:8080/api/v1/healthz; then
+        ready=true
+        break
+    fi
     sleep 2
 done
-curl --fail --silent http://127.0.0.1:8080/api/v1/healthz
-curl --fail --silent --output /tmp/sre-tab-index.html http://127.0.0.1:8080/
+if [ "$ready" != true ]; then
+    echo "healthz did not answer within two minutes" >&2
+    exit 1
+fi
+
+curl --fail --silent --max-time 5 http://127.0.0.1:8080/api/v1/healthz
+curl --fail --silent --max-time 10 --output /tmp/sre-tab-index.html http://127.0.0.1:8080/
 head -5 /tmp/sre-tab-index.html
 ```
 

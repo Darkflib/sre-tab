@@ -220,7 +220,10 @@ def render(blocks: list[Block], *, doc: str, root: Path) -> str:
     ]
     for block in blocks:
         kind = "background" if block.background else "run"
-        parts.append(f"echo '::group::{doc}:{block.line} ({kind})'")
+        # Quoted like every other interpolation here: `doc` is a path from
+        # argv, and a single quote in it would otherwise close the string and
+        # let the rest run as shell.
+        parts.append(f"echo {shlex.quote(f'::group::{doc}:{block.line} ({kind})')}")
         parts.append("(")
         parts.append('  cd "$docs_root"')
         parts.append("  set -x")
