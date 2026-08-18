@@ -37,7 +37,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   first tests the client has had — and they run in CI.
 - 73 further Vitest tests over the feed's filter model
   (`src/feed/filters.ts`) and volume signals (`src/feed/volume.ts`),
-  taking the suite to 186. They pin the distinction between "no override"
+  taking the suite to 187. They pin the distinction between "no override"
   (`null`) and "nothing selected" (`[]`), including its survival through
   the URL, and the thresholds behind the high-volume flag and the
   dominance notice.
@@ -49,8 +49,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cache key, and the feed query, and those consumers disagree about what
   punctuation means — a slug containing a comma produced a source that
   listed correctly and filtered to nothing.
+- The API contract is checked against the two committed artefacts the
+  client is built from. `tests/test_openapi.py` compares
+  `frontend/openapi.json` against the schema the application serves, byte
+  for byte, and the `frontend` CI job regenerates `src/api/schema.d.ts`
+  and fails on a diff. Regenerating both was previously a manual step
+  held together by a sentence in `frontend/README.md`; a contract change
+  that skipped it left the client typed against a server that no longer
+  existed, with `tsc` still passing because it was checking the client
+  against the stale copy.
 - `LICENSE` (MIT), matching the declaration that was already in
   `pyproject.toml` but had no corresponding grant in the repository.
+- `deploy/README.md`'s procedures are executable rather than prose. Seven
+  blocks carry `docs:run` markers — host preparation, configuration,
+  secrets, first start, verification, network replacement, and an
+  assertion that the recreated address range starts above Caddy's pinned
+  `.20` — and run end to end on a Debian 13 host with podman 5.4.2. Two
+  commands changed so the document can be run as written: the client
+  secret's path is a named variable rather than `/path/to/…`, and the
+  non-interactive form of the `app.env` edit is documented alongside
+  `sudoedit`. Not run by CI: Ubuntu's `conmon` lacks journald support and
+  the long-running units set `LogDriver=journald` deliberately, so a
+  GitHub runner cannot start the stack without testing a different
+  deployment. See `CONTRIBUTING.md` for the command.
 - `CONTRIBUTING.md`, and a `Docs` workflow that extracts the README's
   quickstart from the README itself and executes it on a clean checkout
   on every push. Two documented procedures here have been wrong while
@@ -65,6 +86,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `:sha-<commit>@sha256:<digest>` with `Pull=missing`; upgrading is a
   reviewed commit produced by `promote.sh`, not a side effect of
   restarting. See the upgrade procedure in `deploy/README.md`.
+- **The application image's healthcheck interval is 10s, was 30s.**
+  `sre-tab.container` gates on `Notify=healthy` and Caddy is ordered
+  after it, so the interval set the deploy window rather than just the
+  monitoring cadence: the first check runs one whole interval after
+  start, whatever `--start-period` says. `systemctl restart` of the four
+  application units returns in 15.4s rather than 35.6s. It does not fix
+  the full outage — see `deploy/README.md`, which now carries the
+  measurements and the ~20s tail that remains unexplained.
 - **`DOCS_ENABLED` now defaults to false.** A deployment that inherits
   the defaults no longer serves Swagger UI at `/docs`; set
   `DOCS_ENABLED=true` to opt in. `/api/v1/openapi.json` is unaffected and

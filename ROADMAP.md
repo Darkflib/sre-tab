@@ -101,17 +101,48 @@ is about the pipeline, not the code.
   `.env.example` still sets `DOCS_ENABLED=true`, since that file is the
   development template. `/api/v1/openapi.json` is unaffected and served
   either way: the flag governs the UI, not the contract.
-- **Serve a static OpenAPI document in production** rather than generating it
-  from the live app. Publishing the schema at `/api/v1/openapi.json` is a v1
+- **Serve a static OpenAPI document in production** — **the drift check has
+  landed; the serving change has not, and the ownership problem was
+  overstated.** Publishing the schema at `/api/v1/openapi.json` is a v1
   requirement and stays; the change is decoupling it from the running
-  application so the served artefact is a reviewed, versioned file. It is
-  parked rather than merely unstarted, and the reason is ownership rather than
-  difficulty: `app/main.py` mounts no static files and is frozen Phase 0
-  property, the only place the served artefact could be decoupled from the
-  live app is `deploy/Caddyfile`, and a committed artefact needs a drift check
-  against the live schema whose natural home is `frontend/openapi.json`. The
-  cheap version — CI asserting the live schema matches a reviewed committed
-  file — is worth doing, and wants one owner across those three files.
+  application so the served artefact is a reviewed, versioned file.
+
+  This was parked on ownership rather than difficulty: `app/main.py` mounts
+  no static files and is frozen Phase 0 property, the only place the served
+  artefact could be decoupled from the live app is `deploy/Caddyfile`, and a
+  committed artefact needs a drift check whose natural home is
+  `frontend/openapi.json`. The cheap version turned out to touch neither of
+  the contentious files, because a drift check is not a serving change: it is
+  a property of the application, and it went in the test suite.
+
+  It also had one more link than the entry accounted for. The contract
+  reaches the client through *two* committed artefacts —
+  `frontend/openapi.json`, and the `src/api/schema.d.ts` generated from it —
+  and the regeneration of both was held together by a sentence in
+  frontend/README.md asking for discipline. Both links are now checked, each
+  in the job that already has the toolchain for it, so neither job gained a
+  dependency and no new job was created: `tests/test_openapi.py` compares the
+  committed document against the served schema byte for byte, and the
+  `frontend` job regenerates the types and fails on a diff. Both were green
+  on the first run and both were mutation-tested — a field added to
+  `HealthResponse` with no regeneration fails the first, and a regenerated
+  `openapi.json` with stale types fails the second.
+
+  The interesting half is the one `tsc` could never have caught: stale types
+  stay internally consistent with a document that has stopped describing the
+  server, so the typecheck passes faithfully against the wrong contract.
+
+  The `frontend` job was renamed to say so — `Frontend lint, types, contract,
+  tests, build` — and the required context updated with it. Dodging the
+  settings edit by keeping a name that no longer described the job was the
+  first instinct and the wrong one: it optimises for whoever makes the change
+  over whoever next reads a red cross, which is the same least-surprise
+  argument the preceding three fixes turned on.
+
+  What remains is the serving change itself — `deploy/Caddyfile` answering
+  `/api/v1/openapi.json` from the committed file rather than from the
+  application. That still wants an owner, and now has a trustworthy artefact
+  to serve, which was the prerequisite it was really waiting on.
 
 ## Scaling
 
@@ -158,7 +189,7 @@ prerequisite for going past it.
   resolution, the anti-flash script, and contrast, and covered none of the
   client's actual logic.
 
-  `src/feed/filters.ts` and `src/feed/volume.ts` now have 72 tests, and they
+  `src/feed/filters.ts` and `src/feed/volume.ts` now have 73 tests, and they
   needed no new tooling — both modules import types only, so they are the same
   shape as what Vitest already covered. They were mutation-tested rather than
   merely run: thirteen behavioural mutations, each the plausible version of
@@ -296,11 +327,71 @@ during an incident.
   all. The refusal branches are the ones with a real example behind them —
   `https://www.theguardian.com/uk/rss/` answers `301` to `http://`, which is
   where that whole class of trap was found.
-- **Quadlet runtime behaviour beyond one Linux pass.** CI machine-checks unit
-  *generation* with `podman-system-generator --dryrun`, which catches a
-  malformed key and nothing else. The `After=`/`Requires=` ordering holding at
-  boot, `Notify=healthy`, and the Podman secret plumbing have had a single
-  validation pass on a real host, not a soak.
+- **Quadlet runtime behaviour beyond one Linux pass** — **a second host has
+  now run it, and `Notify=healthy` was doing something nobody had measured.**
+  CI machine-checks unit *generation* with `podman-system-generator --dryrun`,
+  which catches a malformed key and nothing else.
+
+  A full pass on a second Debian 13 host with podman 5.4.2 confirmed the
+  ordering (`db` → `migrate` → `app` → `web`, in that order, from a cold
+  install), the Podman secret plumbing, and `systemctl --failed` staying empty
+  across stops — which is the `NoNewPrivileges` reasoning holding up somewhere
+  other than where it was written.
+
+  What it also found is that `Notify=healthy` was setting the deploy window,
+  not merely gating readiness. The application's healthcheck lived in the
+  image at a 30-second interval while the database's lived in its unit at 10;
+  the first check runs one whole interval after start, so systemd held Caddy —
+  ordered after the application — down for the entire wait. A documented
+  "sub-second blip" measured 43.7 seconds on an application that was answering
+  2.8 seconds in. The image is 10s now, which takes the `systemctl` wait from
+  35.6s to 15.4s. See the deploy-window table in
+  [deploy/README.md](deploy/README.md).
+
+  Still not a soak: this is two cold installs and a handful of restarts, not
+  weeks of uptime, and the backup timer's catch-up is still unproven above.
+
+- **~20s of the deploy outage happens after `systemctl` returns, and nothing
+  explains it yet.** New, and separated from the healthcheck item above
+  because fixing that one did not touch this and in fact made it the majority
+  of the window: total unreachability moved only 43.7s → 36.1s.
+
+  What is known. During the tail a TCP connect to the published port is
+  **black-holed rather than refused**, so it is not "no listener yet". Caddy's
+  own log has it serving 50ms after its container starts, so it is not Caddy
+  booting. The application is answering 2.8s in, so it is not that either.
+  Something between the published port and the container is not carrying
+  traffic, and the shape — silent drops after a container is recreated — points
+  at the NAT layer rather than at any of the three services.
+
+  The obvious next measurement turned out to be malformed, which is worth
+  recording so nobody spends the afternoon on it. The observations came from
+  the host's own loopback through podman's DNAT, and the first write-up
+  hedged that an off-host client might not see the tail at all. There are no
+  off-host clients: `sre-tab-web.container` publishes `127.0.0.1:8080:8080`
+  deliberately, because TLS is terminated by the host's existing proxy, and
+  that proxy reaches Caddy over loopback exactly as the polling did. So the
+  hedge was backwards — nothing insulates users from this, it reaches them as
+  502s — and opening the port to test it would have measured a topology this
+  deployment does not have.
+
+  The mechanism is narrowed, and it is not conntrack, which was the first
+  guess. Two things serve `127.0.0.1:8080`. netavark installs a hostport rule
+  — `ip daddr 127.0.0.1 tcp dport 8080 dnat ip to 10.89.61.20:8080`, pointing
+  at Caddy's pinned address — and podman separately holds a *reservation*
+  listener on the same port, visible as `conmon` in `ss -lntp`, so nothing
+  else can take it while the container is down.
+
+  Probing across a restart walks through all three states in order: `refused`
+  while both are gone, then **`accepted then hung`** — a connection the
+  reservation listener takes and never forwards, because the DNAT rule is not
+  back yet — then serving. The tail is that middle state. It looks like an
+  outage with a listener present, which is why it reads as black-holing from
+  the client side and why nothing in the three services' logs mentions it.
+
+  Not yet established: whether the ordering is fixable from the unit files at
+  all, or is podman's to fix. `PublishPort=127.0.0.1:8080:8080` is the same
+  line orbit-data uses, so anything learned here applies there too.
 
 ## Documentation
 
@@ -310,13 +401,58 @@ during an incident.
   protects has stopped being true. Two wrong procedures preceded it:
   `install.sh --start` never recreated a removed network, and the documented
   upgrade sequence was wrong as written.
-- **`deploy/README.md` is not executed.** Its procedures need a Podman host,
-  root, and live systemd. `smoke.sh` covers the migration, health, backup, and
-  restore paths through the same scripts an operator runs, but the install,
-  secret, upgrade, and network-replacement sequences are prose verified by
-  hand. Extending the same marker-and-extract approach to a Linux runner is
-  the obvious next step, and the expensive part is a runner with systemd
-  rather than the harness.
+- **`deploy/README.md` is executable now, and CI still cannot run it** —
+  **half landed, and the original entry was right for the wrong reason.** It
+  said the expensive part was a runner with systemd. `ubuntu-latest` has
+  systemd, root, and podman a package away, so that looked wrong — and then
+  the job failed anyway, on something narrower: Ubuntu's `conmon` is built
+  without journald support, and the three long-running units set
+  `LogDriver=journald` deliberately, so `sre-tab-web.service` dies with
+  `conmon failed: exit status 1` before a single procedure is exercised.
+
+  Making it pass would mean overriding `LogDriver` for CI, which tests a
+  deployment other than the one that ships. A green gate over the wrong
+  artefact is worse than no gate, so the job was removed and the reason left
+  in `docs.yml` where the next person to try will find it. What would close
+  this is a runner whose conmon has journald: a Debian-based self-hosted
+  runner, or podman from a repository that ships one.
+
+  The markers and the harness are real and stay. The procedures run end to end
+  on Debian 13 with podman 5.4.2 — verified, exit 0 through all seven blocks —
+  and [CONTRIBUTING.md](CONTRIBUTING.md) carries the command.
+
+  The other half of the original cost was two documented commands that could
+  not run as written — `sudoedit /etc/sre-tab/app.env`, and a client-secret
+  path written as `/path/to/…`.
+
+  Resolved by naming them rather than by scaffolding around them. The secret's
+  path is `${GITHUB_CLIENT_SECRET_FILE:?}`, which is a variable holding a
+  *path* and so keeps the document's own rule that argv never carries the
+  secret; and the configuration section now documents the non-interactive edit
+  alongside `sudoedit`, which is what a configuration-management run does
+  anyway. Both are improvements to the document in their own right, which is
+  the test of whether bending it toward execution was legitimate.
+
+  Seven blocks run: preparation, configuration, secrets, first start,
+  verification, network replacement, and an assertion that the recreated range
+  starts above Caddy's pinned `.20`.
+
+  The verification block changed as a consequence of the deploy-window
+  measurement above: it polls for `healthz` instead of requesting it once,
+  because `systemctl` returning is not the all-clear. A document that told an
+  operator to run a single request was telling them to run a flaky check.
+
+  What is still not executed: the upgrade sequence, which needs a second
+  published build to promote to, and the backup and restore procedures, which
+  `smoke.sh` already covers through the same scripts.
+
+  The procedure is once-only per host by design and the harness inherits that:
+  `create-secrets.sh` refuses to run against an existing database password, so
+  a re-run on a host that has already been installed fails at that step. CI
+  gets a clean runner for free. Anyone reproducing this on a real host has to
+  remove the secrets, the volumes, and the containers first — removing only
+  the secrets leaves a database whose password nobody holds, which is exactly
+  what that guard exists to prevent.
 - **Make `Docs` a required check** — **landed, as a side effect of fixing the
   branch-protection rule.** Both of its check-runs — `README quickstart runs
   on a clean checkout` and `Relative links resolve` — are in the required set

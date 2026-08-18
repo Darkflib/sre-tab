@@ -37,7 +37,14 @@ jobs:
       # by editing what the document says.
       SOURCE_REFRESH_ENABLED: "false"
     steps:
+      # persist-credentials: false because this job's whole purpose is running
+      # commands extracted from a file in the repository. The default leaves
+      # the checkout token in .git/config where those commands would find it.
+      # The workflow's `contents: read` already caps what it could do; not
+      # handing it over in the first place is cheaper than reasoning about it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       # Same pins as ci.yml so Renovate moves both in one PR.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -62,6 +69,27 @@ jobs:
       # commands install everything, which is the property under test.
       - name: Execute it
         run: python3 .github/scripts/run-doc-examples.py README.md
+
+  # deploy/README.md carries docs:run markers too, and there is deliberately
+  # no job here that runs them. It was written, and it failed, and the reason
+  # is worth keeping so nobody writes it again:
+  #
+  #   [conmon:e]: Include journald in compilation path to log to systemd journal
+  #   Error: conmon failed: exit status 1
+  #   sre-tab-web.service: Main process exited, code=exited, status=126
+  #
+  # Ubuntu's conmon is built without journald support, and the three
+  # long-running units set LogDriver=journald on purpose — `podman logs` is
+  # worth having for them, per deploy/README.md's Operations section. Making
+  # this pass on ubuntu-latest would mean overriding LogDriver for CI, which
+  # is testing a deployment other than the one that ships, and a green gate
+  # over the wrong artefact is worse than no gate.
+  #
+  # The markers are still worth having: the procedures run end to end on a
+  # Debian 13 host with podman 5.4.2, which is what the deployment targets.
+  # CONTRIBUTING.md carries the command. What would make this a CI job is a
+  # runner whose conmon has journald — a Debian-based self-hosted runner, or a
+  # podman build from a repository that ships one.
 
   links:
     name: Relative links resolve

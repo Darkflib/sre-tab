@@ -17,9 +17,15 @@
 #
 # `--format docker` matters for Podman: HEALTHCHECK is a Docker-schema field
 # with no OCI equivalent, so an OCI-format build silently drops it. The
-# deployment does not depend on that — deploy/quadlet/sre-tab.container sets
-# HealthCmd= explicitly — but a locally built image should behave the same
-# either way.
+# deployment depends on that entirely: deploy/quadlet/sre-tab.container sets
+# no HealthCmd= — on purpose, so there is one definition rather than two — and
+# its Notify=healthy waits on the healthcheck below. An OCI-format build makes
+# that unit hang until TimeoutStartSec rather than fail fast, which is why CI
+# asserts the field survived the build.
+#
+# This comment used to claim the opposite, that the unit set HealthCmd= and the
+# deployment did not depend on the image. It read as reassurance that the
+# format was a local nicety.
 
 # --- Frontend -------------------------------------------------------------
 # Node 24 covers frontend/package.json's ">=20.19" floor (Vite 8's minimum)
@@ -125,7 +131,16 @@ EXPOSE 8000
 # and no extra attack surface. /api/v1/healthz answers 200 only when both
 # liveness and readiness probes pass, and raises for the 503 it returns when
 # they do not.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+#
+# The interval is a deploy-window setting, not just a monitoring one. Because
+# sre-tab.container gates on Notify=healthy and sre-tab-web.container is
+# ordered after it, systemd holds Caddy down until the first healthcheck
+# passes — and the first check runs one full interval after start, whatever
+# the start-period says. At 30s that made a documented "sub-second blip" a
+# measured 44-second outage on a host where the application itself was
+# answering 2.8s in. 10s trades a slightly busier steady state for a deploy
+# window an operator can restart through more than once without it mattering.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/healthz', timeout=4)"]
 
 # Exec form: uvicorn becomes PID 1 and receives SIGTERM directly, so podman

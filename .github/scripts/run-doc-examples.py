@@ -220,7 +220,10 @@ def render(blocks: list[Block], *, doc: str, root: Path) -> str:
     ]
     for block in blocks:
         kind = "background" if block.background else "run"
-        parts.append(f"echo '::group::{doc}:{block.line} ({kind})'")
+        # Quoted like every other interpolation here: `doc` is a path from
+        # argv, and a single quote in it would otherwise close the string and
+        # let the rest run as shell.
+        parts.append(f"echo {shlex.quote(f'::group::{doc}:{block.line} ({kind})')}")
         parts.append("(")
         parts.append('  cd "$docs_root"')
         parts.append("  set -x")
@@ -281,7 +284,9 @@ def main(argv: list[str] | None = None) -> int:
         _say(f"error: {document} contains no docs:run blocks")
         return 2
 
-    script = render(blocks, doc=document.name, root=root)
+    # The path rather than the basename: two different README.md files are
+    # executed now, and `README.md:58` in a CI log does not say which.
+    script = render(blocks, doc=str(document), root=root)
     if args.print_only:
         sys.stdout.write(f"{script}\n")
         return 0

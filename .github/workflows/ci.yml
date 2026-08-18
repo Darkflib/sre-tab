@@ -20,6 +20,7 @@ jobs:
   python:
     name: Format, lint, types, security, tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -53,6 +54,7 @@ jobs:
   postgres:
     name: PostgreSQL integration
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         # Same pin as deploy/, and no longer on trust: the "Pinned images
@@ -91,6 +93,7 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -155,6 +158,7 @@ jobs:
   sast:
     name: Static analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -225,8 +229,12 @@ jobs:
           fi
 
   frontend:
-    name: Frontend lint, types, tests, build
+    # Renaming this is a branch-protection change — the required context is
+    # this string, not the `frontend` key above. CONTRIBUTING.md carries the
+    # read and write commands, and the required set was updated with it.
+    name: Frontend lint, types, contract, tests, build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -236,6 +244,37 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --no-audit --no-fund
         working-directory: frontend
+
+      # The contract reaches the client through two links, and both are
+      # committed artefacts kept in step by hand: the live schema is copied
+      # to `frontend/openapi.json`, and `src/api/schema.d.ts` is generated
+      # from that copy. Each link is checked where the toolchain for it
+      # already exists — the first by tests/test_openapi.py in the `python`
+      # job, the second here, because this is the job with node in it.
+      #
+      # Before `tsc` deliberately. Stale types make the typecheck a check of
+      # the wrong contract, so a failure there would be read as a client bug
+      # rather than as the regeneration nobody ran.
+      - name: The generated API types match the committed document
+        run: |
+          npm run generate:api
+          # `git diff` reports tracked files only, so absence reads as
+          # agreement: delete the committed declaration and this step
+          # regenerates it as an untracked file, diffs nothing, and goes
+          # green — and `tsc` passes too, against the copy just written.
+          # A clean checkout would have neither. Reproduced before this
+          # guard was added, because a gate that checks nothing is the
+          # failure mode this repository keeps meeting.
+          git ls-files --error-unmatch -- src/api/schema.d.ts >/dev/null 2>&1 || {
+            echo "::error::src/api/schema.d.ts is not tracked. It is a committed artefact; regenerate it and commit the result."
+            exit 1
+          }
+          git diff --exit-code -- src/api/schema.d.ts || {
+            echo "::error::src/api/schema.d.ts is stale. Run 'npm run generate:api' and commit the result."
+            exit 1
+          }
+        working-directory: frontend
+
       - name: eslint
         run: npm run lint
         working-directory: frontend
@@ -255,6 +294,7 @@ jobs:
   container:
     name: Container build and deployment smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -400,6 +440,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [python, postgres, audit, sast, frontend, container]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write # push the image and its sigstore attachments

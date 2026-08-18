@@ -3,6 +3,313 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-18 — The deploy documents, now executed by CI too
+
+The harness half, after the hand-run below. `docs.yml` gained a
+`deploy-procedures` job that runs seven `docs:run` blocks out of
+`deploy/README.md` — preparation, configuration, secrets, first start,
+verification, network replacement, and an assertion that the recreated
+range starts above Caddy's pinned `.20`.
+
+**The roadmap was right that the runner was the expensive part, and
+wrong about why — and I was wrong to say it had been wrong.** The entry
+said a runner with systemd was the obstacle. `ubuntu-latest` has systemd,
+root, and podman a package away, so the job got written and the roadmap
+got a line saying the cost had been misplaced. Then the job failed:
+
+    [conmon:e]: Include journald in compilation path to log to systemd journal
+    Error: conmon failed: exit status 1
+    sre-tab-web.service: Main process exited, code=exited, status=126
+
+Ubuntu's `conmon` is built without journald support, and the three
+long-running units set `LogDriver=journald` on purpose — the Operations
+section argues for it, because `podman logs` is worth having on those
+three. So the stack cannot start on a GitHub runner at all, and nothing
+downstream of that was ever going to be tested.
+
+Making it pass would mean overriding `LogDriver` for CI, which is testing
+a deployment other than the one that ships. A green gate over the wrong
+artefact is worse than no gate — that is the same argument the semgrep
+`p/bash` guard exists for — so the job came out and the error text stays
+in `docs.yml` where the next person to write it will find it first.
+
+The lesson is narrower than "CI cannot run this": it is that "the
+runner has systemd" and "the runner can run these units" are different
+claims, and only the first one is easy to check. Closing it needs a
+runner whose conmon has journald.
+
+The harness itself is real and stays: seven blocks, exit 0 end to end on
+Debian 13 with podman 5.4.2, and the command is in CONTRIBUTING.md. The
+other half of the original cost was two documented commands that cannot
+run as written — `sudoedit`, and a client secret written as
+`/path/to/github-client-secret`.
+
+Both were fixed by naming the input rather than scaffolding around it.
+The path became `${GITHUB_CLIENT_SECRET_FILE:?}` — a variable holding a
+*path*, so the document's own rule that argv never carries the secret
+survives intact — and the configuration section documents the
+non-interactive edit next to `sudoedit`, which is what a
+configuration-management run does anyway. The test of whether bending a
+document toward execution is legitimate is whether the result reads
+better to a human, and `/path/to/…` was always a substitution the reader
+had to make silently.
+
+**The verification block changed for a reason from the entry below.** It
+polled instead of requesting once, because `systemctl` returning is not
+the all-clear. The document had been telling an operator to run a check
+that fails a good fraction of the time — which is how the deploy-window
+finding was made in the first place.
+
+**The harness found something on its first run.**
+`create-secrets.sh` refuses when `sre-tab-postgres-password` exists,
+because a new password is one the existing database does not have — good
+behaviour, and its own usage text said the opposite: "Existing secrets
+are replaced." That sentence described the `podman secret create
+--replace` call inside the helper rather than what the script does before
+reaching it. Corrected.
+
+Then it found the same thing again, about me. Clearing the secrets by
+hand and re-running produced a failed migration unit: the regenerated
+password did not match a database volume initialised with the old one,
+which is precisely the state the guard exists to prevent and which I had
+walked around to get a clean run. A genuinely clean host means secrets,
+volumes, *and* containers. Recorded on the roadmap, because the next
+person to reproduce this will make the same mistake in the same order.
+
+One thing improved in the runner itself: it labelled log groups with the
+document's basename, so two different `README.md` files both appeared as
+`README.md:58`. It uses the path now.
+
+**And one found by watching a run stall.** `apt-get install podman` in
+the container job sat for eight minutes against a normal thirty seconds,
+and nothing in `ci.yml` bounded it: not one of its seven jobs set
+`timeout-minutes`, while both jobs in `docs.yml` do. GitHub's default is
+360 minutes, so a hung network step burns six hours of runner before
+anyone gets a red cross — and on a pull request it reads as "still
+running" the whole time, which is the same shape as the branch-protection
+rule that failed safe by never reporting. All seven now carry a budget:
+15 minutes for the fast jobs, 30 for the two that build images.
+
+## 2026-08-17 — The deploy documents, executed on a real host
+
+A second Debian 13 host with podman 5.4.2, and a hand-run of the four
+`deploy/README.md` sequences that nothing has ever executed: host
+preparation, secrets, first start, and network replacement. Hand-run
+rather than harnessed first, on the reasoning that a real host is the
+scarce resource and the extraction harness can be written anywhere
+afterwards.
+
+**Four of the four procedures are correct as written**, which is worth
+saying as plainly as the failures. `install.sh` is idempotent, seeds
+`app.env` once and preserves it while replacing everything else,
+and creates `/srv/sre-tab/backups` `999:999` mode `0700` — with gid 999
+confirmed as `systemd-journal` on the host the claim is about, which is
+the whole reason for the mode. `create-secrets.sh` takes the secret on
+stdin and the documented invariant holds: the password inside
+`sre-tab-database-url` matches `sre-tab-postgres-password`. First start
+resolves the ordering correctly from cold. The network-replacement
+sequence works including its subtle claim — with the network removed,
+`sre-tab-network.service` still reports `active`, which is exactly why
+the document says to use `podman network rm` rather than stopping the
+unit — and the recreated network puts the range at `.32–.254`, leaving
+Caddy's pinned `.20` outside the pool, so the Phase 3 collision fix is
+intact. `systemctl --failed` stayed empty throughout, which is the
+`NoNewPrivileges` reasoning holding somewhere other than where it was
+written.
+
+**The one wrong claim was the deploy window, and the error was in the
+mechanism rather than the number.** "A sub-second blip while Caddy
+restarts" measured 43.7 seconds. The application was never the slow
+part: it stops answering for 0.5s and is serving again 2.8s in.
+`Notify=healthy` gates on the image's healthcheck, whose first run comes
+one whole interval after start whatever `--start-period` says, and the
+interval was 30s — so systemd waited 32s for a unit that was ready in
+under three, holding Caddy down behind it because Caddy is ordered after
+the application.
+
+The interval had drifted for a structural reason worth recording:
+`sre-tab-db.container` has carried `HealthInterval=10s` in its unit all
+along, while the application's lives in the image. Two definitions in two
+files, and only one of them got tuned. Bringing the image to 10s cuts the
+`systemctl` wait from 35.6s to 15.4s, and was verified by building the
+image on the host and re-measuring rather than by reasoning about it.
+
+**It did not fix the outage, and that is the more useful finding.**
+Total unreachability went only 43.7s → 36.1s, because roughly 20s of it
+happens *after* `systemctl` returns — and that portion grew as the
+healthcheck wait shrank. During it a TCP connect to the published port is
+**black-holed rather than refused**, while Caddy's own log shows it
+serving 50ms after its container starts. So it is neither Caddy booting
+nor the application: something between the published port and the
+container is not carrying traffic yet. Not root-caused, and written down
+as unexplained rather than guessed at.
+
+**The obvious follow-up measurement was malformed, and finding that out
+improved the finding.** The tail was first written up hedged: polling came
+from the host's own loopback, so perhaps an off-host client would not see
+it. There are no off-host clients. `sre-tab-web.container` publishes
+`127.0.0.1:8080:8080` deliberately, because TLS terminates at the host's
+existing proxy — which reaches Caddy over loopback, exactly as the polling
+did. The hedge was backwards: nothing insulates users from this, it
+reaches them as 502s. Opening the port to test it would have measured a
+topology this deployment does not have.
+
+Chasing the mechanism on the host instead was the right spend, and it is
+not conntrack, which was the first guess. Two things serve
+`127.0.0.1:8080`: netavark's hostport DNAT rule to Caddy's pinned
+`10.89.61.20`, and a *reservation* listener podman holds on the same port
+so nothing else claims it — `conmon`, in `ss -lntp`. Probing across a
+restart walks all three states in order: `refused` while both are gone,
+then **accepted and then hung**, then serving. The middle state is the
+tail: the reservation listener takes the connection and never forwards
+it, because the DNAT rule is not back yet. That is why it reads as
+black-holing, and why none of the three services logs anything about it.
+Whether the ordering is fixable from the unit files or is podman's to fix
+is still open — and since `PublishPort=127.0.0.1:8080:8080` is the same
+line orbit-data uses, whatever the answer is applies to both.
+
+The remaining limit is ordinary: a 4-core cloud instance, so the absolute
+numbers are that host's.
+
+The operational conclusion survives every one of those caveats, and is
+now in the document: a deploy is not over when `systemctl` returns, so
+wait for `healthz` rather than the prompt. The documented verification
+step run immediately after a restart fails — which is how this was found,
+because it failed on me.
+
+One contradiction fell out alongside. The Containerfile's header claimed
+`sre-tab.container` sets `HealthCmd=` explicitly and that the deployment
+therefore did not depend on the image's `HEALTHCHECK` surviving an
+OCI-format build. The unit sets no `HealthCmd=`, deliberately, and its own
+comment and CI's both say so. The dependency is total, and the comment
+was reassurance pointing the wrong way.
+
+## 2026-08-17 — The contract, gated at both links
+
+The roadmap's cheap version of the static-OpenAPI item: CI asserting the
+live schema matches the reviewed committed file. It came out smaller than
+the entry costed it and one link larger than the entry described, and both
+differences are the interesting part.
+
+**Smaller, because a drift check is not a serving change.** The item was
+parked on ownership across three files — `app/main.py` is frozen Phase 0
+property, `deploy/Caddyfile` is the only place the served artefact could
+be decoupled from the live app, and the committed artefact lives in
+`frontend/openapi.json`. The check touched neither of the contentious
+two. What the committed document matches the served schema is a property
+of the application, so it belongs in the test suite, next to the
+assertions about the endpoint table that were already there. No CI wiring
+at all for that half.
+
+**One link larger, because there are two committed artefacts, not one.**
+`src/api/schema.d.ts` is generated from `openapi.json`, so the contract
+reaches the client through a two-step chain, and frontend/README.md held
+it together with "regenerate both files in one commit". That sentence was
+the entire enforcement mechanism.
+
+The second link is the one worth having. Skip the first regeneration and
+the committed document is visibly stale. Skip the second and nothing
+looks wrong anywhere: the types stay internally consistent with a
+document that has stopped describing the server, so `tsc` passes —
+faithfully, against the wrong contract. Neither the typecheck nor the
+Python suite could have caught it, because each is correct about the
+thing it can see.
+
+Split by toolchain, so each link is checked where the toolchain for it
+already exists: `tests/test_openapi.py` for the document, a step in the
+`frontend` job for the types. Neither job gained a dependency and no new
+job was created — deliberate, a week after learning that protection lives
+in GitHub's settings and not in a file anyone reviews.
+
+**Avoiding the protection change entirely was the wrong instinct, though,
+and it took saying it out loud to see why.** The job was still called
+`Frontend lint, types, tests, build` while doing something the name did
+not mention, which is the same least-surprise argument the last three
+fixes turned on, pointed at whoever next reads a red cross and tries to
+work out what failed. Keeping a stale name to dodge a settings edit
+optimises for the person making the change over the person debugging it.
+
+So it is `Frontend lint, types, contract, tests, build` now, and the
+required context was updated in the same change, following the procedure
+CONTRIBUTING.md was given for exactly this. Order matters and is worth
+recording: rename, push, let the new context report, *then* rewrite the
+required set. Protection then never names a context that has not
+reported, and the only intermediate state is a pull request waiting —
+which is the safe direction, and the one the broken rule already proved
+the repository survives. Verified afterwards by set-differencing the
+required contexts against the reported ones, not by rereading the rule.
+
+Doing that turned up a limitation in the documented verification command
+itself. It set-differences the required contexts against the check-runs
+on `origin/main`, and while a rename is unmerged `main` has not reported
+the new context — so the command lists it and reads exactly like the
+failure it exists to detect. Comparing against the pull request's head
+instead is empty, which is the true answer; both are now in
+CONTRIBUTING.md, along with why the ordering has to be this way round.
+Rewriting the rule first would leave the required set naming a check
+nothing had ever reported, which is indistinguishable from the broken
+rule until CI next runs.
+
+Measured end to end on #5: all eight required contexts reported and
+passed under the new name, and the request came back `MERGEABLE`.
+`mergeStateStatus` was `UNSTABLE` again, and again it is CodeRabbit
+posting a check outside the required set rather than a protection
+failure.
+
+Two smaller things fell out. The old name appeared in CONTRIBUTING.md
+three times, once as a third copy of the whole context table inside the
+narrative about the broken rule; that copy is now a pointer to the table,
+because a list repeated three times is two opportunities to drift. And
+the rename is annotated in `ci.yml` itself, next to the `name:` — the one
+place someone editing it will actually be looking.
+
+Both were green on the first run, which is the outcome to want: the gate
+pins a property that is true rather than repairing one that is not.
+Mutation-tested on the theme suite's precedent, one per link — a field
+added to `HealthResponse` with no regeneration fails the document test
+and, tellingly, fails nothing else, because the existing endpoint-table
+assertion is about which operations exist and not about their shape; a
+regenerated `openapi.json` with stale types fails the CI step. The first
+mutation attempt was malformed and worth recording: hand-editing
+`schema.d.ts` and then running the check passes, because regeneration
+simply overwrites the edit. That is correct behaviour and a bad test of
+it — the check is for a stale *input*, not a tampered output.
+
+**Review found two holes in the gate, and one of them was the gate's own
+failure mode.** Both bot reviewers independently flagged that `git diff`
+reports tracked files only, so absence reads as agreement: delete the
+committed `schema.d.ts` and the step regenerates it as an untracked file,
+diffs nothing, and goes green — and `tsc` passes too, against the copy
+just written, while a clean checkout would have neither. Reproduced
+before fixing, and the reproduction is the part worth keeping: the job
+went entirely green on a tree that does not build. That is the semgrep
+`p/bash` failure again in a different costume — a gate that checked
+nothing while looking like coverage — which makes it a poor thing to
+have shipped in a change whose entire subject is gates that check
+nothing. `git ls-files --error-unmatch` now asserts the file is tracked
+before the diff is trusted.
+
+The second is smaller and was my claim rather than my code.
+`Path.read_text` applies universal-newline translation, so it decodes a
+CRLF file to the same string as an LF one and reports them equal — while
+the test, this worklog, and CONTRIBUTING.md all said "byte for byte".
+There is no `.gitattributes` pinning line endings here, so a checkout
+with `core.autocrlf` is exactly how that arises. Comparing `read_bytes()`
+makes the stated property true rather than nearly true. Verified by
+rewriting the committed document with CRLF endings and watching the test
+fail, which it did not before.
+
+One documentation claim was falsified in passing. CONTRIBUTING.md said
+`npm run check` was the local equivalent of the `frontend` job, and it no
+longer is: the job now regenerates and diffs, and `check` deliberately
+does not, because a command called `check` should not write to the
+working tree. Amended rather than papered over, along with the asymmetry
+it creates — a response-model change fails locally under `uv run pytest`,
+while forgetting `generate:api` is caught only in CI.
+
+The serving change itself stays on the roadmap. It now has a trustworthy
+artefact to serve, which is the prerequisite it was actually waiting on.
+
 ## 2026-08-17 — Least surprise, applied to two audiences
 
 Three fixes that came out of the filter-model work below, decided by
@@ -70,11 +377,11 @@ rather than left to infer — which is the mistake the entry below records.
 
 ## 2026-08-17 — The filter model under test, and what it exposed
 
-72 Vitest tests over `src/feed/filters.ts` and `src/feed/volume.ts`, the
+73 Vitest tests over `src/feed/filters.ts` and `src/feed/volume.ts`, the
 cheap half of the frontend-coverage item and the half the roadmap said to
 take first. It was right about the ordering for the stated reason — both
 modules import types only, so they needed no DOM, no request mocking, and
-no new dependency — and the suite goes from 114 to 186 tests still running
+no new dependency — and the suite goes from 114 to 187 tests still running
 in under half a second.
 
 The subject is one distinction with three meanings. `null` is "no

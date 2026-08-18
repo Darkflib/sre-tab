@@ -55,6 +55,7 @@ new API is serving an old bundle. One image, one digest, no skew.
 
 ## Host preparation
 
+<!-- docs:run -->
 ```bash
 sudo deploy/install.sh
 ```
@@ -76,14 +77,27 @@ It seeds `/etc/sre-tab/app.env` from `deploy/app.env.example` **once** and
 never overwrites it afterwards. Everything else it installs is replaced on
 every run: keep intentional changes in the repository, not in `/etc`.
 
-Then edit the configuration:
+Then set the configuration. `APP_BASE_URL`, `GITHUB_REDIRECT_URI`,
+`GITHUB_CLIENT_ID`, and `ALLOWED_GITHUB_IDS` all have to be set. By hand:
 
 ```bash
 sudoedit /etc/sre-tab/app.env
 ```
 
-`APP_BASE_URL`, `GITHUB_REDIRECT_URI`, `GITHUB_CLIENT_ID`, and
-`ALLOWED_GITHUB_IDS` all have to be set.
+or non-interactively, which is what a configuration-management run does and
+what this document's own CI execution does:
+
+<!-- docs:run -->
+```bash
+sudo sed -i \
+  -e "s|^APP_BASE_URL=.*|APP_BASE_URL=${APP_BASE_URL:?}|" \
+  -e "s|^GITHUB_REDIRECT_URI=.*|GITHUB_REDIRECT_URI=${APP_BASE_URL:?}/api/v1/auth/github/callback|" \
+  -e "s|^GITHUB_CLIENT_ID=.*|GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:?}|" \
+  /etc/sre-tab/app.env
+```
+
+`ALLOWED_GITHUB_IDS` is not in that list because `app.env.example` already
+ships the operator allow-list, which is the next section's subject.
 
 ### `ALLOWED_GITHUB_IDS` is the first-deploy trap
 
@@ -137,12 +151,16 @@ The database password appears inside `sre-tab-database-url` as well as in
 to lose an afternoon. `create-secrets.sh` generates it once and writes both,
 so they cannot disagree:
 
+<!-- docs:run -->
 ```bash
-sudo deploy/scripts/create-secrets.sh < /path/to/github-client-secret
+sudo deploy/scripts/create-secrets.sh < "${GITHUB_CLIENT_SECRET_FILE:?}"
 ```
 
-The GitHub client secret is read from standard input, never from an argument
-or an environment variable — argv is visible to every process on the host.
+`GITHUB_CLIENT_SECRET_FILE` is the file holding the secret — named as a
+variable rather than written as `/path/to/…` so that this document can be
+executed rather than proofread. The secret is read from standard input, never
+from an argument or an environment variable: argv is visible to every process
+on the host, and the variable above holds a *path*, not the secret itself.
 Delete the file afterwards.
 
 `SESSION_SECRET` matters more than it looks: without it the application
@@ -164,6 +182,7 @@ sudo systemctl restart sre-tab.service sre-tab-migrate.service
 
 ## First start
 
+<!-- docs:run -->
 ```bash
 sudo deploy/install.sh --start
 ```
@@ -173,12 +192,36 @@ the backup timer and restarts all five units in a single `systemctl`
 transaction, which is what makes systemd resolve the ordering between them
 rather than starting them in the order typed.
 
-Verify:
+Verify. Note the wait: `systemctl` returning is not the all-clear, for the
+reasons measured under [Upgrading](#how-long-a-deploy-actually-takes), so
+polling is the correct check rather than a single request:
 
+Every request is bounded, including the ones after the loop. That is not
+belt-and-braces: the state described under Upgrading is a listener that
+*accepts* a connection and never answers, so a `curl` without `--max-time`
+against it waits indefinitely rather than failing.
+
+<!-- docs:run -->
 ```bash
-systemctl status sre-tab-db.service sre-tab.service sre-tab-web.service
-curl --fail http://127.0.0.1:8080/api/v1/healthz
-curl --fail --silent http://127.0.0.1:8080/ | head -5
+systemctl status --no-pager sre-tab-db.service sre-tab.service sre-tab-web.service
+
+ready=false
+for _ in $(seq 1 60); do
+    if curl --fail --silent --max-time 5 --output /dev/null \
+            http://127.0.0.1:8080/api/v1/healthz; then
+        ready=true
+        break
+    fi
+    sleep 2
+done
+if [ "$ready" != true ]; then
+    echo "healthz did not answer within two minutes" >&2
+    exit 1
+fi
+
+curl --fail --silent --max-time 5 http://127.0.0.1:8080/api/v1/healthz
+curl --fail --silent --max-time 10 --output /tmp/sre-tab-index.html http://127.0.0.1:8080/
+head -5 /tmp/sre-tab-index.html
 ```
 
 Quadlet services are transient generated units and cannot be enabled with
@@ -274,10 +317,73 @@ one.
 Take a backup before any upgrade that carries a migration; `alembic
 downgrade` is not a substitute for a restore.
 
-A deploy causes a sub-second blip while Caddy restarts and the assets volume
-is replaced. That is expected for a single-instance self-hosted service. If it
-ever needs to be zero-downtime, the pattern to reach for is orbit-data's
-atomic release symlink rather than a destructive copy.
+### How long a deploy actually takes
+
+This used to say "a sub-second blip while Caddy restarts". That was wrong by
+a factor of about forty, and wrong about the mechanism, which is the part
+worth reading. Measured on Debian 13 with podman 5.4.2, polling
+`/api/v1/healthz` every 100ms across the four-unit restart above:
+
+| | Before | After |
+| --- | --- | --- |
+| `systemctl restart` returns | 35.6s | 15.4s |
+| Service unreachable | 43.7s | 36.1s |
+| …of which is *after* `systemctl` returned | 8.3s | 20.9s |
+
+The application itself is not the slow part: it stops answering for **0.5s**
+and is serving again **2.8s** after the restart begins. Restarting
+`sre-tab.service` alone showed systemd waiting a further **32s** after the
+application was already answering.
+
+That wait was `Notify=healthy` gating on the image's healthcheck, whose first
+run comes one whole interval after start regardless of `--start-period`. The
+interval was 30s in the image while `sre-tab-db.container` had used
+`HealthInterval=10s` in its unit all along — the two definitions live in
+different files, which is how they drifted apart unnoticed. The image is now
+10s too, which is what moves the first row of that table.
+
+**A deploy is not over when `systemctl` returns.** It is the second row that
+matters to anyone watching, and lowering the healthcheck interval does not
+address it: the service stays unreachable for roughly 20s *after* the command
+comes back, while Caddy's own log shows it serving 50ms after its container
+started. So it is neither Caddy booting nor the application.
+
+Two things serve `127.0.0.1:8080`, which is what makes this confusing to
+diagnose. netavark installs a hostport rule —
+`ip daddr 127.0.0.1 tcp dport 8080 dnat ip to 10.89.61.20:8080` — and podman
+separately holds a reservation listener on the same port so nothing else can
+claim it, visible as `conmon` in `ss -lntp`. Probing across a restart walks
+through three states: `refused` while both are gone, then **accepted and then
+hung** — the reservation listener takes the connection and never forwards it,
+because the DNAT rule is not back yet — and finally serving. The tail is that
+middle state, which is why it looks like black-holing from the client and why
+none of the three services' logs mention it.
+
+Whether the ordering can be fixed from the unit files, or is podman's to fix,
+is not yet established.
+
+The measurements were taken from the host's own loopback, which was first
+written up as a caveat — the tail might be a loopback-and-DNAT artefact a
+real client would not see. **It is not a caveat, it is the client path.**
+`sre-tab-web.container` publishes `127.0.0.1:8080:8080` deliberately, because
+TLS is terminated by the host's existing proxy, and that proxy reaches Caddy
+over loopback exactly as the polling did. There is no off-host client of this
+port to compare against, so nothing insulates users from the tail: it is what
+the outer proxy sees, and it reaches them as 502s for the duration.
+
+One caveat does stand: this is a 4-core cloud instance, so the absolute
+figures are that host's, not a constant.
+
+The practical consequence is unchanged by any of it: **wait for `healthz` to
+answer rather than treating the prompt returning as the all-clear.** The
+verification step under *First start* is the right check to run, and running
+it immediately after `systemctl restart` will fail.
+
+None of this is a defect for a single-instance self-hosted service, which
+takes downtime on deploy by design. If it ever needs to be zero-downtime, the
+pattern to reach for is orbit-data's atomic release symlink rather than a
+destructive copy — and the tail above would need root-causing first, because
+it is the larger half.
 
 ### What actually verifies what
 
@@ -345,6 +451,7 @@ not the default.
 nothing until the network object itself is removed, and `podman network reload`
 does not do it either. Containers hold the network, so they come down first:
 
+<!-- docs:run -->
 ```bash
 sudo systemctl stop sre-tab-web.service sre-tab.service sre-tab-db.service
 sudo podman network rm systemd-sre-tab
@@ -352,9 +459,19 @@ sudo deploy/install.sh --start
 ```
 
 Quadlet names the network `systemd-` plus the unit name, hence
-`systemd-sre-tab` rather than `sre-tab`. Confirm the result with
-`podman network inspect systemd-sre-tab`; an upgrade that skips this leaves the
-old, rangeless network in place and the address-collision fix inert.
+`systemd-sre-tab` rather than `sre-tab`. Confirm the result — and note that
+the range must start above Caddy's pinned `.20`, or the address-collision fix
+is inert:
+
+<!-- docs:run -->
+```bash
+sudo podman network inspect systemd-sre-tab \
+    --format '{{range .Subnets}}subnet={{.Subnet}} gateway={{.Gateway}} range={{.LeaseRange}}{{end}}'
+sudo podman network inspect systemd-sre-tab | grep -q '"start_ip": "10.89.61.32"'
+```
+
+An upgrade that skips this leaves the old, rangeless network in place and the
+fix inert.
 
 Note the second step is `podman network rm`, not `systemctl stop
 sre-tab-network.service`. The unit is a `RemainAfterExit` oneshot and stays

@@ -42,17 +42,29 @@ cd frontend && npm run check           # eslint, tsc, vitest, vite build
 ```
 
 `npm test` is `vitest run` — one shot, not the watcher; `npm run test:watch`
-is the watcher. CI runs all four as separate steps, so `npm run check` is the
-local equivalent of the `frontend` job.
+is the watcher. CI runs all four as separate steps, and one thing more: it
+regenerates `src/api/schema.d.ts` and fails on a diff. `npm run check` does
+not, deliberately — a command called `check` should not write to the working
+tree — so it is the local equivalent of the `frontend` job in everything but
+that step.
 
-Three further checks run in CI and are worth knowing about before a change
+Four further checks run in CI and are worth knowing about before a change
 that touches their subject matter:
 
 | Command | Fails when |
 | --- | --- |
 | `deploy/scripts/check-env-example.sh` | a setting exists in `app/settings.py` and not in `.env.example` |
 | `deploy/scripts/check-header-parity.sh` | the security headers in `app/middleware.py` and `deploy/Caddyfile` disagree |
+| `cd frontend && npm run generate:api && git diff --exit-code` | `src/api/schema.d.ts` is older than the `openapi.json` it is generated from |
 | `SRE_TAB_POSTGRES_URL=... uv run pytest tests/postgres` | a PostgreSQL-only path breaks |
+
+The API contract reaches the client through two committed artefacts, and
+each is checked where the toolchain for it already exists. `uv run pytest`
+covers the first — `tests/test_openapi.py` compares `frontend/openapi.json`
+against the schema the application serves, byte for byte. The table's third
+row covers the second. Change a response model without regenerating and the
+first fails locally; regenerate `openapi.json` without regenerating the types
+and only CI notices, which is the asymmetry to keep in mind.
 
 `tests/postgres/` skips silently without `SRE_TAB_POSTGRES_URL`, which is why
 CI supplies one. The three things it reaches that SQLite cannot are
@@ -86,10 +98,41 @@ verbatim rather than against a renamed copy.
 ## Documentation is executed, not proofread
 
 `.github/workflows/docs.yml` runs the README's quickstart on a clean checkout
-on every push. This is not decoration. Two documented procedures in this
-repository have been wrong while reading perfectly: `install.sh --start`
-never recreated a removed network, and the upgrade procedure was wrong as
-written. Both were found by running them on Linux, not by reviewing them.
+on every push. This is not decoration. Several documented procedures here have
+been wrong while reading perfectly: `install.sh --start` never recreated a
+removed network, the upgrade procedure was wrong as written, and
+`deploy/README.md` described a deploy as a "sub-second blip" that measured
+43.7 seconds. All were found by running them on Linux, not by reviewing them.
+
+### `deploy/README.md` is executable, but not by CI
+
+Its procedures carry the same `docs:run` markers and run end to end — but on
+a Debian 13 host with podman 5.4.2, not on a GitHub runner. Ubuntu's `conmon`
+is built without journald support, and the three long-running units set
+`LogDriver=journald` deliberately, so `sre-tab-web.service` dies with
+`conmon failed: exit status 1` before anything is tested. Overriding
+`LogDriver` for CI would make it pass over a deployment other than the one
+that ships, and a green gate on the wrong artefact is worse than no gate.
+
+On a throwaway Debian host, as root:
+
+```sh
+export APP_BASE_URL=http://127.0.0.1:8080
+export GITHUB_CLIENT_ID=not-a-real-oauth-app
+export GITHUB_CLIENT_SECRET_FILE=/tmp/github-client-secret
+umask 077 && printf 'not-a-real-secret' > "$GITHUB_CLIENT_SECRET_FILE"
+python3 .github/scripts/run-doc-examples.py deploy/README.md --root .
+```
+
+`--root .` because the document's commands are written to run from the
+repository root. **Throwaway** is meant literally: this installs to `/etc`,
+creates podman secrets, and starts the stack.
+
+The sequence is once-only per host, because `create-secrets.sh` refuses to run
+against an existing database password. Re-running it means removing the
+secrets, the volumes, *and* the containers first — removing only the secrets
+leaves a database whose password nobody holds, which is exactly what that
+guard exists to prevent.
 
 The commands are extracted from `README.md` rather than copied into the
 workflow, because a copy drifts and then the workflow protects nothing. A
@@ -154,7 +197,7 @@ actually matches on, not the job key in the workflow:
 | `PostgreSQL integration` | `ci.yml` / `postgres` | the PostgreSQL-only suite against a service container |
 | `Dependency audit` | `ci.yml` / `audit` | `pip-audit` over the locked dependency set, and `npm audit` over the client's |
 | `Static analysis` | `ci.yml` / `sast` | Semgrep, guarded against a run that scans nothing |
-| `Frontend lint, types, tests, build` | `ci.yml` / `frontend` | eslint, tsc, the Vitest suite, vite build |
+| `Frontend lint, types, contract, tests, build` | `ci.yml` / `frontend` | eslint, tsc, the generated API types against the committed document, the Vitest suite, vite build |
 | `Container build and deployment smoke` | `ci.yml` / `container` | image build, Caddyfile validation, Quadlet generation, the deployment smoke test |
 | `README quickstart runs on a clean checkout` | `docs.yml` / `quickstart` | the README's own commands, executed |
 | `Relative links resolve` | `docs.yml` / `links` | every relative link and image in the docs |
@@ -182,11 +225,9 @@ created, and has now been fixed.**
 
 It was configured with the job *keys* — `python`, `postgres`, `audit`,
 `frontend`, `container`. Every check-run this repository reports is a display
-name: `Format, lint, types, security, tests`, `PostgreSQL integration`,
-`Dependency audit`, `Static analysis`, `Frontend lint, types, tests, build`,
-`Container build and deployment smoke`, plus the two from the Docs workflow.
-The two sets did not intersect, so every required context named a check that
-had never reported and never could.
+name: the table above is the current list, and no key appears in it. The two
+sets did not intersect, so every required context named a check that had
+never reported and never could.
 
 It failed safe — a pull request waits on a status that never arrives rather
 than merging unchecked — but the real checks were not required either, and
@@ -239,7 +280,7 @@ gh api -X PATCH repos/Darkflib/sre-tab/branches/main/protection/required_status_
   -f 'contexts[]=PostgreSQL integration' \
   -f 'contexts[]=Dependency audit' \
   -f 'contexts[]=Static analysis' \
-  -f 'contexts[]=Frontend lint, types, tests, build' \
+  -f 'contexts[]=Frontend lint, types, contract, tests, build' \
   -f 'contexts[]=Container build and deployment smoke' \
   -f 'contexts[]=README quickstart runs on a clean checkout' \
   -f 'contexts[]=Relative links resolve'
@@ -260,6 +301,26 @@ Empty output means every required context is a check that actually reports.
 Anything listed is a context waiting on a check that will never arrive — which
 is the failure this section exists to describe, and the only way to be sure it
 is absent is to look for it.
+
+**While a rename is still in flight, compare against the pull request's head
+instead.** `main` has not reported the new context yet — that is the whole
+point of the change being unmerged — so the command above lists it and reads
+exactly like the failure it is meant to detect. Substituting the head commit
+distinguishes the two:
+
+```sh
+sha=$(gh pr view <number> --json headRefOid --jq .headRefOid)
+```
+
+This is also the ordering to follow, because it never leaves protection
+naming a context that has not reported anywhere: rename the job, push, let
+the new context report on the pull request, *then* rewrite the required set,
+*then* verify against that head. The intermediate state is a pull request
+waiting on a context that will never arrive, which is safe — it blocks a
+merge rather than allowing an unchecked one — and it clears the moment the
+required set is rewritten. Doing it the other way round, rewriting the rule
+first, leaves the required set naming a check nothing has ever reported,
+which is indistinguishable from the broken rule until CI next runs.
 
 ## Commits and pull requests
 
