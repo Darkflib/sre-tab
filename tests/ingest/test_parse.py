@@ -13,6 +13,7 @@ from app.ingest.errors import (
     UnsupportedFeedFormatError,
 )
 from app.ingest.parse import (
+    MAX_ATTRIBUTES_PER_ELEMENT,
     MAX_ELEMENTS,
     MAX_ENTRIES,
     MAX_ENTRY_ELEMENTS,
@@ -170,6 +171,35 @@ def test_an_element_bomb_with_no_entries_is_refused() -> None:
     """
     with pytest.raises(DocumentTooComplexError):
         parse_feed(_rss("<a><b/></a>" * MAX_ELEMENTS))
+
+
+def test_an_attribute_bomb_on_one_element_is_refused() -> None:
+    """The bound that stops a stall rather than an allocation.
+
+    feedparser is quadratic in the attribute count of a single element:
+    20,000 attributes on one tag is 0.21 MB and 2.27s, and 60,000 is
+    0.65 MB and 21.3s — an eighth of a permitted body stopping a serial
+    refresh cycle for twenty seconds. Node counting does not see it,
+    because there is only one element; the streaming gate reaches the
+    same 60,000 attributes in 0.03s, so the gate is where it belongs.
+    """
+    attributes = " ".join(f'a{n}="v"' for n in range(MAX_ATTRIBUTES_PER_ELEMENT + 1))
+    with pytest.raises(DocumentTooComplexError):
+        parse_feed(_rss(f"<item {attributes}><link>https://example.org/x</link></item>"))
+
+
+def test_ordinary_attribute_use_is_unaffected() -> None:
+    """The cap has to be invisible to anything real.
+
+    `<enclosure>` is the usual reason an entry carries attributes at all,
+    and three of them is the shape of a podcast feed rather than an
+    attack.
+    """
+    body = _rss(
+        "<item><title>x</title><link>https://example.org/x</link>"
+        "<enclosure url='https://example.org/a.mp3' length='1' type='audio/mpeg'/></item>"
+    )
+    assert len(parse_feed(body).entries) == 1
 
 
 def test_a_large_but_legitimate_feed_still_parses() -> None:

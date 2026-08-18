@@ -46,13 +46,28 @@ MAX_ENTRIES = 500
 #: while a document built to be expensive stops at the gate.
 MAX_ENTRY_ELEMENTS = MAX_ENTRIES * 10
 
-#: Bound on total elements, and the one that actually does the work.
-#: Entry count alone does not bound a DOM parser: a body made of a
-#: million tiny non-entry elements has no entries at all and still costs
-#: the same allocation. Measured at roughly 350 bytes of process memory
-#: per element, so this ceiling is about 35 MB against a unit capped at
-#: MemoryMax=768M.
+#: Bound on total nodes — elements *and* attributes. Entry count alone
+#: does not bound a DOM parser: a body made of a million tiny non-entry
+#: elements has no entries at all and still costs the same allocation.
+#: Measured at roughly 350 bytes of process memory per element, so this
+#: ceiling is about 35 MB against a unit capped at MemoryMax=768M.
 MAX_ELEMENTS = 100_000
+
+#: Bound on attributes carried by any single element, and the one that
+#: stops a *time* attack rather than a memory one.
+#:
+#: feedparser is quadratic in the attribute count of one element, so a
+#: document far inside every other limit here buys a very long stall:
+#: 20,000 attributes on one tag is 0.21 MB and 2.27s, and 60,000 is
+#: 0.65 MB and 21.3s — against a 5 MiB fetch cap and a serial refresh
+#: loop, which is the whole cycle stopped by an eighth of a permitted
+#: body. Counting nodes does not catch it, because there is only one
+#: element. The streaming gate is the right place: it reaches the same
+#: 60,000 attributes in 0.03s, so the cost is real only downstream.
+#:
+#: 256 is far past anything real — feeds use a handful per tag — and
+#: leaves the quadratic nothing to work with.
+MAX_ATTRIBUTES_PER_ELEMENT = 256
 
 _BOM = b"\xef\xbb\xbf"
 
@@ -114,11 +129,24 @@ def assert_safe_document(content: bytes) -> None:
             if event == "start":
                 if root is None:
                     root = element
+                # Checked on ``start`` rather than ``end``: expat delivers a
+                # tag's attributes with its opening event, so this refuses
+                # the document at the first offending tag instead of after
+                # everything inside it has been walked.
+                if len(element.attrib) > MAX_ATTRIBUTES_PER_ELEMENT:
+                    raise DocumentTooComplexError(
+                        f"element <{element.tag}> carries more than "
+                        f"{MAX_ATTRIBUTES_PER_ELEMENT} attributes"
+                    )
                 continue
 
-            elements += 1
+            # Attributes count towards the node budget as well as against
+            # their own per-element cap: a hundred thousand elements with
+            # a hundred attributes each is inside both individual limits
+            # and outside anything this should parse.
+            elements += 1 + len(element.attrib)
             if elements > MAX_ELEMENTS:
-                raise DocumentTooComplexError(f"document has more than {MAX_ELEMENTS} elements")
+                raise DocumentTooComplexError(f"document has more than {MAX_ELEMENTS} nodes")
             # Namespace-insensitive: RSS puts items in no namespace, Atom
             # puts entries in one, and a feed is free to declare either.
             if element.tag.rpartition("}")[2] in ("item", "entry"):

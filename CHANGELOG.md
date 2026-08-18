@@ -149,6 +149,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `MAX_ELEMENTS` or `MAX_ENTRY_ELEMENTS`: 0.01 seconds and 1 MB for the
   same feed. Entry count alone would not have been enough, since a
   document of tiny non-entry elements has no entries and costs the same.
+  Attributes are capped per element separately, because that one bounds
+  a stall rather than an allocation: feedparser is quadratic in the
+  attribute count of a single tag, so 0.65 MB carrying 60,000 attributes
+  on one element — inside every other limit, and an eighth of a permitted
+  body — stopped a refresh cycle for 21 seconds. The gate reaches the
+  same document in 0.03s, so the cost was only ever downstream of it.
 - **DNS resolution is inside the fetch deadline.** `getaddrinfo` takes no
   timeout and ignores `socket.setdefaulttimeout`, and was called before
   anything consulted the clock — bounded by `resolv.conf` rather than

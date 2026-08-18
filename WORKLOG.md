@@ -127,6 +127,25 @@ wrong. Worth recording that the guard against "a backup of an empty
 database" shipped, in its first form, with two paths that produced
 exactly that.
 
+**And the parser bound had a hole, found by probing the fix rather than
+the original.** Counting nodes bounds memory and says nothing about
+time. feedparser is quadratic in the attribute count of a *single*
+element, so a document with four elements and 380,000 attributes on one
+of them sailed through a ceiling built for a million tiny tags: 20,000
+attributes is 0.21 MB and 2.27s, 60,000 is 0.65 MB and 21.3s, and the
+5 MiB version ran for minutes. An eighth of a permitted body stopping a
+serial refresh cycle for twenty seconds is a better attack than the one
+that started this. The streaming gate reaches the same 60,000 attributes
+in 0.03s, which is what makes it the right place to refuse them — the
+expense is entirely downstream. Capped at 256 per element, far past
+anything real, and the 5 MiB bomb now stops in 0.24s.
+
+The general lesson is the one this repository keeps relearning in
+different clothes: a limit bounds the quantity it counts and nothing
+else. `MAX_ENTRIES` bounded rows and not the parse; the node ceiling
+that replaced it bounded allocation and not time. Both looked like
+"the parser is bounded" from the outside.
+
 ## 2026-08-18 — The deploy documents, now executed by CI too
 
 The harness half, after the hand-run below. `docs.yml` gained a
