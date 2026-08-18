@@ -101,6 +101,32 @@ and the deploy template's allow-list emptied, since it shipped three real
 GitHub accounts directly underneath a banner explaining that empty is the
 correct fail-closed default.
 
+**The backup-timer fix was itself wrong, and review caught it.** A trap on
+`INT`/`TERM` runs its handler and then carries on from where the signal
+landed — it does not exit. Sharing one handler with `EXIT`, which is what
+the first version did, therefore released the timer and continued
+straight into `DROP DATABASE` with the schedule live again, ran the
+handler a second time on the way out, and returned 0. Ctrl-C during a
+restore was the one input that reopened the window the pause exists to
+close, and it reported success while doing it:
+
+    === first version ===        === after ===
+    paused timer                 paused timer
+    TIMER RESTARTED              TIMER LEFT STOPPED (restore incomplete)
+    REACHED DROP DATABASE        exit=130
+    TIMER RESTARTED
+    exit=0
+
+Fixing that surfaced a second one nobody had reported, and broader: the
+`EXIT` trap re-armed the timer on *every* exit, so a failed `pg_restore`
+also handed the next scheduled backup an empty database. Releasing the
+schedule is now conditional on the restore having been verified, and when
+it has not been the timer is left stopped with an instruction rather than
+silently — a schedule disabled forever being the other way to get this
+wrong. Worth recording that the guard against "a backup of an empty
+database" shipped, in its first form, with two paths that produced
+exactly that.
+
 ## 2026-08-18 — The deploy documents, now executed by CI too
 
 The harness half, after the hand-run below. `docs.yml` gained a
