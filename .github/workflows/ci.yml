@@ -4,13 +4,34 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Nothing here is triggered by the passage of time, and several of these
+  # jobs answer questions whose answer changes without a commit: a new CVE
+  # against a pinned dependency, a base image that has moved underneath the
+  # digest we build from, an action yanked from the marketplace, a cosign
+  # verification that stops passing. Between pushes this repository is
+  # silent about all of it, which is precisely the wrong behaviour for a
+  # project that goes weeks without a commit. A weekly run makes the gate
+  # report on the world as well as on the diff.
+  #
+  # Note the one thing this cannot do for itself: GitHub disables scheduled
+  # workflows on a repository with no activity for 60 days, and emails the
+  # owner rather than failing loudly. Sixty quiet days therefore turns this
+  # off, and re-enabling it is a manual step.
+  schedule:
+    - cron: "17 6 * * 1"
+  # Manual runs so an operator returning to the project can ask the same
+  # question on demand rather than waiting for Monday.
+  workflow_dispatch:
 
 # Least privilege by default; the one job that needs more asks for it.
 permissions:
   contents: read
 
+# Keyed on the event as well as the ref: without that, a scheduled run on
+# main shares a group with a push to main, and `cancel-in-progress` lets the
+# timer cancel a publish.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

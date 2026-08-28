@@ -77,6 +77,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   on every push. Two documented procedures here have been wrong while
   reading perfectly, so the documentation is executed rather than
   proofread.
+- Both workflows now also run weekly and on demand, not only on a diff.
+  The dependency audit, the container build, and the executed quickstart
+  all answer questions whose answer changes with no commit behind it — a
+  newly published CVE, a base image that moved, an upstream the
+  quickstart calls — and a gate wired only to pushes is silent about all
+  of them between commits.
 
 ### Changed
 
