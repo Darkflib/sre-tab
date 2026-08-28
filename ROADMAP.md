@@ -92,6 +92,7 @@ is about the pipeline, not the code.
   deserves a look at *which* step failed before anyone concludes the change
   broke something.
 
+<a id="security-findings-this-deployment-absorbs"></a>
 ## Security findings this deployment absorbs
 
 Raised by the external review on 18 August, checked against the code rather

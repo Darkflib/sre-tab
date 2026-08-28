@@ -132,6 +132,57 @@ removed network, the upgrade procedure was wrong as written, and
 `deploy/README.md` described a deploy as a "sub-second blip" that measured
 43.7 seconds. All were found by running them on Linux, not by reviewing them.
 
+### Linking to a heading requires an explicit anchor
+
+A link into the middle of a document has two halves and they rot at different
+rates. The path half breaks when a file moves, which is rare. The fragment
+half breaks when a heading is reworded, which happens here constantly — every
+roadmap entry that lands gets its heading rewritten — and it breaks *quietly*,
+because GitHub still serves the page and simply ignores an anchor it does not
+recognise. The reader lands at the top of a 30KB document and has no way to
+know they were sent somewhere specific.
+
+So a fragment must name an anchor the target document declares, in exactly
+this shape:
+
+```markdown
+<a id="branch-protection"></a>
+## Branch protection
+```
+
+Column zero, its own line, immediately above the heading, and unique within
+the file. `python3 .github/scripts/check-doc-links.py` enforces all of it and
+runs in the `Docs` workflow.
+
+**The anchors are declared rather than computed, and that is the whole
+point.** GitHub derives a heading's anchor with an algorithm that is not a
+documented contract, and the obvious reimplementation of it is wrong:
+measured against GitHub's own render of this repository,
+`## 2026-08-17 — Phase 0 foundation` becomes `#2026-08-17--phase-0-foundation`
+— the em-dash is stripped and each space around it becomes its own hyphen,
+because whitespace is replaced one-for-one rather than collapsed. A checker
+that collapsed it would agree with the wrong link and pass it. That is a
+false pass, and a false pass is the specific way this repository keeps
+getting hurt. Declaring the anchor makes the check an exact string match
+against something we own.
+
+Two consequences worth having on purpose. Adding these breaks nothing, because
+GitHub still generates its heading anchors as well and rewrites a declared id
+into the same `user-content-` namespace, so both forms resolve. And a declared
+id is stable across rewording, so a heading can be rewritten without breaking
+inbound links from commit messages, issues, and pull requests — none of which
+would ever tell you they had broken.
+
+The shape is fixed so that abandoning the convention is cheap:
+
+```sh
+git grep -n '^<a id="' -- '*.md'
+```
+
+finds every one, and a single `sed` over those files deletes them. That sweep
+also catches the worked example above, which is correct — undoing the
+convention means removing the paragraph that explains it.
+
 ### `deploy/README.md` is executable, but not by CI
 
 Its procedures carry the same `docs:run` markers and run end to end — but on
@@ -214,6 +265,7 @@ manual pass on a real Linux host. Treat prose in that file as load-bearing
 and unverified unless it says otherwise — several sections say exactly which
 parts have been run and which have not.
 
+<a id="branch-protection"></a>
 ## Branch protection
 
 `main` is protected. Eight checks are required. They are listed here by the

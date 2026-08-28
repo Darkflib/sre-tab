@@ -39,6 +39,7 @@ yourself:
 The full framing, scope, and acceptance criteria are in
 [prd-v1.md](prd-v1.md).
 
+<a id="quickstart"></a>
 ## Quickstart
 
 Python 3.12+, [uv](https://docs.astral.sh/uv/), and Node 20.19+. Nothing
@@ -160,6 +161,7 @@ enabled source is failing so a monitoring job can call it and mean it.
   SQLite there is no advisory-lock equivalent, so the lock degrades to
   process-local and logs a warning once at start-up rather than pretending.
 
+<a id="the-two-things-that-look-like-bugs"></a>
 ## The two things that look like bugs
 
 Both are correct behaviour. Both are indistinguishable from a fault if you
