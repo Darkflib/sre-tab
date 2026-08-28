@@ -57,6 +57,27 @@ Semgrep gate that had scanned nothing.
 No job `name:` changed, so the eight required status checks are untouched —
 the trap CONTRIBUTING.md documents at length.
 
+**And the filing itself overstated one of the five, which review caught.**
+The superuser entry said `COPY … PROGRAM` gives "command execution on the
+database host". It does not. `COPY … PROGRAM` runs under the postmaster, and
+the postmaster is uid 999 inside `sre-tab-db.container` — `ReadOnly=true`,
+`DropCapability=all` bar the five the entrypoint's chown needs, no published
+port, reachable only from `sre-tab.network`. The blast radius is that
+container, its data volume, and the internal network; the host needs an
+escape this deployment does not provide. Corrected, with the bound stated
+from the unit file rather than assumed, and with one honest gap left open:
+`NoNewPrivileges` is unset on this unit alone, so whether uid 999 can regain
+root *inside* the container is untested.
+
+Worth recording that the wrong number came from carrying the review's
+framing forward instead of re-deriving it — the same failure mode the
+18 August entry congratulates itself for avoiding on the traceback finding,
+two paragraphs after doing it here. AGENTS.md's rule is that a claim with no
+measurement behind it is unsupported whoever wrote it, and that applies to a
+severity as much as to a benchmark. An overstated finding is not a safe
+error in the cautious direction: it distorts what gets fixed first, and it
+teaches the reader to discount the next one.
+
 **One stale claim in the README, found while checking the rest.** "Known
 gaps" said nothing covered the feed or the filters, which stopped being true
 when the 73 filter and volume tests landed. Corrected to name what is

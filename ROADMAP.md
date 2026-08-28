@@ -111,21 +111,42 @@ severity at that moment, and the first item does not depend on the operator
 count at all.
 
 - **The application connects to PostgreSQL as a superuser.** The one item
-  here with real cost, and the one whose severity the operator count does
-  not cap. `sre-tab-db.container` sets `POSTGRES_USER=sretab`, which the
-  official image creates as the cluster superuser, and the application,
-  the migration unit, and the backup all share the single `DATABASE_URL`
-  secret. An application-level SQL injection therefore does not stop at
-  reading the tables: `COPY … PROGRAM` is available to a superuser, which
-  makes it command execution on the database host. Nothing currently
-  reachable gets there — the query layer is SQLAlchemy Core throughout with
-  no string-built SQL — so this is a severity multiplier on a bug that does
-  not exist yet rather than a live hole. Closing it means at least three
-  roles rather than one: DDL for `alembic upgrade`, DML for the application,
-  and read for the dump. That touches the migration unit, `restore.sh`'s
-  ownership handling, and `smoke.sh`, which is why it is filed rather than
-  fixed, and why it should be done deliberately rather than squeezed into
-  an unrelated change.
+  here whose severity the operator count does not cap. `sre-tab-db.container`
+  sets `POSTGRES_USER=sretab`, which the official image creates as the
+  cluster superuser, and the application, the migration unit, and the backup
+  all share the single `DATABASE_URL` secret. An application-level SQL
+  injection therefore does not stop at reading the tables: `COPY … PROGRAM`
+  is available to a superuser, and it executes commands.
+
+  **Where those commands run is the part worth stating precisely, because
+  the first draft of this entry got it wrong and said "the database host".**
+  `COPY … PROGRAM` runs under the postmaster, and the postmaster here is
+  uid 999 inside `sre-tab-db.container`, which is `ReadOnly=true`, has
+  `DropCapability=all` with five capabilities added back for the
+  entrypoint's chown, publishes no port, and is reachable only from
+  `sre-tab.network`. So the blast radius is the database container and what
+  it can reach — the data volume, the three tmpfs mounts, and the internal
+  network — and reaching the host needs a container escape this deployment
+  does not hand anyone. One nuance in the other direction, recorded as an
+  open question rather than an answer: `NoNewPrivileges` is deliberately
+  unset on this unit alone, for the AppArmor reason documented at length in
+  the file, so whether uid 999 can regain root *inside* the container has
+  not been tested. Even container-root holds only those five capabilities
+  against a read-only rootfs.
+
+  That is a smaller finding than "command execution on the host" and a
+  larger one than nothing: an attacker who reaches it reads and writes every
+  row, including sessions, and gets a foothold on the internal network. And
+  nothing currently reachable gets there at all — the query layer is
+  SQLAlchemy Core throughout with no string-built SQL — so this is a
+  severity multiplier on a bug that does not exist yet rather than a live
+  hole.
+
+  Closing it means at least three roles rather than one: DDL for
+  `alembic upgrade`, DML for the application, and read for the dump. That
+  touches the migration unit, `restore.sh`'s ownership handling, and
+  `smoke.sh`, which is why it is filed rather than fixed, and why it should
+  be done deliberately rather than squeezed into an unrelated change.
 - **The OAuth state cookie can be overwritten from a sibling subdomain.**
   `set_state_cookie` scopes to `/api/v1/auth` with `HttpOnly`, `SameSite=Lax`,
   and `Secure`, which is careful about everything except *which host* may

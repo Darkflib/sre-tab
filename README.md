@@ -255,9 +255,11 @@ not been demonstrated, which is a different thing from being tested.
   assumption behind each is written down next to it in
   [ROADMAP.md](ROADMAP.md#security-findings-this-deployment-absorbs). The one
   that does not depend on the operator count is that the application connects
-  to PostgreSQL as a superuser, which turns any future SQL injection into
-  command execution on the database host. Read that section before adding an
-  operator, a second instance, or a route that accepts a feed URL.
+  to PostgreSQL as a superuser, which would turn any future SQL injection
+  into command execution inside the database container — bounded there by
+  that unit's hardening, and not the same thing as the host. Read that
+  section before adding an operator, a second instance, or a route that
+  accepts a feed URL.
 
 [ROADMAP.md](ROADMAP.md) is the full list of what was deliberately deferred
 and why.
