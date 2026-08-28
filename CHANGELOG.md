@@ -77,6 +77,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   on every push. Two documented procedures here have been wrong while
   reading perfectly, so the documentation is executed rather than
   proofread.
+- Explicit anchors for every linked-to heading, and a `Docs` check that
+  enforces them. A link's fragment must name an `<a id="name"></a>` the
+  target document declares at column zero on its own line; the check is an
+  exact string match rather than a reimplementation of GitHub's heading-slug
+  rule, which is not a documented contract and which the obvious
+  implementation gets wrong. Seven anchors added, nothing renamed: GitHub
+  still generates its own heading anchors, so every existing link keeps
+  working, and a declared id now survives the heading being reworded.
 - Both workflows now also run weekly and on demand, not only on a diff.
   The dependency audit, the container build, and the executed quickstart
   all answer questions whose answer changes with no commit behind it — a

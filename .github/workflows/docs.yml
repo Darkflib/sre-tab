@@ -105,27 +105,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # Cheap, and it catches the class of breakage a moved file causes:
-      # every relative link and image in the front-door documents has to
-      # point at something that exists. External URLs are not fetched —
-      # that would make the gate depend on other people's uptime.
+      # Cheap, and it catches both halves of the breakage a link can
+      # suffer: a moved file, and a reworded heading. External URLs are not
+      # fetched — that would make the gate depend on other people's uptime.
+      #
+      # The fragment half is checked against declared anchors rather than
+      # against slugs computed from heading text; the script's docstring
+      # says why at length, and the short version is that reimplementing
+      # GitHub's slug rule fails towards a false pass.
+      #
+      # The job name is deliberately unchanged. It is one of the eight
+      # required status checks, and GitHub keys those on the check-run
+      # context — renaming this silently empties the requirement, which is
+      # the trap CONTRIBUTING.md documents.
       - name: Every relative link and image target exists
-        run: |
-          set -euo pipefail
-          rc=0
-          for doc in README.md CONTRIBUTING.md ROADMAP.md deploy/README.md; do
-            while read -r target; do
-              case "$target" in
-                http://*|https://*|mailto:*|'#'*|'') continue ;;
-              esac
-              # Strip any anchor: the file has to exist, the fragment is
-              # not something this can check without parsing headings.
-              path="${target%%#*}"
-              [ -n "$path" ] || continue
-              if [ ! -e "$(dirname "$doc")/$path" ]; then
-                echo "$doc: broken relative link: $path"
-                rc=1
-              fi
-            done < <(grep -oE '\]\([^)]+\)' "$doc" | sed -E 's/^\]\(//; s/\)$//')
-          done
-          exit "$rc"
+        run: python3 .github/scripts/check-doc-links.py

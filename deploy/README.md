@@ -324,6 +324,7 @@ one.
 Take a backup before any upgrade that carries a migration; `alembic
 downgrade` is not a substitute for a restore.
 
+<a id="how-long-a-deploy-actually-takes"></a>
 ### How long a deploy actually takes
 
 This used to say "a sub-second blip while Caddy restarts". That was wrong by
@@ -705,6 +706,7 @@ Podman secret plumbing, and the timer firing. CI validates unit *generation*
 with `podman-system-generator --dryrun`, which catches malformed keys but not
 runtime behaviour.
 
+<a id="seeding-the-catalogue-and-the-operator-cli"></a>
 ## Seeding the catalogue, and the operator CLI
 
 The database starts with no sources and no topics, so a freshly migrated

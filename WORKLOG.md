@@ -3,6 +3,107 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-28 — Anchors declared rather than computed
+
+The `Docs` link check verified half of what a link is. It confirmed the file
+existed and stripped the fragment, with a comment saying fragments were not
+checkable without parsing headings. That comment was true about the *method*
+and wrong about the *conclusion*: parsing headings is five lines, and the
+actual work is the slug rule.
+
+**Which is where this got interesting.** GitHub's heading anchors come from
+an algorithm that is not a documented contract, and the obvious
+reimplementation is wrong. Measured against GitHub's own render of this
+repository, `## 2026-08-17 — Phase 0 foundation` is served as
+`#2026-08-17--phase-0-foundation` — the em-dash is stripped and each space
+around it becomes its own hyphen, because whitespace is replaced one-for-one
+rather than collapsed. The version of this checker written first collapsed
+whitespace. It agreed with all five anchors then in the tree, which is the
+only reason it looked right: every one of them pointed at a
+punctuation-free heading. Every WORKLOG.md heading would have broken it, and
+it would have broken by *agreeing with a wrong link* — a false pass, on a
+gate whose whole job is catching a silent failure.
+
+So the fragment is not computed. It is declared:
+
+    <a id="branch-protection"></a>
+    ## Branch protection
+
+Column zero, its own line, unique within the file, and the check is an exact
+string match against something this repository owns. No third-party
+algorithm anywhere in it. The shape is fixed so that abandoning the
+convention costs one `sed`, which is the property that made it worth adopting
+rather than merely correct.
+
+Two things fall out for free. GitHub still emits its generated heading
+anchors and rewrites a declared id into the same `user-content-` namespace,
+so adding these broke no existing link — verified against the live render.
+And a declared id survives its heading being reworded, which matters here
+specifically: every roadmap entry that lands gets its heading rewritten, and
+every such rewrite currently invalidates inbound links from commit messages,
+issues, and pull requests, none of which would ever report it.
+
+**The checker found a real defect on its first run, in the document that
+introduces it.** The worked example in CONTRIBUTING.md declares
+`<a id="branch-protection"></a>` inside a fenced block, which collided with
+the real one twelve lines above. Fenced content is an example of the
+convention, not a use of it, and the same reasoning turned out to apply to
+inline code spans — a backticked `[label](path.md)` is showing syntax, and
+checking it produces a failure the author cannot fix without rewriting the
+sentence. Both are now skipped.
+
+**The gate is tested, because a gate that cannot go red is decoration.**
+`tests/test_doc_links.py` drives the script against a throwaway git
+repository through all six behaviours: unknown fragment, missing file,
+duplicate id, an indented anchor not counting as a declaration, fenced and
+inline examples being ignored, and parent-relative paths resolving. Then the
+implementation was mutated three ways to confirm the tests notice — dropping
+fence handling, dropping the fragment check, and loosening the column-zero
+constraint.
+
+Worth recording that the third mutation appeared to survive, which read
+exactly like a test gap and was nothing of the sort: the shell quoting in the
+mutation command had mangled the substitution, so the file was unchanged and
+the tests were right to pass. Applied properly, it fails. The near-miss is
+the point — "the test did not catch my mutation" and "my mutation did not
+happen" look identical from the outside, and only one of them is a finding.
+
+The convention is recorded in CONTRIBUTING.md with the reasoning and in
+AGENTS.md as a standing rule, since the failure it prevents is one an agent
+adding a cross-reference would otherwise walk straight into.
+
+**Review found two more, and one of them was already live.** Both bots
+raised the same pair independently, and both were right.
+
+The fence handling toggled on any line starting with three backticks. That
+is not what a fence is. CONTRIBUTING.md documents the `docs:run` marker
+inside a ````-delimited block containing two ``` blocks — and against that
+block the parser was reading `uv sync` and the uvicorn command as *prose*.
+It recovered by luck, the toggles being even, so nothing downstream
+desynchronised and nothing failed; a link or an anchor inside that example
+would have been misread. The other half of the same defect is worse: an
+indented ``` is an indented code block rather than a fence, and treating it
+as one leaves the parser inside a block that never closes, silently skipping
+every line after it. That is a false pass, and on this gate specifically.
+Fences now track the opening marker's character and length and close only on
+a compatible one, which is what CommonMark actually specifies.
+
+The second was adjacency. The convention says the anchor sits immediately
+above its heading and CONTRIBUTING.md claimed the script enforced "all of
+it", which was not true — any `^<a id="…">` line counted, wherever it sat.
+That matters because a detached anchor still *works*: the browser scrolls to
+wherever it is. So when a heading moves and the anchor is left behind, every
+link to it keeps resolving and starts pointing at the wrong content, with
+nothing to report. That is the exact failure this convention exists to
+prevent, reappearing one level up — the same shape as the roadmap's recurring
+lesson that a limit bounds the quantity it counts and nothing else. A
+declaration is now only a declaration if a heading is on the next physical
+line, and the claim in CONTRIBUTING.md is true as written.
+
+Both fixes have regression tests, and both were mutation-tested: reverting
+to the naive toggle fails the two fence tests, and removing the adjacency
+check fails the detached-anchor test.
+
 ## 2026-08-28 — Filing the deferred findings, and a gate that runs without a diff
 
 No behaviour changed. This is bookkeeping, and the kind that stops being

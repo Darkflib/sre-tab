@@ -27,6 +27,7 @@ service or surrendering their preferences and reading history to it.
 5. Be straightforward to self-host on one machine initially and migrate to
    PostgreSQL for production.
 
+<a id="non-goals-for-v1"></a>
 ## Non-goals for v1
 
 - Browser extensions or new-tab replacement.

@@ -23,6 +23,14 @@ If a rule here blocks you, say so rather than working around it.
   PostgreSQL, including against a populated database. A second concurrent
   revision forks the graph, which is why this was absolute during the
   parallel build and remains a considered act now.
+- **Linking to a heading means declaring an anchor.** A fragment in a
+  Markdown link must name an `<a id="name"></a>` that the target document
+  declares at column zero on its own line, immediately above the heading.
+  Do not compute GitHub's slug and link to that — the obvious slug rule is
+  wrong (whitespace is replaced one-for-one, so an em-dash heading yields a
+  double hyphen), and a checker built on it fails towards a false pass.
+  `.github/scripts/check-doc-links.py` enforces this; CONTRIBUTING.md has
+  the reasoning.
 - **`app/db/models.py`, `app/api/v1/router.py`, root `tests/conftest.py`,
   and the health endpoint are shared surfaces.** Readiness checks are
   registered through the probe registry rather than by editing the
