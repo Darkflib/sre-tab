@@ -72,6 +72,38 @@ The convention is recorded in CONTRIBUTING.md with the reasoning and in
 AGENTS.md as a standing rule, since the failure it prevents is one an agent
 adding a cross-reference would otherwise walk straight into.
 
+**Review found two more, and one of them was already live.** Both bots
+raised the same pair independently, and both were right.
+
+The fence handling toggled on any line starting with three backticks. That
+is not what a fence is. CONTRIBUTING.md documents the `docs:run` marker
+inside a ````-delimited block containing two ``` blocks — and against that
+block the parser was reading `uv sync` and the uvicorn command as *prose*.
+It recovered by luck, the toggles being even, so nothing downstream
+desynchronised and nothing failed; a link or an anchor inside that example
+would have been misread. The other half of the same defect is worse: an
+indented ``` is an indented code block rather than a fence, and treating it
+as one leaves the parser inside a block that never closes, silently skipping
+every line after it. That is a false pass, and on this gate specifically.
+Fences now track the opening marker's character and length and close only on
+a compatible one, which is what CommonMark actually specifies.
+
+The second was adjacency. The convention says the anchor sits immediately
+above its heading and CONTRIBUTING.md claimed the script enforced "all of
+it", which was not true — any `^<a id="…">` line counted, wherever it sat.
+That matters because a detached anchor still *works*: the browser scrolls to
+wherever it is. So when a heading moves and the anchor is left behind, every
+link to it keeps resolving and starts pointing at the wrong content, with
+nothing to report. That is the exact failure this convention exists to
+prevent, reappearing one level up — the same shape as the roadmap's recurring
+lesson that a limit bounds the quantity it counts and nothing else. A
+declaration is now only a declaration if a heading is on the next physical
+line, and the claim in CONTRIBUTING.md is true as written.
+
+Both fixes have regression tests, and both were mutation-tested: reverting
+to the naive toggle fails the two fence tests, and removing the adjacency
+check fails the detached-anchor test.
+
 ## 2026-08-28 — Filing the deferred findings, and a gate that runs without a diff
 
 No behaviour changed. This is bookkeeping, and the kind that stops being

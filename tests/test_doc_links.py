@@ -116,6 +116,50 @@ def test_anchor_must_be_at_column_zero(docs: Path) -> None:
     assert 'declares no <a id="target"></a>' in result.stderr
 
 
+def test_nested_fence_of_greater_length_is_one_block(docs: Path) -> None:
+    """A ````-delimited block may contain ``` examples.
+
+    CONTRIBUTING.md has exactly this shape, documenting the `docs:run`
+    marker. Toggling on every fence-looking line reads the inner examples as
+    prose, so the link below would be checked and reported broken.
+    """
+    (docs / "root.md").write_text(
+        GOOD + "\n````markdown\n```sh\n[inner](nowhere.md)\n```\n````\n",
+    )
+    result = check(docs)
+    assert result.returncode == 0, result.stderr
+    assert "nowhere.md" not in result.stderr
+
+
+def test_indented_pseudo_fence_does_not_open_a_block(docs: Path) -> None:
+    """Four spaces makes it an indented code block, not a fence.
+
+    Treating it as a fence desynchronises the state and silently skips
+    everything after it — a false pass, and the direction that matters.
+    """
+    (docs / "root.md").write_text(
+        GOOD + "\n    ```\n\nAnd then [gone](sub/absent.md).\n",
+    )
+    result = check(docs)
+    assert result.returncode == 1
+    assert "broken relative link: sub/absent.md" in result.stderr
+
+
+def test_detached_anchor_fails(docs: Path) -> None:
+    """An anchor left behind when its heading moves still resolves.
+
+    The browser scrolls to wherever the anchor sits, so every link to it
+    keeps working and starts pointing at the wrong content — silent, which
+    is exactly what this gate exists to catch.
+    """
+    (docs / "sub" / "other.md").write_text(
+        '<a id="target"></a>\n\nSome prose in between.\n\n## Target\n',
+    )
+    result = check(docs)
+    assert result.returncode == 1
+    assert "is not immediately above a heading" in result.stderr
+
+
 def test_parent_relative_paths_resolve(docs: Path) -> None:
     """`sub/other.md` links up to `../root.md#anchored`.
 

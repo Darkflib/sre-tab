@@ -63,6 +63,16 @@ ANCHOR_RE = re.compile(r'^<a id="([^"]+)"></a>$')
 # incomplete is better than a parser that is subtly so.
 LINK_RE = re.compile(r"\]\(([^)]+)\)")
 
+# A Markdown ATX heading, which is what an anchor has to be sitting on.
+HEADING_RE = re.compile(r"^#{1,6} \S")
+
+# A fence delimiter, per CommonMark: up to three spaces of indent (four makes
+# it an indented code block instead), then three or more backticks or tildes.
+# The marker and its length are captured because a fence closes only on the
+# same character at the same length or longer — which is what lets a
+# ````-delimited block contain ``` examples, as CONTRIBUTING.md's does.
+FENCE_RE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
+
 SKIP_PREFIXES = ("http://", "https://", "mailto:")
 
 # Inline code spans, removed before links are extracted. A backticked
@@ -91,38 +101,85 @@ def prose_lines(path: Path) -> list[tuple[int, str]]:
     example as a duplicate of the real one. The same reasoning applies to
     links — a fenced snippet showing `](path.md)` is illustrating syntax,
     not pointing at a file that has to exist.
+
+    Fences are matched the way CommonMark defines them rather than by
+    "does this line start with three backticks", because the naive version
+    is wrong on this repository today. CONTRIBUTING.md documents the
+    `docs:run` marker inside a ````-delimited block containing two ```
+    blocks; toggling on every fence-looking line makes the inner examples
+    read as prose. An indented ``` is worse in the other direction — it is
+    an indented code block, not a fence, and treating it as one desyncs the
+    state and silently skips the prose that follows.
     """
     lines: list[tuple[int, str]] = []
-    fenced = False
+    open_marker: str | None = None
     for number, line in enumerate(path.read_text().splitlines(), start=1):
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
+        fence = FENCE_RE.match(line)
+        if fence:
+            marker = fence.group("marker")
+            if open_marker is None:
+                # An opening fence. A backtick fence may not carry a backtick
+                # in its info string; a tilde fence may carry anything.
+                if marker[0] == "`" and "`" in fence.group("info"):
+                    lines.append((number, line))
+                    continue
+                open_marker = marker
+                continue
+            # A closing fence must use the same character and be at least as
+            # long as the one that opened the block. Anything else is content.
+            if marker[0] == open_marker[0] and len(marker) >= len(open_marker):
+                open_marker = None
             continue
-        if not fenced:
+        if open_marker is None:
             lines.append((number, line))
     return lines
 
 
 def declared_anchors(path: Path) -> tuple[dict[str, int], list[str]]:
-    """Return the anchors a document declares, and any duplicates.
+    """Return the anchors a document declares, and anything wrong with them.
 
-    A duplicate is a real defect and not a style nit: two identical ids mean
-    a link that looks checked, resolves, and lands somewhere arbitrary.
+    Two defects, and neither is a style nit.
+
+    A duplicate id means a link that looks checked, resolves, and lands
+    somewhere arbitrary.
+
+    An anchor that is not immediately above a heading is the failure this
+    whole convention exists to prevent, wearing a different hat. Nothing
+    stops a browser resolving a detached anchor — it scrolls to wherever the
+    anchor sits — so when a heading is moved and its anchor is left behind,
+    every link to it keeps working and starts pointing at the wrong content.
+    That is silent, which is the property that makes it worth a gate.
     """
     anchors: dict[str, int] = {}
-    duplicates: list[str] = []
-    for number, line in prose_lines(path):
+    problems: list[str] = []
+    lines = prose_lines(path)
+    # Adjacency is judged against the *physical* next line, not the next
+    # prose line: a fence opening directly beneath an anchor means the
+    # anchor is not on a heading, and skipping to the far side of the block
+    # to find one would be reading past the mistake.
+    physical = path.read_text().splitlines()
+
+    for number, line in lines:
         match = ANCHOR_RE.match(line)
         if not match:
             continue
         anchor = match.group(1)
+
+        following = physical[number] if number < len(physical) else ""
+        if not HEADING_RE.match(following):
+            problems.append(
+                f"{path}:{number}: anchor {anchor!r} is not immediately above a "
+                f"heading (next line: {following.strip()[:40]!r})"
+            )
+            continue
+
         if anchor in anchors:
-            duplicates.append(
+            problems.append(
                 f"{path}:{number}: duplicate anchor id {anchor!r} (first at line {anchors[anchor]})"
             )
         else:
             anchors[anchor] = number
-    return anchors, duplicates
+    return anchors, problems
 
 
 def main() -> int:
