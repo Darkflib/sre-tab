@@ -3,6 +3,87 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-28 — Filing the deferred findings, and a gate that runs without a diff
+
+No behaviour changed. This is bookkeeping, and the kind that stops being
+bookkeeping the moment someone new reads the repository.
+
+**The five absorbed security findings now live in the roadmap.** They were
+recorded in the 18 August entry below and nowhere else, which is the wrong
+place for them: a worklog entry is a record of a decision at a moment, and
+these are standing conditions. The cost of leaving them there is paid twice
+— the next reviewer re-reports them, and the assumption each one rests on
+stays invisible, because nothing in `app/` says "this is acceptable because
+there are three operators". Each is now filed under its own heading in
+ROADMAP.md with the assumption that holds it open stated next to it, and
+the section says plainly which event invalidates which item.
+
+Two of the five were sharpened by re-reading the code rather than the
+review. `upsert_user`'s race cannot produce a duplicate — `users.github_id`
+is `unique=True`, so the loser takes an `IntegrityError` and the symptom is
+a 500 on one callback, not two rows. And the superuser finding is not about
+a role named `postgres`: `sre-tab-db.container` sets `POSTGRES_USER=sretab`,
+which the official image creates *as* the cluster superuser, and the
+application, the migration unit, and the backup all share one
+`DATABASE_URL`. The precision matters because it is the difference between
+a finding an operator can dismiss on sight and one they cannot.
+
+**`failure.sh` and `success.sh` are gone.** They were the shell reproductions
+that proved the backup-timer trap bug in d54800d, and they were committed to
+the repository root, where they read as part of the deployment. The output
+they produced is already quoted in the 18 August entry, which is the durable
+form; the scripts themselves were scaffolding.
+
+**Both workflows now run weekly and on demand.** The gate was wired to
+`pull_request` and `push` only, which means it reported on the diff and said
+nothing about the world. That is the wrong shape for a project that goes
+weeks between commits: `audit` fails on a CVE published against a dependency
+that was clean at merge time, `container` builds from a base image that
+moves, and `Docs` executes a quickstart against software this repository
+does not control. None of those needs a commit to break, and all of them
+currently break silently until someone next needs to ship.
+
+Two details were not free. The concurrency group is now keyed on
+`github.event_name` as well as the ref — without that, a Monday run on
+`main` shares a group with a push to `main` and `cancel-in-progress` lets
+the timer cancel a publish. And the schedule has a failure mode that lands
+precisely when it is most needed: GitHub disables scheduled workflows after
+60 days of repository inactivity, by email rather than by failing. Sixty
+quiet days turns this off. That is written down in CONTRIBUTING.md rather
+than left to be discovered, because the alternative is believing a check is
+running when it is not, which is the same class of mistake as the green
+Semgrep gate that had scanned nothing.
+
+No job `name:` changed, so the eight required status checks are untouched —
+the trap CONTRIBUTING.md documents at length.
+
+**And the filing itself overstated one of the five, which review caught.**
+The superuser entry said `COPY … PROGRAM` gives "command execution on the
+database host". It does not. `COPY … PROGRAM` runs under the postmaster, and
+the postmaster is uid 999 inside `sre-tab-db.container` — `ReadOnly=true`,
+`DropCapability=all` bar the five the entrypoint's chown needs, no published
+port, reachable only from `sre-tab.network`. The blast radius is that
+container, its data volume, and the internal network; the host needs an
+escape this deployment does not provide. Corrected, with the bound stated
+from the unit file rather than assumed, and with one honest gap left open:
+`NoNewPrivileges` is unset on this unit alone, so whether uid 999 can regain
+root *inside* the container is untested.
+
+Worth recording that the wrong number came from carrying the review's
+framing forward instead of re-deriving it — the same failure mode the
+18 August entry congratulates itself for avoiding on the traceback finding,
+two paragraphs after doing it here. AGENTS.md's rule is that a claim with no
+measurement behind it is unsupported whoever wrote it, and that applies to a
+severity as much as to a benchmark. An overstated finding is not a safe
+error in the cautious direction: it distorts what gets fixed first, and it
+teaches the reader to discount the next one.
+
+**One stale claim in the README, found while checking the rest.** "Known
+gaps" said nothing covered the feed or the filters, which stopped being true
+when the 73 filter and volume tests landed. Corrected to name what is
+actually uncovered — `src/api/client.ts`, `usePagedResource`, and every
+component and route, all of which need a DOM and a mocked `fetch`.
+
 ## 2026-08-18 — An external review, measured rather than believed
 
 Codex reviewed the tree and returned three High findings, twelve Medium,

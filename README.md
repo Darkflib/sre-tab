@@ -238,15 +238,28 @@ not been demonstrated, which is a different thing from being tested.
 - **Frontend coverage is narrow, though no longer absent.** The Vitest suite
   under `frontend/` is gated in CI and covers the theme layer thoroughly —
   resolution and its storage fallbacks, the anti-flash script executed in a
-  VM context, and WCAG contrast recomputed from `tokens.css` for both themes.
-  Nothing yet covers the feed, the filters, or the API client, which are the
-  larger surfaces.
+  VM context, and WCAG contrast recomputed from `tokens.css` for both themes
+  — and, since the filter work, the feed's filter model and volume signals.
+  What remains uncovered is everything that needs a DOM and a mocked
+  `fetch`: `src/api/client.ts`, `src/data/usePagedResource.ts`, and every
+  component and route. That is the expensive half, and it is unstarted.
 - **Backups sit on the same host as the database.** That is a backup, not
   disaster recovery. The `.sha256` sidecars exist so a copy taken off-host
   can be verified at the far end.
 - **The Quadlet units have had one Linux pass, not a long soak.** Unit
   generation is machine-checked in CI with `podman-system-generator --dryrun`,
   which catches a malformed key and nothing about runtime behaviour.
+- **Five reviewed security findings are open by decision, not by oversight.**
+  They are held open by the shape of this deployment — one instance, three
+  allow-listed operators, a catalogue only the CLI can add to — and the
+  assumption behind each is written down next to it in
+  [ROADMAP.md](ROADMAP.md#security-findings-this-deployment-absorbs). The one
+  that does not depend on the operator count is that the application connects
+  to PostgreSQL as a superuser, which would turn any future SQL injection
+  into command execution inside the database container — bounded there by
+  that unit's hardening, and not the same thing as the host. Read that
+  section before adding an operator, a second instance, or a route that
+  accepts a feed URL.
 
 [ROADMAP.md](ROADMAP.md) is the full list of what was deliberately deferred
 and why.

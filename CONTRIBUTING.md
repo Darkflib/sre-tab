@@ -95,6 +95,34 @@ Run it on a host that is not already running the stack. It uses the real
 container names, deliberately, so that the Caddyfile's upstream is tested
 verbatim rather than against a renamed copy.
 
+### When CI runs, and why that is not only on a diff
+
+Both workflows run on every pull request, on every push to `main`, on demand
+via `workflow_dispatch`, and weekly — `CI` at 06:17 UTC on Mondays, `Docs` at
+06:41.
+
+The schedule is not belt-and-braces. Several of these jobs answer questions
+whose answer changes with no commit behind it: `audit` fails when a CVE is
+published against a dependency that was clean yesterday, `container` builds
+from a base image that moves, `publish`'s verification depends on a registry
+and on cosign's roots, and the quickstart in `Docs` executes commands against
+software this repository does not control. On a project that goes weeks
+between commits, a gate wired only to pushes reports on the diff and stays
+silent about the world, and the first news of the drift arrives when someone
+needs to ship.
+
+A scheduled run does everything a push to `main` does except publish: the
+three `if: github.event_name == 'push'` guards in the `container` and
+`publish` jobs mean a Monday run builds the image and smoke-tests it without
+signing or pushing anything. The concurrency group is keyed on the event as
+well as the ref so that a scheduled run cannot cancel a publish in flight.
+
+One caveat that is worth knowing precisely because it fires under exactly the
+conditions the schedule exists for: **GitHub disables scheduled workflows on
+a repository with 60 days of no activity.** It emails the owner and stops
+running them; it does not fail. Sixty quiet days therefore silently removes
+this, and re-enabling it is a manual step in the Actions tab.
+
 ## Documentation is executed, not proofread
 
 `.github/workflows/docs.yml` runs the README's quickstart on a clean checkout

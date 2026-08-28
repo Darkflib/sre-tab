@@ -92,6 +92,109 @@ is about the pipeline, not the code.
   deserves a look at *which* step failed before anyone concludes the change
   broke something.
 
+## Security findings this deployment absorbs
+
+Raised by the external review on 18 August, checked against the code rather
+than taken on trust, and then deliberately not fixed. Each is real. What
+holds them open is the shape of the deployment — one instance, three
+allow-listed operators, an operator-curated catalogue with no route that
+adds a feed — and not a judgement that the code is right.
+
+They are recorded here rather than in [WORKLOG.md](WORKLOG.md) alone for two
+reasons. A finding that lives only in a worklog entry gets re-reported by the
+next review, which costs the reviewer's time and the reader's confidence.
+And the assumption each one rests on is invisible from the code: nothing in
+`app/` says "this is fine because there are three users". **This is the
+section to re-read before adding a fourth operator, a second instance, or a
+route that lets a user add a source** — most of what follows changes
+severity at that moment, and the first item does not depend on the operator
+count at all.
+
+- **The application connects to PostgreSQL as a superuser.** The one item
+  here whose severity the operator count does not cap. `sre-tab-db.container`
+  sets `POSTGRES_USER=sretab`, which the official image creates as the
+  cluster superuser, and the application, the migration unit, and the backup
+  all share the single `DATABASE_URL` secret. An application-level SQL
+  injection therefore does not stop at reading the tables: `COPY … PROGRAM`
+  is available to a superuser, and it executes commands.
+
+  **Where those commands run is the part worth stating precisely, because
+  the first draft of this entry got it wrong and said "the database host".**
+  `COPY … PROGRAM` runs under the postmaster, and the postmaster here is
+  uid 999 inside `sre-tab-db.container`, which is `ReadOnly=true`, has
+  `DropCapability=all` with five capabilities added back for the
+  entrypoint's chown, publishes no port, and is reachable only from
+  `sre-tab.network`. So the blast radius is the database container and what
+  it can reach — the data volume, the three tmpfs mounts, and the internal
+  network — and reaching the host needs a container escape this deployment
+  does not hand anyone. One nuance in the other direction, recorded as an
+  open question rather than an answer: `NoNewPrivileges` is deliberately
+  unset on this unit alone, for the AppArmor reason documented at length in
+  the file, so whether uid 999 can regain root *inside* the container has
+  not been tested. Even container-root holds only those five capabilities
+  against a read-only rootfs.
+
+  That is a smaller finding than "command execution on the host" and a
+  larger one than nothing: an attacker who reaches it reads and writes every
+  row, including sessions, and gets a foothold on the internal network. And
+  nothing currently reachable gets there at all — the query layer is
+  SQLAlchemy Core throughout with no string-built SQL — so this is a
+  severity multiplier on a bug that does not exist yet rather than a live
+  hole.
+
+  Closing it means at least three roles rather than one: DDL for
+  `alembic upgrade`, DML for the application, and read for the dump. That
+  touches the migration unit, `restore.sh`'s ownership handling, and
+  `smoke.sh`, which is why it is filed rather than fixed, and why it should
+  be done deliberately rather than squeezed into an unrelated change.
+- **The OAuth state cookie can be overwritten from a sibling subdomain.**
+  `set_state_cookie` scopes to `/api/v1/auth` with `HttpOnly`, `SameSite=Lax`,
+  and `Secure`, which is careful about everything except *which host* may
+  write it: any subdomain sharing the registrable domain can set a cookie
+  the browser will send here, so a cookie-toss overwrites the state and
+  turns the flow into login CSRF — the victim ends the flow authenticated
+  as the attacker. The exploit therefore needs the attacker's own GitHub ID
+  on `ALLOWED_GITHUB_IDS`, which at three operators means it needs an
+  operator, and an operator has better options. The fix is not free either:
+  `__Host-` is the prefix that buys domain integrity, and it mandates
+  `Path=/`, so taking it means giving up the path scoping that is currently
+  doing real work. Worth revisiting if the domain ever hosts anything else,
+  because that is the condition — a sibling subdomain existing at all — and
+  not the user count.
+- **Feed image URLs are validated more weakly than item URLs.**
+  `normalise_item_url` rejects control characters, credentials, a host with
+  no dot, and an IP literal, and raises on anything it will not take.
+  `_safe_optional_url`, which handles `image_url`, checks the scheme, the
+  presence of a host, userinfo, and the length — and stops. So an image
+  host may be an IP literal or a bare name that an item URL could not be,
+  `img-src 'self' https: data:` in [middleware.py](app/middleware.py) lets
+  the browser fetch it, and the browser makes that request from the
+  operator's network rather than from the server. Three things blunt it:
+  sources are added through the CLI by an operator and there is no route
+  that adds a feed, the request is blind in that nothing reads the response,
+  and `referrerPolicy="no-referrer"` means the fetch carries nothing about
+  where it came from. The asymmetry is still not defensible on its own
+  terms — the two functions disagree about what a URL from a feed is
+  allowed to be — and the cheap close is to give the image path the same
+  host rules and keep returning `None` instead of raising.
+- **`user_sessions` rows are never deleted.** `create_session` inserts,
+  logout sets `revoked_at`, and reads filter on `expires_at`; nothing
+  removes an expired or revoked row, so the table grows by one row per
+  sign-in forever. `prune_feed_items` exists and runs on a schedule, so the
+  place to put the equivalent is already built. Negligible at three
+  operators — tens of rows a year — which is the only reason it is not
+  done.
+- **`upsert_user` is select-then-insert with no conflict handling.** Two
+  concurrent first sign-ins for the same GitHub ID both find no row and
+  both insert. `users.github_id` is `unique=True`, so the loser gets an
+  `IntegrityError` rather than a duplicate — the integrity of the table is
+  never at risk, and the symptom is a 500 on one of the two callbacks and a
+  retry that then succeeds. It needs the same person signing in twice at
+  once, on their very first sign-in, which is a narrow enough window that
+  it is filed rather than fixed. `ON CONFLICT DO UPDATE` would close it,
+  at the price of a dialect-specific statement in a function that is
+  currently dialect-neutral.
+
 ## API surface
 
 - **`docs_enabled` should default to `False`** — **landed.** A deployment that
