@@ -419,11 +419,17 @@ jobs:
           fi
 
       # The application image is ours, so it gets a stricter check than the
-      # third-party pins above: one digest, present in all three units, and
-      # never a bare tag. The three are one artefact — migrations,
-      # application, and assets ship in a single image so they cannot skew —
-      # and a promotion that updated two of them would reintroduce exactly
-      # the skew that design exists to prevent.
+      # third-party pins above: one digest, named by every unit that runs
+      # it, and never a bare tag. They are one artefact — migrations, the
+      # application, the frontend assets, and the session sweep all ship in
+      # a single image so they cannot skew — and a promotion that updated
+      # only some of them would reintroduce exactly the skew that design
+      # exists to prevent.
+      #
+      # Deliberately counted rather than enumerated, so adding a unit needs
+      # no edit here. The list that does need the edit is `UNITS` in
+      # deploy/scripts/promote.sh: a unit missing from it is not a slow
+      # drift but the next promotion failing this gate outright.
       - name: The application image is pinned, by digest, in one place
         run: |
           set -euo pipefail
