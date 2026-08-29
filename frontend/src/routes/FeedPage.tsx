@@ -10,6 +10,7 @@ import { EmptyState, ErrorState, LoadingState, Spinner } from '../components/Sta
 import { useCatalogue } from '../catalogue/useCatalogue';
 import {
   applyFiltersToParams,
+  EMPTY_FILTERS,
   hasOverride,
   parseFilters,
   selectsNothing,
@@ -17,6 +18,8 @@ import {
 } from '../feed/filters';
 import { useFeed } from '../feed/useFeed';
 import { computeShares, findDominantSource } from '../feed/volume';
+import { KeyboardLayer, ShortcutHelpButton } from '../keyboard/KeyboardLayer';
+import { useListKeyboard } from '../keyboard/useListKeyboard';
 import { useAuthenticatedSession } from '../session/useSession';
 
 function clamp(value: number, low: number, high: number): number {
@@ -97,6 +100,50 @@ export function FeedPage() {
     [applyBookmark],
   );
 
+  const { entries, reload } = feed;
+  const ids = useMemo(() => entries.map((item) => item.id), [entries]);
+  const byId = useMemo(() => new Map(entries.map((item) => [item.id, item])), [entries]);
+
+  /*
+   * What `m` does to an item that no longer matches the filter, decided
+   * rather than inherited.
+   *
+   * `patchEntry` flips `read` in place and leaves the row where it is, so
+   * with "Unread" selected a marked item stays on screen until the next
+   * refetch. That stays, and it matters more now that a keystroke drives
+   * it. Removing the row would mean the visible result of pressing `m` is
+   * the thing you were reading vanishing and every card below it jumping
+   * up a place; it would also make the mistake unrecoverable from the
+   * keyboard, because `m` again — the obvious undo — has nothing left to
+   * press it on. Leaving the row put costs one moment of the list
+   * disagreeing with the chip above it, which the card says out loud by
+   * showing its "Read" flag, and `r` is how the user asks for the list to
+   * catch up at a moment they picked.
+   */
+  const cursorRoot = useRef<HTMLDivElement | null>(null);
+  const keyboard = useListKeyboard({
+    ids,
+    containerRef: cursorRoot,
+    handlers: {
+      onToggleRead: (id) => {
+        const item = byId.get(id);
+        if (!item) return null;
+        applyRead(item, !item.read);
+        return item.read ? 'Marked unread.' : 'Marked read.';
+      },
+      onToggleBookmark: (id) => {
+        const item = byId.get(id);
+        if (!item) return null;
+        applyBookmark(item, !item.bookmarked);
+        return item.bookmarked ? 'Bookmark removed.' : 'Bookmarked.';
+      },
+      onReload: () => {
+        reload();
+        return 'Refreshing the feed.';
+      },
+    },
+  });
+
   const sentinel = useRef<HTMLDivElement | null>(null);
   const { hasMore, loadingMore, loadMore } = feed;
 
@@ -120,8 +167,14 @@ export function FeedPage() {
   }
 
   return (
-    <div className="feed">
-      <h1 className="visually-hidden">Feed</h1>
+    // `tabIndex` so the keyboard layer has somewhere real to put focus when
+    // the card holding it is removed and the list has nothing left to sit
+    // on — the alternative is <body>, which strands a keyboard user.
+    <div className="feed cursor-root" ref={cursorRoot} tabIndex={-1}>
+      <div className="page-head">
+        <h1 className="visually-hidden">Feed</h1>
+        <ShortcutHelpButton onOpen={keyboard.openHelp} />
+      </div>
 
       {catalogue.status === 'ready' ? (
         <FilterBar
@@ -172,7 +225,7 @@ export function FeedPage() {
         feed={feed}
         filters={filters}
         onClearFilters={() => {
-          setFilters({ topics: null, sources: null });
+          setFilters(EMPTY_FILTERS);
         }}
         onOpen={onOpen}
         onToggleRead={onToggleRead}
@@ -184,7 +237,10 @@ export function FeedPage() {
           setFilters({ ...filters, topics: [slug] });
         }}
         layout={preferences.layout}
+        tabStop={keyboard.tabStop}
       />
+
+      <KeyboardLayer keyboard={keyboard} />
 
       <div ref={sentinel} className="feed__sentinel" aria-hidden="true" />
 
@@ -224,6 +280,8 @@ interface FeedBodyProps {
   onFilterSource: (slug: string) => void;
   onFilterTopic: (slug: string) => void;
   layout: Layout;
+  /** The one card in the tab order; see `tabStopId`. */
+  tabStop: number | null;
 }
 
 function FeedBody({
@@ -236,6 +294,7 @@ function FeedBody({
   onFilterSource,
   onFilterTopic,
   layout,
+  tabStop,
 }: FeedBodyProps) {
   if (selectsNothing(filters)) {
     return (
@@ -311,6 +370,7 @@ function FeedBody({
             onToggleBookmark={onToggleBookmark}
             onFilterSource={onFilterSource}
             onFilterTopic={onFilterTopic}
+            tabIndex={item.id === tabStop ? 0 : -1}
           />
         </li>
       ))}

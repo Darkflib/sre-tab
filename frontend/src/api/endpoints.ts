@@ -10,6 +10,7 @@ import type {
   MeResponse,
   Preferences,
   PreferencesPatch,
+  ReadFilter,
   ReadState,
   SourcesResponse,
 } from './types';
@@ -20,6 +21,8 @@ export const GITHUB_SIGN_IN_PATH = '/api/v1/auth/github/start';
 export interface FeedQuery {
   topics?: string[];
   sources?: string[];
+  /** Omitted means `all`; the server's default and the client's agree. */
+  read_state?: ReadFilter;
   cursor?: string;
   limit?: number;
   signal?: AbortSignal;

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { ApiError } from '../api/client';
@@ -7,6 +7,8 @@ import type { FeedItem } from '../api/types';
 import { ItemCard } from '../components/ItemCard';
 import { EmptyState, ErrorState, LoadingState, Spinner } from '../components/States';
 import { useBookmarks } from '../feed/useFeed';
+import { KeyboardLayer, ShortcutHelpButton } from '../keyboard/KeyboardLayer';
+import { useListKeyboard } from '../keyboard/useListKeyboard';
 import { useAuthenticatedSession } from '../session/useSession';
 
 export function BookmarksPage() {
@@ -42,9 +44,50 @@ export function BookmarksPage() {
     [patchEntry],
   );
 
+  const { entries, reload } = bookmarks;
+  const ids = useMemo(() => entries.map((entry) => entry.item.id), [entries]);
+  const byId = useMemo(() => new Map(entries.map((entry) => [entry.item.id, entry])), [entries]);
+
+  /*
+   * The same layer as the feed, because it is the same card list. The one
+   * behavioural difference is `b`: here it un-bookmarks, and this page
+   * genuinely removes the row rather than flagging it, so the cursor has
+   * to land on whatever slid up into that position. That is what
+   * `resolveCursor` is for, and it is the case that would otherwise drop
+   * focus on <body> mid-list.
+   */
+  const cursorRoot = useRef<HTMLDivElement | null>(null);
+  const keyboard = useListKeyboard({
+    ids,
+    containerRef: cursorRoot,
+    handlers: {
+      onToggleRead: (id) => {
+        const entry = byId.get(id);
+        if (!entry) return null;
+        onSetRead(id, !entry.item.read);
+        return entry.item.read ? 'Marked unread.' : 'Marked read.';
+      },
+      onToggleBookmark: (id) => {
+        const entry = byId.get(id);
+        if (!entry) return null;
+        onRemove(entry.item);
+        return 'Bookmark removed.';
+      },
+      onReload: () => {
+        reload();
+        return 'Refreshing your bookmarks.';
+      },
+    },
+  });
+
   return (
-    <div className="bookmarks">
-      <h1>Bookmarks</h1>
+    // Focusable for the same reason the feed's wrapper is: removing the
+    // last bookmark leaves the cursor nowhere, and <body> is not an answer.
+    <div className="bookmarks cursor-root" ref={cursorRoot} tabIndex={-1}>
+      <div className="page-head">
+        <h1>Bookmarks</h1>
+        <ShortcutHelpButton onOpen={keyboard.openHelp} />
+      </div>
 
       {actionError ? (
         <p className="banner banner--error" role="alert">
@@ -85,11 +128,14 @@ export function BookmarksPage() {
                 }}
                 onToggleBookmark={onRemove}
                 onRemoveBookmark={onRemove}
+                tabIndex={entry.item.id === keyboard.tabStop ? 0 : -1}
               />
             </li>
           ))}
         </ul>
       ) : null}
+
+      <KeyboardLayer keyboard={keyboard} />
 
       {bookmarks.hasMore ? (
         <div className="feed__more">

@@ -1,17 +1,46 @@
-import type { Preferences, Source, Topic } from '../api/types';
+import type { Preferences, ReadFilter, Source, Topic } from '../api/types';
 
 /**
  * `null` means "no override — let the server use my saved selection",
  * which is exactly what omitting the query parameter does. An empty array
  * is different: it means the user has deselected everything, and nothing
  * can match, so the feed short-circuits without a request.
+ *
+ * `readState` is deliberately *not* that shape. The array dimensions are
+ * three-state because they have a saved selection to fall back to; read
+ * state has none — there is no column for it in `user_preferences` — so
+ * "no narrowing" is a value it can hold rather than an absence it has to
+ * signal. Two states behind two representations, and a `null` here would
+ * mean the same thing as `'all'` while looking like it meant something
+ * else.
  */
 export interface FeedFilters {
   topics: string[] | null;
   sources: string[] | null;
+  readState: ReadFilter;
 }
 
-export const EMPTY_FILTERS: FeedFilters = { topics: null, sources: null };
+export const EMPTY_FILTERS: FeedFilters = { topics: null, sources: null, readState: 'all' };
+
+/** The URL and API spelling of `readState`; the two agree on purpose. */
+export const READ_STATE_PARAM = 'read_state';
+
+/**
+ * A `Record` keyed by the union rather than a list of strings: adding a
+ * member to `ReadFilter` server-side then fails the typecheck here, which
+ * is the whole reason the type is generated from `openapi.json`. A plain
+ * `string[]` would compile against a vocabulary it no longer knows.
+ */
+const READ_FILTERS: Record<ReadFilter, true> = { all: true, unread: true, read: true };
+
+function parseReadState(raw: string | null): ReadFilter {
+  // An unrecognised value reads as `all` rather than being passed on. The
+  // server answers a value outside the enum with a 422, so forwarding a
+  // hand-edited `?read_state=nonsense` would turn a typo in the URL into
+  // an error banner over the whole feed.
+  if (raw !== null && Object.hasOwn(READ_FILTERS, raw)) return raw as ReadFilter;
+  return 'all';
+}
 
 function parseList(raw: string | null): string[] | null {
   if (raw === null) return null;
@@ -25,6 +54,7 @@ export function parseFilters(params: URLSearchParams): FeedFilters {
   return {
     topics: parseList(params.get('topics')),
     sources: parseList(params.get('sources')),
+    readState: parseReadState(params.get(READ_STATE_PARAM)),
   };
 }
 
@@ -35,16 +65,42 @@ export function applyFiltersToParams(params: URLSearchParams, filters: FeedFilte
     if (value === null) next.delete(dimension);
     else next.set(dimension, value.join(','));
   }
+  // Deleted rather than written as `read_state=all`: `all` is the default
+  // on both sides, so writing it would put a parameter in every shared
+  // link that says nothing.
+  if (filters.readState === 'all') next.delete(READ_STATE_PARAM);
+  else next.set(READ_STATE_PARAM, filters.readState);
   return next;
 }
 
 export function hasOverride(filters: FeedFilters): boolean {
-  return filters.topics !== null || filters.sources !== null;
+  // Read state counts: it drives the "Filtered" badge, and the badge is
+  // what puts "Clear filters" on screen. Leave it out and a user who has
+  // narrowed to unread sees an unexplained short feed with no way back.
+  return filters.topics !== null || filters.sources !== null || filters.readState !== 'all';
 }
 
-/** Nothing can match, so the feed renders an empty state without a fetch. */
+/**
+ * Nothing can match, so the feed renders an empty state without a fetch.
+ *
+ * Read state is absent from this on purpose. The claim here is that no
+ * item *can* match — knowable locally only because an empty selection
+ * intersects everything to nothing. "Unread only" can return nothing, but
+ * whether it does is a fact about the database, and asserting it here
+ * would render an empty state over a feed that has items.
+ */
 export function selectsNothing(filters: FeedFilters): boolean {
   return filters.topics?.length === 0 || filters.sources?.length === 0;
+}
+
+/**
+ * Whether these filters describe something `PATCH /me/preferences` can
+ * store. Read state cannot be: `user_preferences` has no column for it,
+ * and inventing one is a schema change. It is a per-session URL filter,
+ * so a view narrowed only by read state has nothing to save.
+ */
+export function hasSavableOverride(filters: FeedFilters): boolean {
+  return filters.topics !== null || filters.sources !== null;
 }
 
 /**
@@ -58,10 +114,15 @@ export function selectsNothing(filters: FeedFilters): boolean {
  * filter — a wrong feed, silently. Nothing constrains a slug's format at any
  * creation path (`app/cli/operations.py` checks uniqueness, not shape), so
  * that was reachable rather than theoretical.
+ *
+ * Every dimension the request depends on has to be in here, `readState`
+ * included: `usePagedResource` resets and refetches only when the key
+ * changes, so a filter left out of the key is a control that silently
+ * does nothing — the user clicks "Unread" and the cached pages stay.
  */
 export function filterKey(filters: FeedFilters, limit: number): string {
   const part = (value: string[] | null) => (value === null ? null : [...value].sort());
-  return JSON.stringify([part(filters.topics), part(filters.sources), limit]);
+  return JSON.stringify([part(filters.topics), part(filters.sources), filters.readState, limit]);
 }
 
 /**

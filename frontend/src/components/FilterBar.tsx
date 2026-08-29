@@ -1,9 +1,11 @@
-import type { PreferencesPatch } from '../api/types';
+import type { PreferencesPatch, ReadFilter } from '../api/types';
 import { useCatalogue } from '../catalogue/useCatalogue';
 import {
   effectiveSelection,
+  EMPTY_FILTERS,
   type FeedFilters,
   hasOverride,
+  hasSavableOverride,
   selectsNothing,
   toggle,
 } from '../feed/filters';
@@ -42,6 +44,9 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
   const setTopics = (next: string[] | null) => {
     onChange({ ...filters, topics: next });
   };
+  const setReadState = (next: ReadFilter) => {
+    onChange({ ...filters, readState: next });
+  };
 
   // Nothing selected is a step, not a destination: it exists so you can
   // clear the chips and pick two, rather than deselecting sixteen. It also
@@ -49,6 +54,13 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
   // "no preference, use the instance defaults", so storing it would mean
   // the opposite of what the button says.
   const nothingSelected = selectsNothing(filters);
+
+  // A second reason the button can be dead, and a different one. Read
+  // state has no home in `user_preferences`, so narrowing to unread is a
+  // filter on this URL and nothing more. Without this guard "Save as my
+  // default" appears the moment the read chip is clicked and saves an
+  // empty patch — a control that reports success and stores nothing.
+  const savable = hasSavableOverride(filters);
 
   const saveAsDefault = () => {
     // Save what the user chose, not what the chips are showing. `effective`
@@ -62,7 +74,9 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
     if (filters.sources !== null) patch.sources = filters.sources;
 
     void updatePreferences(patch).then(() => {
-      onChange({ topics: null, sources: null });
+      // Read state clears with the rest: it was never part of what was
+      // saved, so leaving it on would make the saved default look wrong.
+      onChange(EMPTY_FILTERS);
     });
   };
 
@@ -75,6 +89,10 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
               <strong className="filters__badge">Filtered</strong>
               {effective.sources.length} of {sources.length} sources, {effective.topics.length} of{' '}
               {topics.length} topics
+              {/* Named, because the counts above cannot show it: narrowing
+                  to unread leaves every source and topic selected, and a
+                  "Filtered" badge over "3 of 3 sources" reads as a bug. */}
+              {filters.readState === 'all' ? null : `, ${filters.readState} only`}
             </>
           ) : (
             <>
@@ -90,13 +108,15 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
               type="button"
               className="button button--quiet"
               onClick={saveAsDefault}
-              disabled={nothingSelected}
+              disabled={nothingSelected || !savable}
               // Said rather than left to be inferred: a control that is
               // dead with no reason given is its own small surprise.
               title={
                 nothingSelected
                   ? 'Nothing is selected, so there is no view here to make your default.'
-                  : 'Make the current filters your saved selection'
+                  : savable
+                    ? 'Make the current filters your saved selection'
+                    : 'Read state is not part of a saved selection — pick sources or topics to save.'
               }
             >
               Save as my default
@@ -105,7 +125,7 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
               type="button"
               className="button button--quiet"
               onClick={() => {
-                onChange({ topics: null, sources: null });
+                onChange(EMPTY_FILTERS);
               }}
             >
               <CrossIcon />
@@ -121,6 +141,8 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
           topic below, or clear the filters to go back to your saved selection.
         </p>
       ) : null}
+
+      <ReadStateGroup value={filters.readState} onChange={setReadState} />
 
       <FilterGroup
         legend="Sources"
@@ -204,6 +226,55 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
         </details>
       ) : null}
     </section>
+  );
+}
+
+const READ_STATE_CHOICES: { value: ReadFilter; label: string; hint: string }[] = [
+  { value: 'all', label: 'All', hint: 'Every item, read or not' },
+  { value: 'unread', label: 'Unread', hint: 'Only items you have not opened' },
+  { value: 'read', label: 'Read', hint: 'Only items you have already opened' },
+];
+
+/**
+ * One choice of three rather than a set of toggles, so no All/None bulk
+ * controls and no empty state to reach: `all` *is* the way back. It is
+ * also the one filter here that cannot be saved as a default — see the
+ * guard on "Save as my default" — so it carries no per-chip affordances
+ * that would imply otherwise.
+ */
+function ReadStateGroup({
+  value,
+  onChange,
+}: {
+  value: ReadFilter;
+  onChange: (next: ReadFilter) => void;
+}) {
+  const groupId = 'filter-group-read-state';
+  return (
+    <div className="filter-group">
+      <div className="filter-group__head">
+        <h2 className="filter-group__legend" id={groupId}>
+          Status
+        </h2>
+      </div>
+      <ul className="chips" aria-labelledby={groupId}>
+        {READ_STATE_CHOICES.map((choice) => (
+          <li key={choice.value}>
+            <button
+              type="button"
+              className="chip"
+              aria-pressed={value === choice.value}
+              title={choice.hint}
+              onClick={() => {
+                onChange(choice.value);
+              }}
+            >
+              <span className="chip__label">{choice.label}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
