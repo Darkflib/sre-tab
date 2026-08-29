@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser
 from app.api.v1.schemas import ErrorResponse, FeedPage
-from app.api.v1.schemas.feed import FEED_DEFAULT_PAGE_SIZE, FEED_MAX_PAGE_SIZE
+from app.api.v1.schemas.feed import FEED_DEFAULT_PAGE_SIZE, FEED_MAX_PAGE_SIZE, ReadFilter
 from app.db.session import get_db
 from app.services import feed as feed_service
 from app.services.errors import InvalidCursorError
@@ -34,13 +34,23 @@ def get_feed(
         list[str] | None,
         Query(description="Source slugs to include; omit for the user's selection"),
     ] = None,
+    read_state: Annotated[
+        ReadFilter,
+        Query(description="Narrow by the caller's read state; omit or 'all' for every item"),
+    ] = ReadFilter.ALL,
     cursor: Annotated[str | None, Query(description="Opaque cursor from a previous page")] = None,
     limit: Annotated[int, Query(ge=1, le=FEED_MAX_PAGE_SIZE)] = FEED_DEFAULT_PAGE_SIZE,
 ) -> FeedPage:
     """Deduplicated feed ordered by publication time, newest first."""
     try:
         return feed_service.get_feed_page(
-            db, user, topics=topics, sources=sources, cursor=cursor, limit=limit
+            db,
+            user,
+            topics=topics,
+            sources=sources,
+            read_state=read_state,
+            cursor=cursor,
+            limit=limit,
         )
     except InvalidCursorError as exc:
         # A cursor is opaque, so a client cannot repair one; 400 tells it

@@ -395,6 +395,11 @@ export interface components {
             /** Detail */
             detail?: string | null;
         };
+        /**
+         * ReadFilter
+         * @enum {string}
+         */
+        ReadFilter: "all" | "unread" | "read";
         /** ReadStateOut */
         ReadStateOut: {
             /** Item Id */
@@ -761,6 +766,8 @@ export interface operations {
                 topics?: string[] | null;
                 /** @description Source slugs to include; omit for the user's selection */
                 sources?: string[] | null;
+                /** @description Narrow by the caller's read state; omit or 'all' for every item */
+                read_state?: components["schemas"]["ReadFilter"];
                 /** @description Opaque cursor from a previous page */
                 cursor?: string | null;
                 limit?: number;
