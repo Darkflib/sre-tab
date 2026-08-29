@@ -65,6 +65,28 @@ function asApiError(cause: unknown): ApiError {
   return cause instanceof ApiError ? cause : new ApiError(0, 'Unexpected error.');
 }
 
+/**
+ * The combined re-entrancy guard for `loadMore`. `loadingMore` alone is
+ * not enough: it comes from React state, which only takes effect on the
+ * next render, so two synchronous calls to `loadMore` — a double-tap, a
+ * scroll handler firing twice — both see the same stale `false` and would
+ * both start a request. `inFlight` is read from a ref instead, set the
+ * instant the first call creates its controller, so the second call within
+ * the same tick sees it and backs off.
+ *
+ * Doubles as a type guard on `nextCursor`: the caller's null check and the
+ * re-entrancy check are one condition in practice (`loadMore` needs both
+ * before it can fetch), so folding them into a single predicate narrows
+ * `nextCursor` to `string` at the call site instead of checking null twice.
+ */
+export function canStartLoadMore(
+  nextCursor: string | null,
+  loadingMore: boolean,
+  inFlight: boolean,
+): nextCursor is string {
+  return nextCursor !== null && !loadingMore && !inFlight;
+}
+
 function mergeUnique<T>(existing: T[], incoming: T[], idOf: (entry: T) => number): T[] {
   const seen = new Set(existing.map(idOf));
   const merged = [...existing];
@@ -102,6 +124,14 @@ export function usePagedResource<T>({
 
   const fetchPageRef = useRef(fetchPage);
   const idOfRef = useRef(idOf);
+  /**
+   * The controller for whichever `loadMore` request is currently in
+   * flight, or null when none is. Read synchronously by `loadMore`'s
+   * re-entrancy guard — `state.loadingMore` only updates on the next
+   * render, which is too late to stop a second synchronous call — and
+   * aborted by the effect below on unmount or a cache-key change.
+   */
+  const loadMoreControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     fetchPageRef.current = fetchPage;
@@ -141,17 +171,33 @@ export function usePagedResource<T>({
     };
   }, [cacheKey, enabled]);
 
+  // The one other request this hook can have open. Aborting it on the same
+  // cleanup React already runs for the initial-page effect above — unmount,
+  // or cacheKey changing underneath it — gives loadMore the lifecycle it
+  // was missing: nothing is left running against a dead component, and a
+  // filter change mid-scroll cannot leave a superseded request able to
+  // write state once it resolves.
+  useEffect(() => {
+    return () => {
+      loadMoreControllerRef.current?.abort();
+      loadMoreControllerRef.current = null;
+    };
+  }, [cacheKey]);
+
   const { nextCursor, loadingMore } = state;
 
   const loadMore = useCallback(() => {
-    if (nextCursor === null || loadingMore) return;
+    if (!canStartLoadMore(nextCursor, loadingMore, loadMoreControllerRef.current !== null)) return;
     const controller = new AbortController();
+    loadMoreControllerRef.current = controller;
     setState((current) =>
       current.key !== cacheKey ? current : { ...current, loadingMore: true, loadMoreError: null },
     );
     fetchPageRef
       .current(nextCursor, controller.signal)
       .then((page) => {
+        if (loadMoreControllerRef.current === controller) loadMoreControllerRef.current = null;
+        if (controller.signal.aborted) return;
         setState((current) =>
           current.key !== cacheKey
             ? current
@@ -164,6 +210,8 @@ export function usePagedResource<T>({
         );
       })
       .catch((cause: unknown) => {
+        if (loadMoreControllerRef.current === controller) loadMoreControllerRef.current = null;
+        if (controller.signal.aborted) return;
         setState((current) =>
           current.key !== cacheKey
             ? current
@@ -176,19 +224,40 @@ export function usePagedResource<T>({
     setReloadToken((value) => value + 1);
   }, []);
 
-  const patchEntry = useCallback((id: number, update: (entry: T) => T) => {
-    setState((current) => ({
-      ...current,
-      entries: current.entries.map((entry) => (idOfRef.current(entry) === id ? update(entry) : entry)),
-    }));
-  }, []);
+  // Guarded the same way every other setState in this hook is: these run
+  // from optimistic mutation handlers, so the async call they wrap can
+  // still be pending when the cache key moves on — a reload triggered by a
+  // sibling failure, or a filter change the user made before the request
+  // settled. Without the guard, a revert-on-failure closure captured
+  // against the old generation would land on whatever the new generation's
+  // entries happen to be, patching or removing an unrelated row that
+  // reused the same id.
+  const patchEntry = useCallback(
+    (id: number, update: (entry: T) => T) => {
+      setState((current) =>
+        current.key !== cacheKey
+          ? current
+          : {
+              ...current,
+              entries: current.entries.map((entry) =>
+                idOfRef.current(entry) === id ? update(entry) : entry,
+              ),
+            },
+      );
+    },
+    [cacheKey],
+  );
 
-  const removeEntry = useCallback((id: number) => {
-    setState((current) => ({
-      ...current,
-      entries: current.entries.filter((entry) => idOfRef.current(entry) !== id),
-    }));
-  }, []);
+  const removeEntry = useCallback(
+    (id: number) => {
+      setState((current) =>
+        current.key !== cacheKey
+          ? current
+          : { ...current, entries: current.entries.filter((entry) => idOfRef.current(entry) !== id) },
+      );
+    },
+    [cacheKey],
+  );
 
   return {
     entries: state.entries,
