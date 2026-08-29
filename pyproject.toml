@@ -1,6 +1,6 @@
 [project]
 name = "sre-tab"
-version = "0.1.0"
+version = "1.0.0"
 description = "Developer News Dashboard — self-hosted, GitHub-authenticated feed aggregator"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -107,6 +107,13 @@ filterwarnings = ["error::DeprecationWarning:app.*"]
 
 [tool.coverage.run]
 source = ["app"]
+
+[tool.coverage.report]
+# The floor, not the target. Measured at 94% when this gate was added, so
+# it is set below what the suite already holds: the job is to catch a
+# slide, not to force a number upwards. Raise it deliberately, in its own
+# commit, when the margin has grown enough to be worth banking.
+fail_under = 90
 
 # --- Bandit -------------------------------------------------------------
 

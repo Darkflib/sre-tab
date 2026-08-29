@@ -8,6 +8,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `SECURITY.md`: a private reporting channel (GitHub security advisories),
+  the supported-version table, and a pointer to the accepted findings in
+  ROADMAP.md so a reporter can tell a new finding from a held one.
+- Coverage is now a gate. `fail_under = 90` in `pyproject.toml` and
+  `--cov=app` on the `python` job's pytest step, where the tooling was
+  configured and nothing ever ran it. The threshold is a floor under the
+  94.23% the suite already holds, not a target. Proven to bite before
+  being believed: at a temporary 96% the job exits 1.
+
+## [1.0.0] - 2026-08-29
+
+The v1 scope in [prd-v1.md](prd-v1.md), as built and deployed. Tagged at
+`700bea3` on `main`. Everything below had accumulated under `[Unreleased]`
+since the repository was created; the release changes no code, and exists
+because a supply chain that signs, attests, and digest-pins every artefact
+was still unable to say which version had shipped.
+
+
+### Added
+
 - Operator CLI (`sre-tab`): seed the v1 source catalogue and topic
   taxonomy, list/add/enable/disable sources and topics, expand a Medium
   tag into its own source, and a per-source refresh-status view that
