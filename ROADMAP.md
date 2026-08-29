@@ -8,6 +8,58 @@ Items marked **landed** stay listed rather than being deleted: the reasoning
 that put them here is usually still worth reading, and a roadmap that only
 ever grows tells you nothing about what moved.
 
+## Open work
+
+The index below is the open subset of the sections that follow: landed items
+are left out, and where an item is only partially landed, only the part that
+remains is named here. It links to sections, not to individual bullets — the
+bullets below are not headings, so there is nothing for a fragment link to
+name — and it does not restate any item's reasoning; read the section for
+that.
+
+- [Supply-chain hygiene](#supply-chain-hygiene)
+  - Verify signed images at container start, not just before the fact.
+  - JS/TS taint-flow coverage is thinner than the Python equivalent's.
+  - The build path's dependency on `codeload.github.com` — vendor the
+    actions, or replace `download-syft` with a registry pull.
+- [Security findings this deployment absorbs](#security-findings-this-deployment-absorbs)
+  - Cut the deployment over to the three least-privilege database roles —
+    the roles exist and are verified; nothing uses them yet.
+  - The OAuth state cookie can be overwritten from a sibling subdomain.
+  - `upsert_user` has no conflict handling for a concurrent first sign-in.
+- [API surface](#api-surface)
+  - Serve `/api/v1/openapi.json` from the committed file in
+    `deploy/Caddyfile`, not from the running application.
+- [Scaling](#scaling)
+  - Shared state store for OAuth state and the rate limiters.
+  - Separate scheduler worker.
+  - Rate limiting keyed on a trusted client address — fragile pending a
+    shared store.
+- [Operations](#operations)
+  - Off-host backups.
+  - An `OnFailure=` alert unit.
+  - Frontend coverage for `src/api/client.ts`, and for the parts of
+    `usePagedResource` that need a DOM — its decision logic is covered now,
+    its effects are not.
+- [Things that are true but unproven](#things-that-are-true-but-unproven)
+  - The backup timer's `Persistent=true` catch-up, demonstrated rather than
+    assumed.
+  - The fetcher's accept-a-redirect branch, against a live server.
+  - Quadlet runtime under a real soak — still just two cold installs and a
+    handful of restarts.
+  - The ~20s of deploy outage after `systemctl` returns — cause still
+    unknown.
+- [Documentation](#documentation)
+  - `deploy/README.md` in CI, which needs a journald-capable runner, and
+    the upgrade sequence, still unexecuted.
+- [Repository](#repository)
+  - Issue and pull-request templates.
+- [Product](#product)
+  - Per-device preferences (v2).
+  - Non-RSS sources.
+  - Richer authorisation.
+
+<a id="supply-chain-hygiene"></a>
 ## Supply-chain hygiene
 
 Raised by the Phase 3 SAST pass. The dependency trees came back clean — zero
@@ -148,6 +200,37 @@ count at all.
   touches the migration unit, `restore.sh`'s ownership handling, and
   `smoke.sh`, which is why it is filed rather than fixed, and why it should
   be done deliberately rather than squeezed into an unrelated change.
+
+  **The roles now exist; nothing uses them yet, deliberately.**
+  `deploy/roles.sql` defines `sretab_migrate` (DDL), `sretab_app` (DML),
+  and `sretab_readonly` (the dump), all `NOSUPERUSER NOCREATEDB
+  NOCREATEROLE NOREPLICATION NOBYPASSRLS`;
+  `deploy/scripts/create-roles.sh` installs them and is deliberately *not*
+  called by `install.sh`. No `.container` file and no `DATABASE_URL`
+  changed, so the running deployment is exactly as it was. The cutover is
+  its own iteration, and `deploy/ROLES.md` carries the procedure, the full
+  list of consumers, and the rollback.
+
+  Verified against a real `postgres:18-trixie` rather than reasoned about,
+  because the whole entry turns on one claim. `COPY … TO PROGRAM` is
+  refused for all three roles — including `sretab_migrate`, so DDL rights
+  do not imply it — and `sretab_app` cannot `CREATE TABLE`.
+
+  Two details that would have been discovered the hard way. `pg_dump`
+  needs `SELECT` on **sequences**, not only on tables: a control role
+  granted table-`SELECT` alone made `pg_dump` fail outright, so a
+  tables-only read role produces no backup rather than a subtly wrong one.
+  And `ALTER DEFAULT PRIVILEGES` is written `FOR ROLE sretab_migrate`,
+  because default privileges attach to the role that *creates* an object,
+  not to whoever runs the `ALTER` — get that wrong and every future
+  `alembic upgrade` yields tables the application cannot read, with
+  nothing to say why.
+
+  What the cutover still needs a decision on: `restore.sh` does
+  `DROP`/`CREATE DATABASE`, which is database-level admin that none of the
+  three roles holds, and `smoke.sh` exercises only the superuser today, so
+  it would keep passing through a broken or silently reverted cutover.
+  Both are named in ROLES.md rather than guessed at.
 - **The OAuth state cookie can be overwritten from a sibling subdomain.**
   `set_state_cookie` scopes to `/api/v1/auth` with `HttpOnly`, `SameSite=Lax`,
   and `Secure`, which is careful about everything except *which host* may
@@ -162,6 +245,32 @@ count at all.
   doing real work. Worth revisiting if the domain ever hosts anything else,
   because that is the condition — a sibling subdomain existing at all — and
   not the user count.
+- **Feed image URLs are validated more weakly than item URLs** — **landed,
+  and closing it turned up a live hole in the *item* path.** The two
+  functions now share one host rule (`_feed_url_host`), so they can no
+  longer disagree: the image path applies the same control-character,
+  credential, dotless-host, and IP-literal checks, and still returns `None`
+  rather than raising, because an unusable decorative image must not fail
+  the ingest of an otherwise-good item.
+
+  The find was in `_looks_like_ip`, which tested `all(part.isdigit() ...)`.
+  `"0x7f".isdigit()` is `False`, so `https://0x7f.0.0.1/...` was not
+  recognised as a literal — and that check guards `normalise_item_url` too,
+  so a **canonical URL** pointing at the reader's own loopback was being
+  accepted and rendered as a link. That is a wider defect than the
+  asymmetry this entry was filed for, and it was reachable without the
+  asymmetry at all.
+
+  Rather than write a third decoder, the check now calls
+  `urlguard.parse_numeric_ipv4` — renamed from its private form, since a
+  leading underscore crossing a module boundary is an undocumented contract
+  that invites a fourth copy. One body, three test files: breaking the hex
+  branch now fails `test_urlguard.py`, `test_fetch.py`, and
+  `test_normalise.py` together, which is what makes the sharing real rather
+  than nominal.
+
+  The original entry follows, because it is what made the fix cheap.
+
 - **Feed image URLs are validated more weakly than item URLs.**
   `normalise_item_url` rejects control characters, credentials, a host with
   no dot, and an IP literal, and raises on anything it will not take.
@@ -178,6 +287,29 @@ count at all.
   terms — the two functions disagree about what a URL from a feed is
   allowed to be — and the cheap close is to give the image path the same
   host rules and keep returning `None` instead of raising.
+- **`user_sessions` rows are never deleted** — **landed.** `sre-tab sessions
+  prune` sweeps the table and `sre-tab-prune-sessions.timer` runs it daily
+  at 04:17 UTC — after the backup's jitter window closes at 03:42, so a
+  `pg_dump` snapshot never races the `DELETE`, and a swept row survives in
+  the latest dump for a further day.
+
+  Two classes of dead row, dead at different moments. Expired-and-never-
+  revoked goes immediately; it records only that a session ran out. Revoked
+  is held seven days, because `revoked_at` is the sole trace this system
+  keeps that a logout or a token rotation happened, and the week that
+  matters is the week after a suspected compromise. Retaining it grants
+  nothing — `resolve_session` refuses on `revoked_at IS NULL` either way —
+  and seven days is shorter than the default `session_ttl_days` of 14, so
+  the window never holds a row longer than doing nothing would have. A row
+  that is both revoked and expired is held by the grace window rather than
+  swept by the expiry branch.
+
+  The original entry understated the growth rate. Sign-in *rotates*: it
+  revokes the previous session and inserts a new one, so rows accrue at the
+  rate users open the application, not the rate they remember to log out.
+
+  Filed against the entry below, which stands as written otherwise.
+
 - **`user_sessions` rows are never deleted.** `create_session` inserts,
   logout sets `revoked_at`, and reads filter on `expires_at`; nothing
   removes an expired or revoked row, so the table grows by one row per
@@ -196,6 +328,7 @@ count at all.
   at the price of a dialect-specific statement in a function that is
   currently dialect-neutral.
 
+<a id="api-surface"></a>
 ## API surface
 
 - **`docs_enabled` should default to `False`** — **landed.** A deployment that
@@ -248,6 +381,7 @@ count at all.
   application. That still wants an owner, and now has a trustworthy artefact
   to serve, which was the prerequisite it was really waiting on.
 
+<a id="scaling"></a>
 ## Scaling
 
 None of these bite at v1's target of 100 users and 25 sources; each is a
@@ -263,6 +397,7 @@ prerequisite for going past it.
   depends on the `trusted_proxies` / `FORWARDED_ALLOW_IPS` pair staying in
   step; a shared store would let this move somewhere less fragile.
 
+<a id="operations"></a>
 ## Operations
 
 - **Off-host backups.** `/srv/sre-tab/backups` sits on the same host as the
@@ -410,6 +545,7 @@ prerequisite for going past it.
   with a different vocabulary is what inverted the meaning. Persist intent,
   not appearance.
 
+<a id="things-that-are-true-but-unproven"></a>
 ## Things that are true but unproven
 
 Not deferred work so much as deferred *evidence*. Each is believed correct
@@ -497,6 +633,7 @@ during an incident.
   all, or is podman's to fix. `PublishPort=127.0.0.1:8080:8080` is the same
   line orbit-data uses, so anything learned here applies there too.
 
+<a id="documentation"></a>
 ## Documentation
 
 - **The README's quickstart is executed on every push** — **landed.**
@@ -566,6 +703,7 @@ during an incident.
   wholesale, so this was picked up in the same write rather than as its own
   task.
 
+<a id="repository"></a>
 ## Repository
 
 Consequences of the repository being public that are decisions rather than
@@ -624,6 +762,7 @@ tasks.
 - **Issue and pull-request templates.** Neither exists. Worth adding if the
   repository attracts contributions beyond the operator's own.
 
+<a id="product"></a>
 ## Product
 
 - **Per-device preferences (v2).** Already specified in the PRD: rows keyed

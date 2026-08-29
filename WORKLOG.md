@@ -3,6 +3,100 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-08-29 — v1.0.0 named, and six deferred items closed
+
+**The release existed and had no name.** The changelog had one section,
+`[Unreleased]`, and there were no tags — so a supply chain that signs,
+attests, and digest-pins every artefact still could not say which version
+was running. `v1.0.0` is tagged at `700bea3`, the completed v1, rather than
+at the branch head: merges here are squashed, so a tag on a branch commit
+would never become an ancestor of `main`.
+
+**Coverage was configured and unmeasured.** `pytest-cov` installed,
+`[tool.coverage.run]` set, and CI running bare `uv run pytest` — the same
+family as the six green-but-empty gates AGENTS.md lists, except that here
+there was no check at all rather than a check that verified nothing. Floor
+at 90 against a measured 94.23%, in `pyproject.toml` so the number sits
+with the tool configuration. Made to fail at a temporary 96% first.
+
+**The image-URL asymmetry was the smaller half of what it found.**
+Closing it meant one shared host rule for both feed URLs, which is what the
+entry asked for. What fell out was that `_looks_like_ip` tested
+`all(part.isdigit() …)` — and `"0x7f".isdigit()` is `False`, so
+`0x7f.0.0.1` was not recognised as a literal. That check guards
+`normalise_item_url` too, so a **canonical URL** pointing at the reader's
+own loopback was being accepted and rendered as a link: a live defect in
+the item path, reachable without the asymmetry at all. The fix reuses
+`urlguard.parse_numeric_ipv4` rather than adding a third decoder — the
+first attempt wrote a local copy, justified as "a different problem", which
+was true of the callers and false of the parsing that had been duplicated.
+Breaking the one body now fails three test files across two modules, which
+is what makes the sharing real rather than nominal.
+
+**A mutation test found a hole in its own suite.** The read filter was
+mutated to drop the `WHERE` predicate and filter the page in Python after
+the `LIMIT` — the wrong implementation the design exists to avoid — and
+only *one* test failed. Ids came back complete and correctly ordered; only
+page *sizes* went ragged, and nothing asserted on those. Adding
+`_assert_pages_are_full` to ten parametrised walks took the same mutation
+to eleven failures. The suite would have certified a broken implementation.
+
+**`read_state` is an enum, not a nullable boolean.** Three states, and a
+nullable boolean spells one as *absent* and another as *false* — the
+distinction then lives in whether a parameter is present rather than in its
+value, which is invisible in a URL a user can read or share. No schema
+change: `user_read_items` has existed since Phase 0.
+
+Making `hasOverride` count the new dimension then lit up "Save as my
+default" for a read-state-only filter, which would have sent an empty patch
+and reported success having stored nothing — the same shape as the
+`saveAsDefault` inversion already on the roadmap, caught before shipping.
+Split out as `hasSavableOverride` rather than by adding a preferences
+column nobody asked for.
+
+**Sessions grow at the rate users open the app.** Not the rate they log
+out: sign-in rotates, revoking the previous row and inserting a new one.
+Expired-and-never-revoked rows are swept immediately; revoked rows are held
+seven days, because `revoked_at` is the only trace a logout or rotation
+happened. A row both revoked *and* expired is held by the grace window, not
+taken by the expiry branch — verified end to end against a real migrated
+database, six seeded sessions, exactly the right three deleted.
+
+**`install.sh` staged timers it never enabled.** The `*.timer` glob copied
+each one in and `systemctl enable --now` then named the backup explicitly,
+so the sweep's timer would have been installed and silently never fired.
+Found while adding the fourth unit, and it would have applied to any timer
+added since the first.
+
+**The database roles exist and nothing uses them.** Three roles, verified
+against a real `postgres:18-trixie` rather than reasoned about, because the
+whole finding turns on one claim: `COPY … TO PROGRAM` is refused for all
+three, the DDL role included. Two things that would otherwise have been
+learned in production — `pg_dump` needs `SELECT` on *sequences*, without
+which it fails outright rather than producing a subtly wrong dump; and
+`ALTER DEFAULT PRIVILEGES` must say `FOR ROLE sretab_migrate`, because
+default privileges attach to the role that creates an object rather than to
+whoever runs the `ALTER`. `restore.sh` does `DROP`/`CREATE DATABASE`, which
+none of the three can do, and `smoke.sh` exercises only the superuser and
+would pass through a reverted cutover — both named in ROLES.md rather than
+guessed at.
+
+**Keyboard navigation uses real focus.** Roving `tabindex` with `.focus()`
+actually called, so the browser scrolls, screen readers announce, and
+`:focus-visible` applies — a parallel "selected index" rendered in CSS
+looks correct to a sighted mouse user and does not exist for assistive
+technology. `shiftKey` is deliberately outside the modifier guard: `?` is
+Shift+/ on most layouts, so "ignore anything with a modifier" would have
+silently removed the help overlay's own key.
+
+**Parallel agents, disjoint paths.** Seven ran against one worktree with
+file ownership assigned up front and instructions to run only their own
+area's tests and to report rather than fix anything outside it. That
+surfaced three cross-boundary findings — the stale `ci.yml` comment, an
+`E501` in another agent's file, and a fourth `DATABASE_URL` consumer that
+existed only because another agent had just added it — none of which any
+single agent could have seen alone.
+
 ## 2026-08-28 — Anchors declared rather than computed
 
 The `Docs` link check verified half of what a link is. It confirmed the file
