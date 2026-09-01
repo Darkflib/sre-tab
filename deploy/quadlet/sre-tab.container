@@ -21,7 +21,7 @@ Image=ghcr.io/darkflib/sre-tab:sha-c4bf6d600f41a38c51ea1078ca3e89fc6ca5c44e@sha2
 #
 # Change it with deploy/scripts/promote.sh, which resolves a published build
 # to its digest, refuses to write one that cosign cannot verify as ours, and
-# moves all three application units together. See deploy/README.md.
+# moves every unit running this image together. See deploy/README.md.
 #
 # Pull=missing rather than newer: a digest names immutable content, so a copy
 # already in the local store is by definition the right one, and a restart

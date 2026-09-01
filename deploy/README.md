@@ -276,8 +276,9 @@ database restarting underneath an already correctly ordered migration.
 
 ## Upgrading
 
-An upgrade is a commit, not a restart. The three application units pin
-`ghcr.io/darkflib/sre-tab:sha-<commit>@sha256:<digest>` with `Pull=missing`,
+An upgrade is a commit, not a restart. Every unit that runs the application
+image pins `ghcr.io/darkflib/sre-tab:sha-<commit>@sha256:<digest>` with
+`Pull=missing`,
 so restarting them re-runs the build that is already pinned and nothing else.
 Changing which build runs happens in the repository, where it can be reviewed
 and reverted.
@@ -298,18 +299,22 @@ deploy/scripts/promote.sh 1a2b3c4         # or a specific commit
 ```
 
 It resolves the commit to the digest the registry actually serves, verifies
-that digest, and only then rewrites all three units. If verification fails it
-writes nothing:
+that digest, and only then rewrites every unit named in its `UNITS` list. If
+verification fails it writes nothing:
 
 ```
 ==> cosign verify ghcr.io/darkflib/sre-tab@sha256:…
 Error: no signatures found
 ```
 
-Review and commit the result — the diff is three `Image=` lines, and they
-must always move together, because migrations, the application, and the
-frontend assets ship in one image so they cannot skew. CI enforces both that
-they agree and that the digest they name is signed.
+Review and commit the result — the diff is one `Image=` line per unit, and
+they must always move together, because migrations, the application, the
+frontend assets, and the session sweep ship in one image so they cannot skew.
+CI enforces both that they agree and that the digest they name is signed: it
+counts distinct references rather than checking a fixed number, so adding a
+unit needs no edit there. `UNITS` in `promote.sh` is the one list that does
+need it — a unit missing from it is not slow drift but the next promotion
+failing that check outright.
 
 ### Apply it on the host
 
@@ -328,6 +333,15 @@ honours the `After=` ordering inside it. The first start after a promotion
 pulls the new digest; later restarts do not touch the network, because a
 digest names immutable content and the local copy is by definition the right
 one.
+
+Two units are deliberately absent from that list, for opposite reasons.
+`sre-tab-web.service` is Caddy and does not run the application image, so a
+promotion never changes it. `sre-tab-prune-sessions.service` does run it, but
+it is timer-driven and not running, so there is nothing to restart — it
+adopts the new digest by itself at its next elapse, once `install.sh` has
+staged the rewritten unit. So the four units a promotion rewrites and the
+four services this command restarts are different sets of four, overlapping
+in three.
 
 Take a backup before any upgrade that carries a migration; `alembic
 downgrade` is not a substitute for a restore.
