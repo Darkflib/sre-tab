@@ -38,6 +38,8 @@ that.
 - [Operations](#operations)
   - Off-host backups.
   - An `OnFailure=` alert unit.
+  - Release hygiene: no Release against `v1.0.0`, and no versioned image tag
+    a self-hoster can pull.
   - Frontend coverage for `src/api/client.ts`, and for the parts of
     `usePagedResource` that need a DOM — its decision logic is covered now,
     its effects are not.
@@ -49,15 +51,27 @@ that.
     handful of restarts.
   - The ~20s of deploy outage after `systemctl` returns — cause still
     unknown.
+  - The `>=3.12` floor, checked by hand once and by CI never.
+  - The Containerfile's setuid inventory, counted on the 3.12 base image.
 - [Documentation](#documentation)
   - `deploy/README.md` in CI, which needs a journald-capable runner, and
     the upgrade sequence, still unexecuted.
 - [Repository](#repository)
-  - Issue and pull-request templates.
+  - Issue and pull-request templates, and the repository's own
+    discoverability — no topics, no homepage, no social preview.
 - [Product](#product)
   - Per-device preferences (v2).
   - Non-RSS sources.
   - Richer authorisation.
+  - A `compose.yaml`, for the deployment that sits between the quickstart
+    and the quadlets.
+  - A denied sign-in should land on the page, not on a JSON 403.
+  - An admin surface for `is_admin`, which nothing sets and nothing reads.
+  - Search over the retained items.
+  - A data export, and OPML in the CLI.
+  - First-screen polish: source icons, mark-all-read, per-source freshness,
+    and a second mobile breakpoint.
+  - A `/metrics` endpoint.
 
 <a id="supply-chain-hygiene"></a>
 ## Supply-chain hygiene
@@ -231,6 +245,10 @@ count at all.
   three roles holds, and `smoke.sh` exercises only the superuser today, so
   it would keep passing through a broken or silently reverted cutover.
   Both are named in ROLES.md rather than guessed at.
+
+  The production-readiness review of 1 September 2026 put the cutover first
+  among everything it found, on the ground this entry opens with: it is the
+  only item in this section whose severity three operators do not cap.
 - **The OAuth state cookie can be overwritten from a sibling subdomain.**
   `set_state_cookie` scopes to `/api/v1/auth` with `HttpOnly`, `SameSite=Lax`,
   and `Secure`, which is careful about everything except *which host* may
@@ -328,6 +346,15 @@ count at all.
   at the price of a dialect-specific statement in a function that is
   currently dialect-neutral.
 
+  That price is already paid, once, somewhere else.
+  [app/services/upsert.py](app/services/upsert.py) provides `insert_ignore`,
+  an `INSERT … ON CONFLICT DO NOTHING` implemented for both dialects behind
+  one signature — so the select-then-insert becomes an insert-ignore
+  followed by a select on `github_id`, the loser of the race reads the
+  winner's row instead of raising, and `upsert_user` stays as
+  dialect-neutral as it is today. What holds this open is the narrowness of
+  the window, not the size of the fix.
+
 <a id="api-surface"></a>
 ## API surface
 
@@ -401,11 +428,46 @@ prerequisite for going past it.
 ## Operations
 
 - **Off-host backups.** `/srv/sre-tab/backups` sits on the same host as the
-  database. That is a backup, not disaster recovery.
+  database. That is a backup, not disaster recovery. The integrity half is
+  already built — `backup.sh` writes a `.sha256` sidecar beside every dump,
+  under the same mask — so what is missing is a copy to another host and a
+  verify at the far end, and not a backup format, a checksum scheme, or a
+  restore procedure. All three of those exist and `smoke.sh` runs them on
+  every push.
 - **`OnFailure=` alert unit.** Deliberately not invented in v1 — orbit-data's
   equivalent is a subcommand of its own application, and sre-tab had no CLI
   at the time. It has one now, and `sre-tab status` already exits non-zero
   when an enabled source is failing, so the alert path has something to call.
+
+  The shape that needs no new dependency: a timer running `sre-tab status`,
+  and `OnFailure=` on that service pointing at whatever the host already
+  uses to reach a person. What it buys is the part worth stating, because it
+  is invisible from either piece on its own — a failing source is currently
+  visible only if somebody runs the CLI. The readiness probe knows and
+  deliberately does not say: `app/scheduler/service.py` returns `ok=True`
+  with the failure count in the detail string, because one broken feed must
+  not take the instance out of rotation. Readiness and alerting want
+  opposite answers to the same question, and only one of them is being
+  asked.
+- **Nothing here can be installed by version.** `v1.0.0` is a git tag and
+  nothing more: no Release object against it, so the tag carries no notes
+  and none of the artefacts the build already produces, the SBOM among them.
+  `CHANGELOG.md` has accumulated an `[Unreleased]` section
+  substantially larger than the release it sits above. And the registry
+  holds only `sha-<commit>` tags, because the publish job runs on pushes to
+  `main` and on nothing else, so the only path to a known-good deployment is
+  `promote.sh` run from a checkout of this repository. That is exactly right
+  for the reference host and useless to anyone else: there is no version to
+  ask for.
+
+  What closes it is one iteration rather than one change — cut 1.1.0, create
+  the Release with notes and the SBOM attached, and add a tag-triggered
+  publish that pushes `:1.1.0` and `:1.1` alongside the digest. The
+  digest-pinned promotion stays exactly as it is, for the reason
+  [Supply-chain hygiene](#supply-chain-hygiene) gives: a moving tag decides
+  the running version by whoever pushed last, which is the property that
+  entry exists to have removed. A floating `:1.1` is a convenience for
+  people not running these quadlets, and it is not what the units point at.
 - **Frontend unit tests** — **landed, and they found things.** Vitest, 114
   tests in three files, no jsdom: the theme tests install by hand the two or
   three globals the theme layer touches, so a new global dependency shows up
@@ -633,6 +695,38 @@ during an incident.
   all, or is podman's to fix. `PublishPort=127.0.0.1:8080:8080` is the same
   line orbit-data uses, so anything learned here applies there too.
 
+- **`requires-python = ">=3.12"` is a floor CI stopped testing today.**
+  The five setup-python steps now take `python-version-file:
+  .python-version` — the fix for a 3.14 that was installed and then silently
+  not used — and the consequence is that CI exercises one interpreter, 3.14,
+  where it previously exercised one interpreter by accident. The floor is
+  not a guess: the full suite was run by hand on 3.12.13 in a separate
+  environment for that change. It is simply never run again, so the first
+  3.13-or-later syntax or stdlib behaviour to reach `app/` will be published
+  in metadata that still promises 3.12, and nothing will say so.
+
+  This one has a decision attached rather than only a measurement: a matrix
+  job on the floor, which costs a second run of the suite on every push and
+  keeps the promise honest, or `requires-python = ">=3.14"`, which stops
+  making it. Either is small. Drifting is the option that costs something,
+  and it is the one that happens by default. The reasoning is in
+  [WORKLOG.md](WORKLOG.md).
+- **The Containerfile's setuid inventory was counted on a base image that is
+  no longer the base image.** The comment above the strip names eleven
+  setuid and setgid files — mount, umount, su, passwd, chsh, chfn, chage,
+  expiry, gpasswd, newgrp, and unix_chkpwd — counted on
+  `python:3.12-slim-trixie`. Both stages moved to `python:3.14-slim-trixie`
+  and nobody has counted them there.
+
+  Nothing load-bearing rests on the number. The `RUN` strips whatever it
+  finds and then asserts the end state rather than the exit status of the
+  traversal, and ci.yml re-asserts it against the built image, so the
+  property survives a base image with a twelfth file or none at all. What
+  drifts is the comment — and the comment is what a reader consults when
+  deciding whether the strip is still doing anything, which is the question
+  `sre-tab.container`'s missing `NoNewPrivileges=true` makes them ask. A
+  one-line item, worth folding into the next base image move.
+
 <a id="documentation"></a>
 ## Documentation
 
@@ -759,11 +853,27 @@ tasks.
   reviews. [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection) carries the
   read and fix commands for the next time a job is renamed.
 
-- **Issue and pull-request templates.** Neither exists. Worth adding if the
-  repository attracts contributions beyond the operator's own.
+- **Issue and pull-request templates, and nothing that makes the repository
+  findable.** Neither template exists, which was the whole of this entry and
+  is now the smaller half of it. The repository also carries no topics, no
+  homepage URL, and no social preview image — read from its own metadata on
+  1 September 2026, not inferred from the tree. So it is discoverable by
+  name, by someone who already knows the name.
+
+  One item rather than four because they share a cost and a condition. Each
+  is minutes of work; the templates matter only once contributions arrive,
+  and the other three are most of what decides whether any do.
 
 <a id="product"></a>
 ## Product
+
+The first three are v1 scope deferrals and are specified in
+[prd-v1.md](prd-v1.md). The rest came from the production-readiness review
+of 1 September 2026, and they are open for one shared reason rather than
+seven: v1 was built for three operators who each hold a shell on the
+reference host, so nothing a shell could already do was built a second time.
+That is the right v1 and a narrow product. Most of what follows is the
+difference between the two.
 
 - **Per-device preferences (v2).** Already specified in the PRD: rows keyed
   `(user_id, device_id)` holding only explicit overrides, merged over the
@@ -775,3 +885,90 @@ tasks.
 - **Richer authorisation.** v1 is a static allow-list of GitHub numeric IDs
   behind a single seam, so org or team resolution can replace it without
   disturbing the OAuth flow around it.
+- **There is no five-minute path to a running instance.** The README's
+  quickstart is development mode — SQLite, two processes, `npm run dev`, no
+  container — and [deploy/README.md](deploy/README.md) is a Debian 13 host
+  with rootful podman, quadlets, and systemd secrets. Between the two sits
+  the arrangement most people who self-host anything actually run, and this
+  repository has nothing to say to it: a `compose.yaml` over the published
+  image and the same [deploy/Caddyfile](deploy/Caddyfile).
+
+  The composition is not new work so much as new packaging. `smoke.sh`
+  already stands the full stack up — PostgreSQL, migrations, the
+  application, Caddy — on every push, and it is engine-agnostic on purpose:
+  CI runs it under podman and `CONTAINER_ENGINE=docker` is a documented,
+  supported path for a developer machine. Judged on reach per hour spent,
+  this is worth more than any feature under it.
+- **A denied sign-in ends in a JSON 403 that the README has to apologise
+  for.** An account not on the allow-list reaches
+  [app/api/v1/auth.py](app/api/v1/auth.py), which raises `HTTPException` —
+  so a browser that has just completed a GitHub authorisation is shown a
+  bare `403` body, which reads as a broken OAuth application, which is why
+  [README.md](README.md) spends a front-page section explaining that it is
+  not one. Documentation is standing in for an error message.
+
+  The mechanism to fix it is already there and already used by the
+  neighbouring branch: a cancelled flow calls `_landing_redirect`, which
+  returns the browser to the landing page carrying a fixed `?signin=`
+  outcome the frontend maps to a message. The denied flow should do the
+  same, with an outcome whose message names the user's own numeric GitHub ID
+  — the exact value `ALLOWED_GITHUB_IDS` wants, public information either
+  way, and known at the point of refusal because authorisation happens after
+  the profile fetch and before any row is written. Two things stay as they
+  are: the failure limiter is still hit, because a grinder reaches this
+  branch as easily as a first-time operator does; and how the ID travels to
+  the page is the one open design question, since everything in that
+  redirect is a fixed token today and this would be the first value in it.
+- **`is_admin` exists, and nothing sets it or reads it.** The column is on
+  `users` with a `false` server default and `MeResponse` carries it to the
+  client. That is the entire implementation. Adding an operator means
+  editing `app.env` and restarting the unit; adding a source means a shell
+  in the container. A small admin API behind that flag — sources add,
+  enable, disable, and set-topics, plus topics and refresh status — with a
+  page under Settings closes both, and the two expensive prerequisites are
+  built: CSRF is structural on mutating routes, and the add-time URL check
+  is `validate_feed_url`, which the CLI path already goes through.
+
+  **Re-read
+  [Security findings this deployment absorbs](#security-findings-this-deployment-absorbs)
+  before writing any of it, as a checklist rather than as background.**
+  Several entries there are held open on the stated condition that no route
+  adds a feed. This is that route. Each of those findings changes severity
+  the day it merges, and the route being admin-only is not a detail of the
+  design but the thing that decides how far each one moves.
+- **Ninety days of retained items and no way to search them.**
+  `feed_retention_days` defaults to 90, so there is a real corpus behind the
+  feed and the only way to reach anything in it is to scroll. The shape that
+  fits what is already here is a `tsvector` over title and summary with a
+  GIN index on PostgreSQL, and FTS5 or a `LIKE` on SQLite for development,
+  applied as one more predicate inside the existing keyset query rather than
+  as a second endpoint beside it. That is how the read-state filter went in
+  and for the same reason: a predicate in the `WHERE` of the statement that
+  already runs keeps pages full and cursors honest, where filtering the
+  page after it comes back does neither.
+- **The pitch is that the data lives on your own server, and there is no way
+  to get it out.** `DELETE /api/v1/me` exists, so an account can be
+  destroyed, and nothing exports it first. `GET /api/v1/me/export` returning
+  preferences, bookmarks, and read state as JSON is the user's half. The
+  operator's half is OPML, both directions, in the CLI: the catalogue is
+  seeded by `sre-tab seed` or assembled one `source add` at a time, and an
+  import would turn standing an instance up around somebody's existing
+  reading into a single command.
+- **Four things missing from the first screen, none of them deep.** Sources
+  render an icon and no source has one:
+  [ItemCard.tsx](frontend/src/components/ItemCard.tsx) returns early without
+  an `icon_url`, and the seed catalogue sets it on nothing, so the
+  affordance is built and never fires. There is no mark-all-read for the
+  current filter, which is the first control a reader with an unread filter
+  reaches for. Per-source freshness is operator-only — `sre-tab status`
+  knows when each source last fetched and no API field carries it, so a user
+  cannot tell a quiet source from a broken one. And
+  [app.css](frontend/src/styles/app.css) holds exactly one media query, at
+  42rem, which makes the chip bar on a phone unverified rather than
+  known-bad.
+- **A `/metrics` endpoint.** Prometheus exposition is among the commoner
+  self-hosting asks, and it costs this project nothing it has promised:
+  a scrape is a local pull, so "nothing phones home" survives it intact.
+  It ranks below the `OnFailure=` alert unit in
+  [Operations](#operations), which closes the same loop for the reference
+  deployment without a new dependency, a new route, or a scraper to run.
