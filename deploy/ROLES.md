@@ -136,11 +136,20 @@ to this tooling itself. `--rotate` regenerates all three passwords and
 secrets together; see "Rotating a role's password" below for what that
 means once one of them is actually in use.
 
-If a role's secret exists but the role itself does not — the two have
-drifted apart, which should only happen from a manual `DROP ROLE` — the
-script refuses to guess and asks for `--rotate` explicitly rather than
-generating a role with an unknown password that will never match the
-secret again.
+If a role and its podman secret disagree about whether they exist, the
+script refuses to guess and asks for `--rotate` explicitly, in either
+direction:
+
+- **Secret exists, role does not** — should only happen from a manual
+  `DROP ROLE`. Generating a role with an unknown password would never
+  match the secret again.
+- **Role exists, secret does not** — a manually deleted secret, or a
+  partial host recovery. Writing a fresh secret without also rotating the
+  role's password would still leave the two disagreeing, since the role's
+  existing password is not known to this script; left unguarded, this case
+  used to fall through silently and report success with no secret written,
+  surfacing only later when the cutover starts a unit whose `Secret=`
+  reference does not resolve.
 
 ## Verification
 

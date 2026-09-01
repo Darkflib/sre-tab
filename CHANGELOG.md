@@ -13,9 +13,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ROADMAP.md so a reporter can tell a new finding from a held one.
 - Coverage is now a gate. `fail_under = 90` in `pyproject.toml` and
   `--cov=app` on the `python` job's pytest step, where the tooling was
-  configured and nothing ever ran it. The threshold is a floor under the
-  94.23% the suite already holds, not a target. Proven to bite before
-  being believed: at a temporary 96% the job exits 1.
+  configured and nothing ever ran it. The threshold is a floor to catch a
+  slide, not a target: it was set under the 94.23% measured when the gate
+  went in, and the work in this release since took that to 94.44%. Proven
+  to bite before being believed — at a temporary 96% the job exits 1.
 - A read-state filter on the feed. `GET /api/v1/feed` takes
   `read_state=all|unread|read` (default `all`, so an existing client sees
   no change), applied as a predicate on the `user_read_items` join the

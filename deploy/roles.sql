@@ -163,6 +163,62 @@ ALTER ROLE sretab_migrate  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOB
 ALTER ROLE sretab_app      NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS LOGIN;
 ALTER ROLE sretab_readonly NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS LOGIN;
 
+-- === Membership assertion ==================================================
+--
+-- CREATE ROLE above only ever runs for a role that did not already exist;
+-- a role that was already there — carrying whatever membership someone
+-- granted it by hand, or that a prior, unrelated deployment left behind —
+-- is never recreated, so that membership survives everything above
+-- untouched. NOSUPERUSER blocks the direct route to `COPY ... TO PROGRAM`,
+-- but PostgreSQL also grants it via membership of the predefined role
+-- pg_execute_server_program, and pg_read_server_files / pg_write_server_files
+-- are the same shape of problem for reading and writing arbitrary files on
+-- the server's filesystem. A role that reaches any of these through
+-- inherited membership defeats the point of this file exactly as much as
+-- one left SUPERUSER would.
+--
+-- Checked against the reserved `pg_` prefix rather than naming the three
+-- predefined roles individually, for two reasons. First, PostgreSQL refuses
+-- to let anyone create a role whose name starts with "pg_" (`role name
+-- "pg_meddle" is reserved`), so the prefix identifies predefined roles
+-- precisely and cannot false-positive on a role an operator or another tool
+-- created. Second, it also catches whichever predefined role of this shape
+-- a future PostgreSQL version adds — `pg_maintain` in PG17 is the precedent
+-- for "a new predefined role turns out to matter here" — without this file
+-- needing to know its name in advance. The trade-off is that it also aborts
+-- on membership of a predefined role that grants nothing dangerous (say,
+-- pg_monitor); that is deliberate, not an oversight — none of the three
+-- roles this file creates has any legitimate reason to inherit *any*
+-- predefined-role membership, so there is no normal-path case for it to
+-- false-positive against, and treating "unexplained" the same as
+-- "dangerous" is the cheaper mistake to make.
+--
+-- Fails closed rather than revoking automatically: an unexpected membership
+-- here means someone granted it deliberately, for a reason this script has
+-- no way to know, and silently undoing that decision is a worse outcome
+-- than stopping and asking a human to look — the same reasoning
+-- create-roles.sh uses for a role/secret pair that has drifted apart.
+--
+-- Idempotent like everything else here: the query only ever finds rows when
+-- an unwanted membership actually exists, so a clean run never raises, and
+-- re-running after the membership is revoked by hand raises nothing either.
+DO $$
+DECLARE
+    bad RECORD;
+BEGIN
+    FOR bad IN
+        SELECT r.rolname AS member_role, g.rolname AS granted_role
+        FROM pg_catalog.pg_auth_members m
+        JOIN pg_catalog.pg_roles r ON r.oid = m.member
+        JOIN pg_catalog.pg_roles g ON g.oid = m.roleid
+        WHERE r.rolname IN ('sretab_migrate', 'sretab_app', 'sretab_readonly')
+          AND g.rolname LIKE 'pg\_%'
+    LOOP
+        RAISE EXCEPTION '% is a member of predefined role % -- this file exists to remove exactly this capability, and inherited membership reaches it as surely as SUPERUSER would; this was not granted by this script, so it will not be silently revoked either. Establish why the membership is there, then drop it by hand (REVOKE % FROM %) and re-run', bad.member_role, bad.granted_role, bad.granted_role, bad.member_role;
+    END LOOP;
+END
+$$;
+
 -- === Schema ================================================================
 
 GRANT CREATE, USAGE ON SCHEMA public TO sretab_migrate;

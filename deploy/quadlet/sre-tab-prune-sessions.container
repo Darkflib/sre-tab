@@ -1,11 +1,25 @@
 [Unit]
 Description=Delete dead Developer News Dashboard session rows
 # The database accepting connections, not merely running: that is what
-# sre-tab-db.container's Notify=healthy buys. Nothing else is needed —
-# this talks to PostgreSQL and to nothing else, so it does not wait on
-# the application unit and is not blocked by the application being down.
+# sre-tab-db.container's Notify=healthy buys. It does not wait on the
+# application unit and is not blocked by the application being down —
+# this talks to PostgreSQL and to nothing else.
 Requires=sre-tab-db.service
 After=sre-tab-db.service
+
+# Ordered after the backup, which the clock does not do on its own. Both
+# timers are Persistent=true, so a host that was off across 03:22 and 04:17
+# runs both missed jobs at the next boot, in one transaction, with nothing
+# separating them: the sweep could then DELETE rows while pg_dump is
+# reading, and the backup would be the first one not to contain them. The
+# 55-minute gap between the two OnCalendar times is a property of a host
+# that stayed up, and catch-up is precisely the case where it does not hold.
+#
+# After= without Wants= or Requires=: ordering only, never causation. This
+# unit must not pull in a backup, and on the ordinary nightly path
+# sre-tab-backup.service is a completed oneshot with no RemainAfterExit, so
+# the ordering is inert and costs nothing.
+After=sre-tab-backup.service
 
 [Container]
 ContainerName=sre-tab-prune-sessions

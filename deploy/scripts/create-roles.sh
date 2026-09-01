@@ -67,9 +67,10 @@ PRIVILEGES are no-ops when already in place), which is what makes it safe to
 run again after a schema change lands new tables under the superuser by
 accident, or to pick up a change to this script itself.
 
-Refuses to run, rather than guess, if a role's podman secret exists but the
-role itself does not -- that pairing cannot be resolved by generating a new
-password for one without the other; pass --rotate to resynchronise both.
+Refuses to run, rather than guess, if a role and its podman secret disagree
+about whether they exist -- a secret with no role, or a role with no
+secret. Neither pairing can be resolved by generating a new password for
+one without the other; pass --rotate to resynchronise both.
 
 Not called by install.sh. This is operator-invoked, deliberately -- creating
 the roles is not the same decision as switching anything over to them.
@@ -162,6 +163,17 @@ error: ${secret_name[$r]} already exists, but role sretab_$r does not.
        password for one without the other would leave them disagreeing
        again. Re-run with --rotate to regenerate the secret and (re)create
        the role together.
+EOF
+        exit 1
+    fi
+
+    if [ "${role_exists[$r]}" = true ] && [ "${secret_exists[$r]}" = false ] && [ "$rotate" = false ]; then
+        cat >&2 <<EOF
+error: role sretab_$r already exists, but ${secret_name[$r]} does not.
+       The role and the secret have drifted apart -- writing a new secret
+       without also rotating the role's password would leave them
+       disagreeing again. Re-run with --rotate to regenerate the role's
+       password and the secret together.
 EOF
         exit 1
     fi
