@@ -30,7 +30,7 @@ ENGINE=${CONTAINER_ENGINE:-podman}
 IMAGE=${SRE_TAB_IMAGE:-sre-tab:smoke}
 PORT=${SMOKE_PORT:-18080}
 
-PG_IMAGE=docker.io/library/postgres:18-trixie@sha256:06cad38a5d9f5d24b4d83d86def30795d5e4b757fedbf5281172b576dedcd941
+PG_IMAGE=docker.io/library/postgres:18-trixie@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
 CADDY_IMAGE=docker.io/library/caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
 
 NET=sre-tab-smoke
