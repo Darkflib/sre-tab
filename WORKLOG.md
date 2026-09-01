@@ -3,6 +3,29 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-09-01 — The review's remaining findings, filed
+
+A production-readiness review of the tree and of the repository's own
+metadata ran today, and its findings are in [ROADMAP.md](ROADMAP.md) rather
+than in the conversation that produced them. Five existing entries gained
+what was measured against them: the least-privilege cutover ranked first of
+everything found, `insert_ignore` as the cheap close for `upsert_user`, the
+`OnFailure=` timer's shape and why `/healthz` calls a failing source healthy
+on purpose, the `.sha256` sidecars that leave only the off-host copy
+missing, and the templates entry widened to no topics, no homepage, and no
+social preview. Ten are new: release hygiene, the `>=3.12` floor CI stopped
+testing today, a setuid inventory counted on the 3.12 base image, and seven
+under Product from a `compose.yaml` to `/metrics`.
+
+**Filing is the point.** The security section already argues that a finding
+living only in a worklog gets re-reported by the next review; one living
+only in a chat transcript is worse, because it is re-discovered at full
+price by somebody with no way to know it was ever found.
+
+One claim was corrected rather than copied across: the review had `smoke.sh`
+bringing the stack up under Docker in CI. It is engine-agnostic, CI runs it
+under podman, and `CONTAINER_ENGINE=docker` is the documented developer path.
+
 ## 2026-09-01 — Test on the interpreter we ship
 
 **A Renovate PR sat red for two weeks, and not for the reason it looked.**
