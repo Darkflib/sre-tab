@@ -42,7 +42,7 @@ this machine has no such build.
 IPv4-mapped address at the top and returns `classify_address(mapped) or
 "blocked-range"`, the `or` standing in for the `::ffff:0:0/96` entry the
 loop below would otherwise have reached — so a mapped literal carrying a
-routable IPv4 is still refused, and the reason is the embedded address's
+routable IPv4 is still refused, and the reason is the embedded address's,
 whatever the interpreter thinks of the mapped form. That made the
 `ipv4_mapped` branch of `_embedded_addresses` unreachable; it had in fact
 been dead on every interpreter, because that blocked entry already meant

@@ -65,7 +65,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- **The reason an IPv4-mapped literal was refused with came from the
+- **The reason logged for a refused IPv4-mapped literal came from the
   interpreter rather than from the guard.** `classify_address` returned the
   first `ipaddress` predicate that matched, and which of those consult
   `ipv4_mapped` varies by patch level: on Ubuntu 24.04's CPython 3.12.3 —
