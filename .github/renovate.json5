@@ -60,19 +60,28 @@
       dependencyDashboardApproval: true,
     },
     {
-      // The tested interpreter has to be the shipped one, and that is a
-      // single decision spread over four managers: github-actions
-      // (`python-version` in five setup-python steps), pyenv
-      // (`.python-version`), dockerfile (the `python:…-slim-trixie` the image
-      // is built on), and pep621 (`requires-python`). Renovate reads the
-      // workflow's python-version as a dependency named `python` and calls
-      // 3.12 -> 3.14 a *minor* update — Python's second digit is Renovate's
-      // minor digit whatever CPython means by it — so the weekly grouped PR
-      // moved those five workflow steps and nothing else, and CI spent a run
-      // testing the suite on an interpreter the image does not ship. 3.15 is
-      // due in October 2026 and must not arrive the same way: this rule makes
-      // it a checkbox on the dependency dashboard, and ticking it lands the
-      // workflow steps, `.python-version`, and the Containerfile in one PR.
+      // The tested interpreter has to be the shipped one, and that decision
+      // now has exactly two copies: `.python-version` — read by uv locally,
+      // by setup-python in CI, and bumped here by Renovate's pyenv manager as
+      // a dependency named `python` — and the `python:…-slim-trixie` the
+      // image is built on, read by the dockerfile manager. `requires-python`
+      // in pyproject.toml is deliberately not a third: it is the floor the
+      // code supports, not the version under test.
+      //
+      // Renovate calls a CPython feature release a *minor* update — Python's
+      // second digit is Renovate's minor digit whatever CPython means by it —
+      // so the weekly grouped PR moved the five `python-version:` steps the
+      // workflows used to carry and nothing else. That did not test 3.14
+      // either: uv reads `.python-version`, which still said 3.12, found no
+      // 3.12 where setup-python had just installed 3.14, and fell back to the
+      // runner's own /usr/bin/python3.12 — Ubuntu 24.04's 3.12.3, an
+      // interpreter nobody chose and the image does not ship. Hence the
+      // workflows no longer name a version at all: they pass
+      // `python-version-file: .python-version`, so what setup-python installs
+      // is by construction what uv is about to select. 3.15 is due in October
+      // 2026 and must not arrive the same way: this rule makes it a checkbox
+      // on the dependency dashboard, and ticking it lands `.python-version`
+      // and the Containerfile together in one PR.
       //
       // Version-changing types only. `digest`, `pin`, and `pinDigest` stay in
       // the group above, so a digest refresh of the tag already in use keeps
@@ -80,7 +89,7 @@
       // usually carrying security fixes, not a different interpreter.
       //
       // matchDepNames alone, with no matchDatasources and no matchManagers:
-      // the four managers split across two datasources (python-version and
+      // the two managers read different datasources (python-version and
       // docker), so filtering on either would drop the other half, and the
       // docker half is what decides which interpreter actually ships. A
       // manager list would be a second thing to remember if the version is

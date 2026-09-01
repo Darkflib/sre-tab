@@ -52,8 +52,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   items on purpose, which left no way to see what was still open without
   reading all 39KB of it.
 
+### Changed
+
+- **The shipped and tested interpreter is Python 3.14.** `.python-version`
+  and both Containerfile stages now agree on `python:3.14-slim-trixie`, and
+  the workflows read `.python-version` rather than carrying a copy, so
+  setup-python and uv cannot select different interpreters again.
+  `requires-python` stays `>=3.12` as the floor the code supports. Renovate
+  calls a CPython feature release a *minor* update, so the weekly group had
+  moved the workflow steps alone; interpreter bumps are approval-gated now,
+  and 3.15 arrives as a dashboard tick rather than as a PR.
+
 ### Fixed
 
+- **The reason an IPv4-mapped literal was refused with came from the
+  interpreter rather than from the guard.** `classify_address` returned the
+  first `ipaddress` predicate that matched, and which of those consult
+  `ipv4_mapped` varies by patch level: on Ubuntu 24.04's CPython 3.12.3 —
+  which CI reached by accident, through uv's fallback to the runner's system
+  Python — `is_loopback` does not, so `::ffff:127.0.0.1` classified as
+  "private" and `::ffff:8.8.8.8` as "reserved" rather than "loopback" and
+  "blocked-range". The guard now unwraps the embedded IPv4 itself, falling
+  back to "blocked-range". Every one of these was refused before and is
+  refused now; only the label an operator reads had moved.
 - Feed image URLs are validated as strictly as item URLs. The two
   functions now share one host rule, so they cannot drift apart again.
 - **An IP-literal check that missed hex-obfuscated addresses**, found while

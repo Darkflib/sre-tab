@@ -53,10 +53,13 @@ jobs:
         with:
           persist-credentials: false
 
-      # Same pins as ci.yml so Renovate moves both in one PR.
+      # Same action and tool pins as ci.yml so Renovate moves both in one PR.
+      # The interpreter is no longer one of them: setup-python reads
+      # .python-version, which is the file uv reads too, so the two cannot
+      # disagree about which Python this job runs.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: "3.14"
+          python-version-file: .python-version
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.12.5"
