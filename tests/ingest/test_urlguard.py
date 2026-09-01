@@ -63,10 +63,13 @@ HOSTILE_URLS: list[tuple[str, str | None]] = [
     ("https://0.0.0.0/rss", "unspecified"),
     ("https://169.254.169.254/latest/meta-data/", "link-local"),
     ("https://[::1]/rss", "loopback"),
-    # ipaddress judges an IPv4-mapped address by its embedded IPv4, so
-    # the reason is the embedded one; ::ffff:0:0/96 is blocked wholesale
-    # regardless, which is what catches the public-mapped case below.
+    # The guard unwraps an IPv4-mapped address and reports the embedded
+    # IPv4's reason, whatever the running interpreter's own IPv6
+    # predicates make of the mapped form; ::ffff:0:0/96 is blocked
+    # wholesale regardless, which is what catches the public-mapped case.
     ("https://[::ffff:127.0.0.1]/rss", "loopback"),
+    ("https://[::ffff:10.0.0.1]/rss", "private"),
+    ("https://[::ffff:169.254.169.254]/rss", "link-local"),
     ("https://[::ffff:8.8.8.8]/rss", "blocked-range"),
     ("https://[fe80::1]/rss", "link-local"),
     ("https://[fc00::1]/rss", "private"),
