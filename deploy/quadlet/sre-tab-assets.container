@@ -5,8 +5,8 @@ Wants=network-online.target
 
 [Container]
 ContainerName=sre-tab-assets
-Image=ghcr.io/darkflib/sre-tab:sha-fbf0f0ad2aa48e1254902ffb897d85657ab81908@sha256:4a4ccc313bec5277d3a7485bd1bb627aba1e7bf18253e2b340f134ef00a205e5
-# Same digest as the application and migration units, and not by coincidence:
+Image=ghcr.io/darkflib/sre-tab:sha-c4bf6d600f41a38c51ea1078ca3e89fc6ca5c44e@sha256:7157d060ee9145c639696bfd3d3b5a84f5c7b4e0ce213e82d6a65e6e78ee7b8b
+# Same digest as every other unit running this image, and not by coincidence:
 # the assets are copied out of that image. See sre-tab.container.
 Pull=missing
 Volume=sre-tab-assets.volume:/srv/www:rw
