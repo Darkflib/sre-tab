@@ -49,11 +49,62 @@
     {
       // Majors are the ones that break; bundling one with nine harmless
       // patches means a single failure blocks all of them. They sit on the
-      // dependency dashboard until ticked. python:3.12-slim-trixie -> 3.13
-      // and postgres:18 -> 19 are the obvious ones this holds back — the
-      // latter especially, because a PostgreSQL major bump needs the PGDATA
-      // note in deploy/quadlet/sre-tab-db.container read first.
+      // dependency dashboard until ticked. postgres:18 -> 19 and node:24 ->
+      // 25 are the obvious ones this holds back — the former especially,
+      // because a PostgreSQL major bump needs the PGDATA note in
+      // deploy/quadlet/sre-tab-db.container read first. The interpreter is
+      // not one of them and never was: a CPython feature release moves only
+      // the second digit, which is Renovate's minor, so it is held by the
+      // rule below instead.
       matchUpdateTypes: ["major"],
+      dependencyDashboardApproval: true,
+    },
+    {
+      // The tested interpreter has to be the shipped one, and that decision
+      // now has exactly two copies: `.python-version` — read by uv locally,
+      // by setup-python in CI, and bumped here by Renovate's pyenv manager as
+      // a dependency named `python` — and the `python:…-slim-trixie` the
+      // image is built on, read by the dockerfile manager. `requires-python`
+      // in pyproject.toml is deliberately not a third: it is the floor the
+      // code supports, not the version under test.
+      //
+      // Renovate calls a CPython feature release a *minor* update — Python's
+      // second digit is Renovate's minor digit whatever CPython means by it —
+      // so the weekly grouped PR moved the five `python-version:` steps the
+      // workflows used to carry and nothing else. That did not test 3.14
+      // either: uv reads `.python-version`, which still said 3.12, found no
+      // 3.12 where setup-python had just installed 3.14, and fell back to the
+      // runner's own /usr/bin/python3.12 — Ubuntu 24.04's 3.12.3, an
+      // interpreter nobody chose and the image does not ship. Hence the
+      // workflows no longer name a version at all: they pass
+      // `python-version-file: .python-version`, so what setup-python installs
+      // is by construction what uv is about to select. 3.15 is due in October
+      // 2026 and must not arrive the same way: this rule makes it a checkbox
+      // on the dependency dashboard, and ticking it lands `.python-version`
+      // and the Containerfile together in one PR.
+      //
+      // Version-changing types only. `digest`, `pin`, and `pinDigest` stay in
+      // the group above, so a digest refresh of the tag already in use keeps
+      // arriving weekly without a tick — that is a rebuilt base image,
+      // usually carrying security fixes, not a different interpreter.
+      //
+      // matchDepNames alone, with no matchDatasources and no matchManagers:
+      // the two managers read different datasources (python-version and
+      // docker), so filtering on either would drop the other half, and the
+      // docker half is what decides which interpreter actually ships. A
+      // manager list would be a second thing to remember if the version is
+      // ever pinned somewhere new. Nothing else here is named exactly
+      // `python` — the images the custom manager below reads are `library/…`.
+      //
+      // groupSlug is set explicitly and is not redundant: matching rules
+      // merge field by field, so a minor bump matches the rule above too and
+      // would keep its `all-minor-patch` slug — which is the branch name.
+      // A new groupName over an inherited slug would put this on the weekly
+      // group's own branch, which is most of the way back to the bug.
+      matchDepNames: ["python"],
+      matchUpdateTypes: ["major", "minor", "patch"],
+      groupName: "python interpreter",
+      groupSlug: "python-interpreter",
       dependencyDashboardApproval: true,
     },
   ],

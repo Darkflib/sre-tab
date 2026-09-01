@@ -3,6 +3,89 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-09-01 — Test on the interpreter we ship
+
+**A Renovate PR sat red for two weeks, and not for the reason it looked.**
+PR #2 raised `python-version:` in five setup-python steps to 3.14 and left
+`.python-version` on 3.12. uv honours `.python-version`, so the 3.14 that
+setup-python had just installed was never used; finding no 3.12 on the
+toolcache path, uv fell back to the runner's system interpreter. Run
+33514960524, job "Format, lint, types, security, tests":
+
+```
+Successfully set up CPython (3.14.7)
+Using CPython 3.12.3 interpreter at: /usr/bin/python3.12
+```
+
+The PostgreSQL job's pytest header in the same run agrees — `platform linux
+-- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0` — and on `main`, run
+33514847567, uv reports `Using CPython 3.12.14 interpreter at:
+/opt/hostedtoolcache/Python/3.12.14/x64/bin/python3.12`. So the two failing
+urlguard cases were never evidence about 3.14. They were Ubuntu 24.04's
+CPython 3.12.3, reached by accident, and what separates it from 3.12.14 is
+which of the `ipaddress` mapped-address delegations had been backported.
+
+**The failure was reproduced before the fix was believed, and not on the
+interpreter everyone assumed.** Measured here: on 3.12.13, 3.14.0, and
+3.14.7 alike, every IPv6 predicate delegates to `ipv4_mapped`, and the
+unmodified suite passes on 3.14.7 — 108 passed. The divergence only appears
+on a build that delegates `is_private`/`is_global` but not `is_loopback`,
+and whose `is_reserved` still catches `::/8`; simulating exactly that by
+un-delegating those two properties produces `assert 'private' ==
+'loopback'` and `assert 'reserved' == 'blocked-range'` — the two labels the
+CI run reported, on 3.12.13 and 3.14.7 both, 2 failed and 106 passed before
+the change and 110 passed after. That the interpreter with that combination
+is Ubuntu's 3.12.3 is inferred from the log lines above, not measured here:
+this machine has no such build.
+
+**The rule lives in one place now.** `classify_address` unwraps an
+IPv4-mapped address at the top and returns `classify_address(mapped) or
+"blocked-range"`, the `or` standing in for the `::ffff:0:0/96` entry the
+loop below would otherwise have reached — so a mapped literal carrying a
+routable IPv4 is still refused, and the reason is the embedded address's,
+whatever the interpreter thinks of the mapped form. That made the
+`ipv4_mapped` branch of `_embedded_addresses` unreachable; it had in fact
+been dead on every interpreter, because that blocked entry already meant
+`classify_address` never returned `None` for a mapped address. It is gone,
+so nothing is classified twice. The tests gained `::ffff:10.0.0.1` and
+`::ffff:169.254.169.254`, the first cases pinning an exact reason rather
+than merely a refusal, and the comment that credited the behaviour to
+`ipaddress` now states the guard's own rule.
+
+**The interpreter moves to 3.14, and the next bump is a decision rather
+than a Monday.** `.python-version` and both Containerfile stages agree on
+`python:3.14-slim-trixie`, pinned to the manifest-list digest
+`sha256:656d12e7…` — checked against the registry as a manifest list rather
+than a per-architecture one, which is what keeps an arm64 workstation and an
+amd64 runner on the same base. `requires-python` stays `>=3.12`: it is the
+floor the code supports, not the version under test, and `uv.lock` is
+universal over both.
+
+**The workflows no longer name a version at all.** All five setup-python
+steps take `python-version-file: .python-version`, so what setup-python
+installs is by construction what uv selects. That closes the class rather
+than the instance: the previous arrangement failed silently *because* two
+files could disagree, and a fix that only corrected today's value would
+leave the same trap for whoever next edits one of them. The docs.yml comment
+about matching ci.yml is now about action digests, which are still
+duplicated deliberately.
+
+**`groupSlug` on the new Renovate rule is not redundant, and the reason is
+easy to miss.** Package rules merge field by field, so a minor interpreter
+bump matches the weekly group's rule as well and would inherit its
+`all-minor-patch` slug — which is the branch name. A new `groupName` over an
+inherited slug would put the approval-gated update on the weekly group's own
+branch, which is most of the way back to the bug. Digest refreshes of the
+tag already in use stay in the weekly group: a rebuilt base image, usually
+carrying security fixes, is not a different interpreter.
+
+**The trade-off, stated rather than buried: CI now exercises 3.14 only.**
+`requires-python = ">=3.12"` is a declared floor with nothing testing it on
+every commit. It was checked once by hand for this change — the full suite
+on 3.12.13 in a separate environment — but a claim that holds only until
+someone uses a 3.13-or-later syntax is worth either a matrix job or a
+narrower `requires-python`, and that is a decision, not an oversight.
+
 ## 2026-08-29 — v1.0.0 named, and six deferred items closed
 
 **The release existed and had no name.** The changelog had one section,

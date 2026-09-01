@@ -57,8 +57,9 @@ ALLOWED_PORTS = frozenset({443})
 
 #: Explicit blocks, belt and braces over the ``ipaddress`` predicates.
 #: ``::ffff:0:0/96`` is blocked wholesale: a resolver has no business
-#: returning an IPv4-mapped IPv6 address, so every one of them is
-#: refused rather than unwrapped and re-judged.
+#: returning an IPv4-mapped IPv6 address, so one carrying a routable IPv4
+#: is refused too. Unwrapping decides the *reason* such an address is
+#: logged with, never whether it is allowed.
 BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
@@ -152,6 +153,17 @@ def classify_address(ip: IPAddress) -> str | None:
     Ordered most-specific first so the reason logged is the interesting
     one (``loopback`` rather than the ``private`` that also matches).
     """
+    mapped = ip.ipv4_mapped if isinstance(ip, ipaddress.IPv6Address) else None
+    if mapped is not None:
+        # Judged by the embedded IPv4 here rather than by the outer IPv6
+        # predicates, because *which* of those consult ``ipv4_mapped`` is
+        # an interpreter detail: on a build where ``is_loopback`` does not,
+        # ``::ffff:127.0.0.1`` classifies as "private" and
+        # ``::ffff:8.8.8.8`` as "reserved". Neither is ever allowed — the
+        # ``or`` stands in for the ``::ffff:0:0/96`` entry the loop below
+        # would otherwise reach — but the reason a refusal is logged with
+        # must not move under an interpreter upgrade.
+        return classify_address(mapped) or "blocked-range"
     if ip.is_unspecified:
         return "unspecified"
     if ip.is_loopback:
@@ -175,14 +187,14 @@ def classify_address(ip: IPAddress) -> str | None:
 def _embedded_addresses(ip: IPAddress) -> Iterable[IPAddress]:
     """IPv4 addresses tunnelled inside an IPv6 address.
 
-    ``::ffff:127.0.0.1``, ``2002:7f00:1::`` (6to4), and Teredo all carry
-    an IPv4 address that the outer predicates alone would not judge.
+    ``2002:7f00:1::`` (6to4) and Teredo both carry an IPv4 address that
+    the outer predicates alone would not judge. IPv4-mapped addresses are
+    not here: ``classify_address`` unwraps those itself and never returns
+    ``None`` for one, so this loop would never see them.
     """
     if not isinstance(ip, ipaddress.IPv6Address):
         return ()
     embedded: list[IPAddress] = []
-    if ip.ipv4_mapped is not None:
-        embedded.append(ip.ipv4_mapped)
     if ip.sixtofour is not None:
         embedded.append(ip.sixtofour)
     if ip.teredo is not None:

@@ -51,14 +51,14 @@ RUN npm run build
 FROM ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 AS uv
 
 # --- Python build ---------------------------------------------------------
-FROM python:3.12-slim-trixie@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a AS builder
+FROM python:3.14-slim-trixie@sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9 AS builder
 
 COPY --from=uv /uv /bin/uv
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    UV_PYTHON=/usr/local/bin/python3.12 \
+    UV_PYTHON=/usr/local/bin/python3.14 \
     UV_PYTHON_DOWNLOADS=never
 
 WORKDIR /app
@@ -72,7 +72,7 @@ COPY app ./app
 RUN uv sync --frozen --no-dev --no-editable
 
 # --- Runtime --------------------------------------------------------------
-FROM python:3.12-slim-trixie@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
+FROM python:3.14-slim-trixie@sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -109,10 +109,11 @@ COPY --chown=sre-tab:sre-tab alembic ./alembic
 # which runs unprivileged, as everything here does — cannot write to it.
 COPY --from=frontend --chown=sre-tab:sre-tab /build/dist /opt/sre-tab/web
 
-# Strip every setuid and setgid bit. python:3.12-slim-trixie ships eleven —
-# mount, umount, su, passwd, chsh, chfn, chage, expiry, gpasswd, newgrp,
-# unix_chkpwd — and nothing here runs any of them: the application is one
-# unprivileged uid on a read-only rootfs with all capabilities dropped.
+# Strip every setuid and setgid bit. Eleven were counted on
+# python:3.12-slim-trixie, the last base image measured — mount, umount, su,
+# passwd, chsh, chfn, chage, expiry, gpasswd, newgrp, unix_chkpwd — and
+# nothing here runs any of them: the application is one unprivileged uid on a
+# read-only rootfs with all capabilities dropped.
 #
 # This is what deploy/quadlet/sre-tab.container relies on in place of
 # NoNewPrivileges=true, which that unit cannot set (podman's AppArmor profile
