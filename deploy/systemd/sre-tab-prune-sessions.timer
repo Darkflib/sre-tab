@@ -1,0 +1,30 @@
+[Unit]
+Description=Schedule the Developer News Dashboard session sweep
+
+[Timer]
+# Daily. 04:17 UTC rather than anything nearer 03:22 because the backup job
+# starts at 03:22 with up to 20 minutes of jitter, so its window closes at
+# 03:42 — and a pg_dump holding a snapshot while a DELETE runs against the
+# same database is the collision worth avoiding, on a single-host deployment
+# where both are competing for one disk.
+#
+# Ordering the two this way round is also the useful order: the night's dump
+# is taken before the sweep, so a row deleted at 04:17 is still present in
+# the most recent backup for a full day afterwards. That is a second copy of
+# the forensic record the grace window in app/auth/sessions.py exists to
+# keep, not a replacement for it.
+#
+# :17 rather than :00 for the same reason the backup uses :22 — nothing else
+# cron-shaped on the host lands on that minute.
+OnCalendar=*-*-* 04:17:00 UTC
+# Ten minutes, not the backup's twenty: the window must stay clear of 03:42.
+RandomizedDelaySec=10m
+# Catch up after downtime. A host that was off overnight should take its
+# sweep on the way back up, not wait another day — the table it trims is the
+# one that grows without bound.
+Persistent=true
+AccuracySec=1m
+Unit=sre-tab-prune-sessions.service
+
+[Install]
+WantedBy=timers.target

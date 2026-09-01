@@ -1,8 +1,8 @@
 #!/bin/sh
 #
 # Promote a published build: resolve a commit to an immutable digest, verify
-# that digest was signed by this repository's CI, and rewrite the three
-# application Quadlets to pin it.
+# that digest was signed by this repository's CI, and rewrite every
+# application Quadlet to pin it.
 #
 #   deploy/scripts/promote.sh                 # whatever origin/main is at
 #   deploy/scripts/promote.sh 1a2b3c4         # a specific commit
@@ -27,7 +27,12 @@ IMAGE_REPO=ghcr.io/darkflib/sre-tab
 REGISTRY=ghcr.io
 REPO_PATH=darkflib/sre-tab
 
-UNITS='sre-tab.container sre-tab-migrate.container sre-tab-assets.container'
+# Every unit under deploy/quadlet that runs the application image. CI greps
+# them all and fails unless they name one distinct reference, so a unit
+# missing from this list is not a slow drift — it is the next promotion
+# breaking the build, having left that unit pinned to the previous digest.
+UNITS='sre-tab.container sre-tab-migrate.container sre-tab-assets.container
+sre-tab-prune-sessions.container'
 
 usage() {
     cat <<'EOF'
@@ -190,6 +195,10 @@ Then on the host, after pulling that commit:
   sudo deploy/install.sh
   sudo systemctl restart sre-tab-migrate.service sre-tab-assets.service \\
       sre-tab.service sre-tab-web.service
+
+sre-tab-prune-sessions.service is timer-driven and not in that list on
+purpose: it is not running, so there is nothing to restart. It picks up the
+new digest by itself at its next elapse, once install.sh has staged the unit.
 
 Take a backup first if the promoted build carries a migration.
 EOF

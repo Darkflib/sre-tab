@@ -20,5 +20,7 @@ export type User = Schemas['UserOut'];
 export type Preferences = Schemas['PreferencesOut'];
 export type PreferencesPatch = Schemas['PreferencesPatch'];
 export type ReadState = Schemas['ReadStateOut'];
+/** Values of the feed's `read_state` query parameter — `all` is the default. */
+export type ReadFilter = Schemas['ReadFilter'];
 export type Theme = Schemas['Theme'];
 export type Layout = Schemas['Layout'];

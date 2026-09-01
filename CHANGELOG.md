@@ -8,6 +8,95 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `SECURITY.md`: a private reporting channel (GitHub security advisories),
+  the supported-version table, and a pointer to the accepted findings in
+  ROADMAP.md so a reporter can tell a new finding from a held one.
+- Coverage is now a gate. `fail_under = 90` in `pyproject.toml` and
+  `--cov=app` on the `python` job's pytest step, where the tooling was
+  configured and nothing ever ran it. The threshold is a floor to catch a
+  slide, not a target: it was set under the 94.23% measured when the gate
+  went in, and the work in this release since took that to 94.44%. Proven
+  to bite before being believed — at a temporary 96% the job exits 1.
+- A read-state filter on the feed. `GET /api/v1/feed` takes
+  `read_state=all|unread|read` (default `all`, so an existing client sees
+  no change), applied as a predicate on the `user_read_items` join the
+  query already carried — no schema change, and in the `WHERE` of the same
+  statement so keyset pages stay full. The client carries it in the URL
+  and in the pagination cache key, and the filter bar gains chips for it.
+- Keyboard navigation on the feed and bookmarks: `j`/`k` to move, `o` or
+  Enter to open, `m` to toggle read, `b` to bookmark, and `?` for a help
+  overlay. Focus is a real roving `tabindex` with `.focus()` called, not a
+  CSS-only selection, so the browser scrolls, screen readers announce, and
+  `:focus-visible` works. Shortcuts never fire while typing in a field or
+  when a Ctrl/Cmd/Alt modifier is held — `shiftKey` is deliberately not in
+  that set, because `?` is Shift+/ on most layouts.
+- `sre-tab sessions prune`, and `sre-tab-prune-sessions.timer` running it
+  daily at 04:17 UTC. Nothing had ever deleted from `sessions`, so it grew
+  by a row per sign-in forever — and faster than that sounds, because
+  sign-in rotates: it revokes the previous session and inserts a new one.
+  Expired-and-never-revoked rows go immediately; revoked rows are held
+  seven days, because `revoked_at` is the only trace that a logout or a
+  rotation happened and the week it matters is the week after a suspected
+  compromise. 04:17 is after the backup's jitter window closes at 03:42,
+  so a `pg_dump` never races the `DELETE`.
+- Three least-privilege PostgreSQL roles in `deploy/roles.sql` —
+  `sretab_migrate` (DDL), `sretab_app` (DML), `sretab_readonly` (the dump)
+  — installed by `deploy/scripts/create-roles.sh`, with the cutover
+  procedure, the full consumer list, and the rollback in
+  `deploy/ROLES.md`. **Nothing uses them yet, deliberately**: no
+  `.container` and no `DATABASE_URL` changed, so the running deployment is
+  unaltered and the cutover is its own iteration. Verified against a real
+  `postgres:18-trixie`: `COPY … TO PROGRAM` is refused for all three,
+  including the DDL role, which is the mechanism the finding turns on.
+- An open-work index at the top of `ROADMAP.md`. The file keeps landed
+  items on purpose, which left no way to see what was still open without
+  reading all 39KB of it.
+
+### Fixed
+
+- Feed image URLs are validated as strictly as item URLs. The two
+  functions now share one host rule, so they cannot drift apart again.
+- **An IP-literal check that missed hex-obfuscated addresses**, found while
+  fixing the above and wider than it. `_looks_like_ip` tested
+  `all(part.isdigit() …)`, and `"0x7f".isdigit()` is `False`, so
+  `https://0x7f.0.0.1/…` was not recognised — and that check also guards
+  `normalise_item_url`, so a **canonical URL** resolving to the reader's
+  own loopback was being accepted and rendered as a link. The check now
+  calls `urlguard.parse_numeric_ipv4`, one body rather than a third copy.
+- `loadMore` in `usePagedResource` now has a lifecycle. It built an
+  `AbortController`, passed the signal, and never aborted it — so nothing
+  could cancel a load-more, and an unmount mid-load left the request
+  running. Aborted on unmount and on a cache-key change, with the
+  `signal.aborted` guard the initial-page effect already had, so a
+  cancelled request cannot raise an error banner for something the user
+  caused by navigating.
+- `loadMore`'s re-entrancy guard read `loadingMore` from React state, which
+  only updates on the next render, so two synchronous calls both saw a
+  stale `false` and both started a request. It reads a ref now.
+- `patchEntry` and `removeEntry` were declared `useCallback(…, [])` with no
+  cache-key guard, unlike every other write in the file. Reachable:
+  `BookmarksPage`'s optimistic-remove failure path calls `reload()`, which
+  bumps the key, so a sibling mutation's revert closure could land on the
+  new generation and patch or remove an unrelated row that reused an id.
+- `install.sh` staged every `*.timer` but enabled only the backup one by
+  name, so a new timer would have been installed and silently never run.
+- The image-pin gate's comment in `ci.yml` said the digest was "present in
+  all three units"; the session sweep makes four. The comment now describes
+  the count-based check it actually performs, rather than a number that
+  goes stale each time a unit is added, and points at `promote.sh`'s
+  `UNITS` as the list that does need editing.
+
+## [1.0.0] - 2026-08-29
+
+The v1 scope in [prd-v1.md](prd-v1.md), as built and deployed. Tagged at
+`700bea3` on `main`. Everything below had accumulated under `[Unreleased]`
+since the repository was created; the release changes no code, and exists
+because a supply chain that signs, attests, and digest-pins every artefact
+was still unable to say which version had shipped.
+
+
+### Added
+
 - Operator CLI (`sre-tab`): seed the v1 source catalogue and topic
   taxonomy, list/add/enable/disable sources and topics, expand a Medium
   tag into its own source, and a per-source refresh-status view that

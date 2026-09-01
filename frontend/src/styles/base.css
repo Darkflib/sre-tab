@@ -68,6 +68,20 @@ code {
   border-radius: var(--radius-sm);
 }
 
+kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--border-strong);
+  /* The one thing that makes it read as a key rather than as code. */
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  white-space: nowrap;
+}
+
 fieldset {
   border: 0;
   margin: 0;

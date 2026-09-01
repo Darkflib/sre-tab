@@ -1,0 +1,76 @@
+[Unit]
+Description=Delete dead Developer News Dashboard session rows
+# The database accepting connections, not merely running: that is what
+# sre-tab-db.container's Notify=healthy buys. It does not wait on the
+# application unit and is not blocked by the application being down —
+# this talks to PostgreSQL and to nothing else.
+Requires=sre-tab-db.service
+After=sre-tab-db.service
+
+# Ordered after the backup, which the clock does not do on its own. Both
+# timers are Persistent=true, so a host that was off across 03:22 and 04:17
+# runs both missed jobs at the next boot, in one transaction, with nothing
+# separating them: the sweep could then DELETE rows while pg_dump is
+# reading, and the backup would be the first one not to contain them. The
+# 55-minute gap between the two OnCalendar times is a property of a host
+# that stayed up, and catch-up is precisely the case where it does not hold.
+#
+# After= without Wants= or Requires=: ordering only, never causation. This
+# unit must not pull in a backup, and on the ordinary nightly path
+# sre-tab-backup.service is a completed oneshot with no RemainAfterExit, so
+# the ordering is inert and costs nothing.
+After=sre-tab-backup.service
+
+[Container]
+ContainerName=sre-tab-prune-sessions
+# The APPLICATION image, not the postgres one: the sweep is
+# `sre-tab sessions prune`, which is application code with the retention
+# policy in it, rather than a hand-written DELETE that would have to be
+# kept in step with app/auth/sessions.py by hand.
+#
+# Byte-identical to the pin in sre-tab.container, sre-tab-migrate.container,
+# and sre-tab-assets.container, and CI fails if it is not: the check in
+# .github/workflows/ci.yml greps every Image= line under deploy/quadlet and
+# demands exactly one distinct reference. Change it with
+# deploy/scripts/promote.sh, which moves all four together — never by hand.
+# See sre-tab.container for why Pull=missing rather than newer.
+Image=ghcr.io/darkflib/sre-tab:sha-fbf0f0ad2aa48e1254902ffb897d85657ab81908@sha256:4a4ccc313bec5277d3a7485bd1bb627aba1e7bf18253e2b340f134ef00a205e5
+Pull=missing
+Network=sre-tab.network
+
+# Same two sources of configuration as sre-tab-migrate.container: the
+# operator's non-secret file, and DATABASE_URL as a podman secret because it
+# carries the database password in the URL.
+EnvironmentFile=/etc/sre-tab/app.env
+Secret=sre-tab-database-url,type=env,target=DATABASE_URL
+
+# No `$` anywhere in this line — see the note in sre-tab-migrate.container
+# about quadlet emitting Exec= into ExecStart=, where systemd would expand it
+# against the unit's own environment first.
+Exec=sre-tab sessions prune
+
+ReadOnly=true
+Tmpfs=/tmp:rw,nosuid,nodev,size=16M
+NoNewPrivileges=true
+DropCapability=all
+# uid 10001 is `sre-tab` in this image, the same unprivileged identity the
+# application and migration units run as. The sweep needs DELETE on one table
+# and nothing else.
+User=10001
+Group=10001
+# systemd already captures the container's stdout under this unit, so the
+# "deleted N dead session rows" line lands in the journal once. podman's
+# journald driver would write a second copy of it.
+LogDriver=none
+PidsLimit=64
+
+[Service]
+Type=oneshot
+# No RemainAfterExit: nothing orders itself after this unit, and leaving a
+# timer-driven job "active (exited)" until the next boot only obscures
+# whether it has run recently. `systemctl list-timers` is the right view.
+MemoryMax=256M
+# One statement against a table with a row per sign-in; seconds on a
+# v1-sized database. The rest is headroom for a host under load, as with the
+# backup job.
+TimeoutStartSec=30m

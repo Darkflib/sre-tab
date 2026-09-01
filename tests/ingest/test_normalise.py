@@ -10,6 +10,7 @@ from app.ingest.normalise import (
     MAX_SUMMARY_LENGTH,
     MAX_TITLE_LENGTH,
     InvalidItemURLError,
+    _safe_optional_url,
     normalise_entries,
     normalise_entry,
     normalise_published,
@@ -162,6 +163,72 @@ def test_unusable_item_urls_are_refused(raw: str) -> None:
 def test_an_unusable_link_drops_only_that_entry() -> None:
     assert normalise_entry(entry(link="javascript:alert(1)"), fetched_at=NOW) is None
     assert normalise_entry(entry(link=None), fetched_at=NOW) is None
+
+
+# --- image urls -----------------------------------------------------------
+#
+# `image_url` used to be validated more weakly than `canonical_url`: it
+# checked scheme, host presence, userinfo, and length, and stopped there.
+# A feed could supply an image host that no item URL could ever be — a
+# bare name or an IP literal — and `img-src 'self' https: data:` in
+# app/middleware.py would have the *operator's browser* fetch it. Both
+# paths now share the same host rules via `_feed_url_host`; this section
+# is the acceptance table for that.
+
+
+def test_plain_https_image_url_passes_unchanged() -> None:
+    assert _safe_optional_url("https://example.org/cover.png") == "https://example.org/cover.png"
+
+
+def test_image_url_host_case_is_not_load_bearing() -> None:
+    assert _safe_optional_url("HTTPS://Example.ORG/cover.png") == "https://example.org/cover.png"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # Plain IP literals.
+        "https://127.0.0.1/cover.png",
+        "https://192.168.1.1/cover.png",
+        "https://[::1]/cover.png",
+        "https://[2606:4700::1111]/cover.png",
+        # Obfuscated IPv4 — the exact forms that slipped past IP-literal
+        # detection when it ran before host normalisation instead of
+        # after it.
+        "https://0x7f.0.0.1./cover.png",
+        "https://127.1./cover.png",
+        "https://0177.1./cover.png",
+        "https://0.0.0.0./cover.png",
+        # The same obfuscated forms without the trailing dot.
+        "https://0x7f.0.0.1/cover.png",
+        "https://127.1/cover.png",
+        "https://0177.1/cover.png",
+        "https://0.0.0.0/cover.png",
+        # A bare decimal integer is 127.0.0.1 to inet_aton.
+        "https://2130706433/cover.png",
+        # A dotless host — no legitimate image link is one.
+        "https://singlelabel/cover.png",
+        # Credentials.
+        "https://user:pass@example.org/cover.png",
+        "https://user@example.org/cover.png",
+        # A control character embedded in the url.
+        "https://example.org/co\tver.png",
+        "https://example.org/co\x00ver.png",
+    ],
+)
+def test_hostile_image_urls_are_rejected(raw: str) -> None:
+    assert _safe_optional_url(raw) is None
+
+
+def test_rejected_image_url_still_lets_the_item_normalise() -> None:
+    """An optional decorative image degrades to no image, never a dropped item."""
+    item = normalise_entry(
+        entry(link="https://example.org/article", image_url="https://0x7f.0.0.1/cover.png"),
+        fetched_at=NOW,
+    )
+    assert item is not None
+    assert item.canonical_url == "https://example.org/article"
+    assert item.image_url is None
 
 
 # --- published time -----------------------------------------------------

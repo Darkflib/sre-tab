@@ -6,14 +6,14 @@ usage() {
     cat <<'EOF'
 Usage: deploy/install.sh [--start]
 
-Install the Developer News Dashboard Quadlets, the backup timer, the Caddy
-configuration, and the backup script.
+Install the Developer News Dashboard Quadlets, the maintenance timers, the
+Caddy configuration, and the backup script.
 
-  --start  Enable the backup timer and start the stack. Secrets must already
+  --start  Enable the timers and start the stack. Secrets must already
            exist (deploy/scripts/create-secrets.sh) and /etc/sre-tab/app.env
            must have been edited.
 
-The installer is idempotent. Tracked files — Quadlets, the timer, the
+The installer is idempotent. Tracked files — Quadlets, the timers, the
 Caddyfile, and backup.sh — are replaced on every run; keep intentional
 changes in the repository rather than editing the installed copies.
 /etc/sre-tab/app.env is the exception: it is seeded once from
@@ -108,8 +108,16 @@ if [ "$start_services" = true ]; then
     # Quadlet services are transient generated units and cannot be enabled
     # with `systemctl enable`; their [Install] sections are applied by the
     # generator at boot and on daemon-reload, so starting them explicitly is
-    # enough. The backup timer is a native unit and is enabled normally.
-    systemctl enable --now sre-tab-backup.timer
+    # enough. The timers are native units and are enabled normally.
+    #
+    # Enumerated from deploy/systemd rather than listed by hand: the units are
+    # installed by a glob a few lines up, so a timer added to the repository
+    # and staged by that glob but forgotten here would be installed, never
+    # enabled, and silently never run — which for a job that exists to stop a
+    # table growing without bound is indistinguishable from working.
+    for timer_path in "$script_dir/systemd/"*.timer; do
+        systemctl enable --now "$(basename "$timer_path")"
+    done
 
     # Clears a start-rate limit, nothing else. A unit that has been crash-
     # looping — sre-tab-web under an address collision, say — hits
@@ -149,5 +157,5 @@ fi
 
 echo "Developer News Dashboard deployment files installed"
 if [ "$start_services" = false ]; then
-    echo "Run $0 --start to enable the backup timer and start the stack"
+    echo "Run $0 --start to enable the timers and start the stack"
 fi

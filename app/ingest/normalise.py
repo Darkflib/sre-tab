@@ -64,6 +64,7 @@ import httpx
 import nh3
 
 from app.ingest.parse import ParsedEntry
+from app.ingest.urlguard import parse_numeric_ipv4
 
 MAX_TITLE_LENGTH = 1024
 MAX_SUMMARY_LENGTH = 2000
@@ -197,11 +198,9 @@ def normalise_url(raw: str) -> str:
     if url.userinfo:
         raise InvalidItemURLError("credentials in url")
 
-    host = url.raw_host.decode("ascii").rstrip(".").lower()
-    if not host or "." not in host:
-        raise InvalidItemURLError("item url needs a hostname")
-    if _looks_like_ip(host):
-        raise InvalidItemURLError("item url host is an ip literal")
+    host = _feed_url_host(url.raw_host)
+    if host is None:
+        raise InvalidItemURLError("invalid item url host")
 
     netloc = host if url.port is None else f"{host}:{url.port}"
     raw_path = url.raw_path.decode("ascii")
@@ -221,7 +220,46 @@ def normalise_url(raw: str) -> str:
 
 
 def _looks_like_ip(host: str) -> bool:
-    return all(part.isdigit() for part in host.split(".")) or ":" in host
+    """True if *host* is an IP literal — dotted, obfuscated, or IPv6.
+
+    ``:`` cannot appear in a DNS label, so its presence alone identifies
+    an IPv6 literal (``raw_host`` never carries the surrounding
+    brackets). Everything else — including the obfuscated IPv4 forms
+    (octal, hex, bare-decimal, short ``inet_aton`` forms) — is judged by
+    :func:`app.ingest.urlguard.parse_numeric_ipv4`. That decoder already
+    exists for the SSRF guard on outbound feed fetches, which needs the
+    exact same answer to a differently-shaped question: not "may the
+    fetcher connect to this address" but "is this host shape even a
+    hostname" — the parsing is identical either way, so it is shared
+    rather than copied a second time.
+    """
+    return ":" in host or parse_numeric_ipv4(host) is not None
+
+
+def _feed_url_host(raw_host: bytes | None) -> str | None:
+    """Shared host rules for any URL taken from an untrusted feed.
+
+    Applies to both the canonical item URL (:func:`normalise_url`, which
+    raises on rejection) and the optional image URL
+    (:func:`_safe_optional_url`, which returns ``None``): the two must
+    not disagree about what a feed-supplied host is allowed to be, so
+    both call this rather than keeping their own copy of the rule.
+
+    Returns the normalised host — lower-cased, trailing dot stripped —
+    or ``None`` if it has no dot or is an IP literal in any form
+    :func:`_looks_like_ip` recognises. The IP check runs on the
+    *normalised* host, not the raw one: an obfuscated literal can carry
+    a trailing dot that gets it past httpx's own parser, so the literal
+    only becomes visible once that dot is stripped and the case folded.
+    """
+    if not raw_host:
+        return None
+    host = raw_host.decode("ascii").rstrip(".").lower()
+    if not host or "." not in host:
+        return None
+    if _looks_like_ip(host):
+        return None
+    return host
 
 
 def _safe_optional_url(raw: str | None) -> str | None:
@@ -231,7 +269,9 @@ def _safe_optional_url(raw: str | None) -> str | None:
         url = httpx.URL(raw.strip())
     except (httpx.InvalidURL, ValueError):
         return None
-    if url.scheme not in ("http", "https") or not url.raw_host or url.userinfo:
+    if url.scheme not in ("http", "https") or url.userinfo:
+        return None
+    if _feed_url_host(url.raw_host) is None:
         return None
     text = str(url)
     return text if len(text) <= MAX_URL_LENGTH else None

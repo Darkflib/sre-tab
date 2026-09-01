@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from importlib.metadata import version as package_version
 
 from fastapi import FastAPI
 from sqlalchemy import Engine, text
@@ -100,7 +101,15 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
 
     application = FastAPI(
         title="Developer News Dashboard API",
-        version="0.1.0",
+        # Read from the installed distribution rather than repeated here.
+        # These were two sources of truth and they drifted: the 1.0.0 release
+        # bumped pyproject.toml and package.json and left this at 0.1.0, so
+        # the published contract went on identifying the application as the
+        # version before the one that shipped. Now a bump has one place to
+        # happen, and `tests/test_openapi.py` turns forgetting to regenerate
+        # the committed document into a failing test rather than a silent
+        # disagreement.
+        version=package_version("sre-tab"),
         openapi_url="/api/v1/openapi.json",
         docs_url="/docs" if settings.docs_enabled else None,
         redoc_url=None,

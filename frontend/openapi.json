@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Developer News Dashboard API",
-    "version": "0.1.0"
+    "version": "1.0.0"
   },
   "paths": {
     "/api/v1/healthz": {
@@ -386,6 +386,17 @@
               "title": "Sources"
             },
             "description": "Source slugs to include; omit for the user's selection"
+          },
+          {
+            "name": "read_state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReadFilter",
+              "description": "Narrow by the caller's read state; omit or 'all' for every item",
+              "default": "all"
+            },
+            "description": "Narrow by the caller's read state; omit or 'all' for every item"
           },
           {
             "name": "cursor",
@@ -1161,6 +1172,15 @@
           "ok"
         ],
         "title": "ProbeStatus"
+      },
+      "ReadFilter": {
+        "type": "string",
+        "enum": [
+          "all",
+          "unread",
+          "read"
+        ],
+        "title": "ReadFilter"
       },
       "ReadStateOut": {
         "properties": {

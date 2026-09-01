@@ -30,7 +30,9 @@ podman info --format '{{.Host.CgroupsVersion}}'
                  │  sre-tab-db    (PostgreSQL, uid 999)         │
                  │     ▲                                        │
                  │     ├── sre-tab-migrate  (oneshot, uid 10001)│
-                 │     └── sre-tab-backup   (oneshot, uid 999)  │
+                 │     ├── sre-tab-backup   (oneshot, uid 999)  │
+                 │     └── sre-tab-prune-sessions               │
+                 │             (timer, oneshot, uid 10001)      │
                  └──────────────────────────────────────────────┘
 ```
 
@@ -60,9 +62,9 @@ new API is serving an old bundle. One image, one digest, no skew.
 sudo deploy/install.sh
 ```
 
-Idempotent. It installs the Quadlets to `/etc/containers/systemd`, the backup
-timer to `/etc/systemd/system`, and the Caddyfile and backup script to
-`/etc/sre-tab`. It creates `/srv/sre-tab/backups` owned by `999:999`, mode
+Idempotent. It installs the Quadlets to `/etc/containers/systemd`, the
+maintenance timers to `/etc/systemd/system`, and the Caddyfile and backup
+script to `/etc/sre-tab`. It creates `/srv/sre-tab/backups` owned by `999:999`, mode
 `0700`.
 
 Those ids mean `postgres` *inside the postgres image*, not on the host —
@@ -149,7 +151,7 @@ Four values are genuinely secret and none of them appears in a unit file, in
 | Podman secret | Consumed as | By |
 | --- | --- | --- |
 | `sre-tab-postgres-password` | `POSTGRES_PASSWORD`, `PGPASSWORD` | database, backup |
-| `sre-tab-database-url` | `DATABASE_URL` | app, migrations |
+| `sre-tab-database-url` | `DATABASE_URL` | app, migrations, session sweep |
 | `sre-tab-session-secret` | `SESSION_SECRET` | app |
 | `sre-tab-github-client-secret` | `GITHUB_CLIENT_SECRET` | app |
 
@@ -195,9 +197,15 @@ sudo deploy/install.sh --start
 ```
 
 `--start` refuses to proceed if any of the four secrets is missing. It enables
-the backup timer and restarts all five units in a single `systemctl`
-transaction, which is what makes systemd resolve the ordering between them
-rather than starting them in the order typed.
+every timer under `deploy/systemd` — the backup and the session sweep — and
+restarts all five long-running units in a single `systemctl` transaction,
+which is what makes systemd resolve the ordering between them rather than
+starting them in the order typed.
+
+The timers are enumerated from the directory rather than listed by name.
+A timer that the installer stages but never enables is installed, inert, and
+indistinguishable from a working one until the thing it was meant to bound has
+already grown without bound.
 
 Verify. Note the wait: `systemctl` returning is not the all-clear, for the
 reasons measured under [Upgrading](#how-long-a-deploy-actually-takes), so
@@ -233,8 +241,8 @@ head -5 /tmp/sre-tab-index.html
 
 Quadlet services are transient generated units and cannot be enabled with
 `systemctl enable`; their `[Install]` sections are applied by the generator at
-boot and on `daemon-reload`, so starting them explicitly is enough. The backup
-timer is a native unit and is enabled normally.
+boot and on `daemon-reload`, so starting them explicitly is enough. The timers
+are native units and are enabled normally.
 
 ## Migrations on deploy
 
@@ -639,6 +647,10 @@ journalctl -u sre-tab-backup.service --since today
 ls -l /srv/sre-tab/backups
 ```
 
+The sweep in [Session retention](#session-retention) is scheduled after this
+window on purpose, so a session row deleted at 04:17 is still present in the
+dump taken at 03:22.
+
 **`/srv/sre-tab/backups` is on the same host as the database.** That is a
 backup, not disaster recovery. Copy the directory off-host on whatever
 schedule the operator's risk tolerance justifies; the `.sha256` sidecars exist
@@ -705,6 +717,75 @@ and `Requires=` ordering actually holding at boot, `Notify=healthy`, the
 Podman secret plumbing, and the timer firing. CI validates unit *generation*
 with `podman-system-generator --dryrun`, which catches malformed keys but not
 runtime behaviour.
+
+<a id="session-retention"></a>
+## Session retention
+
+`sre-tab-prune-sessions.timer` runs daily at 04:17 UTC with up to 10 minutes of
+jitter, and `Persistent=true` so a host that was off overnight sweeps on the
+way back up rather than waiting another day. It runs
+`sre-tab sessions prune` in the application image.
+
+**Without it the `sessions` table grows forever.** Nothing else deletes from
+it: sign-in inserts a row, logout sets `revoked_at`, and every read filters on
+those columns. Sign-in also rotates — it revokes the previous session and
+inserts a new one — so rows accumulate at the rate people open the app, not
+the rate they remember to log out.
+
+Two classes of row are swept, and not at the same moment:
+
+| Row | Deleted |
+| --- | --- |
+| Expired, never revoked | As soon as `expires_at` passes |
+| Revoked | Seven days after `revoked_at` |
+
+The grace period on revoked rows is deliberate. `revoked_at` is the only trace
+this system keeps that a logout — or a rotation, which revokes the same way —
+happened at all, and deleting it on the spot means "when did this session end,
+and did it end deliberately or by expiry?" has no answer during the week
+someone is most likely to ask it. The row is inert throughout: a revoked
+session cannot authenticate at any point in that window. Seven days is shorter
+than the default `SESSION_TTL_DAYS` of 14, so the grace period never keeps a
+row longer than leaving it alone would have.
+
+A row that is both revoked *and* expired is held by the grace period rather
+than swept by the expiry rule.
+
+Why 04:17 and not something nearer the backup: the backup starts at 03:22 with
+up to 20 minutes of jitter, so its window closes at 03:42, and a `pg_dump`
+holding a snapshot while a `DELETE` runs against the same database is worth
+avoiding on a single-host deployment where both compete for one disk. Running
+after it is also the useful order — the night's dump is taken before the
+sweep, so a row deleted at 04:17 is still in the most recent backup for a full
+day afterwards.
+
+```bash
+systemctl list-timers 'sre-tab-*'
+systemctl start sre-tab-prune-sessions.service    # sweep now
+journalctl -u sre-tab-prune-sessions.service --since today
+```
+
+The job prints what it deleted and exits zero whether or not it deleted
+anything — an empty sweep is the steady state on a quiet instance, not a
+condition worth waking anyone for. A failure surfaces the usual way, in
+`systemctl --failed`.
+
+To run it by hand against a different retention window, or to keep nothing at
+all:
+
+```bash
+podman exec sre-tab-app sre-tab sessions prune --revoked-grace-days 30
+podman exec sre-tab-app sre-tab sessions prune --revoked-grace-days 0
+```
+
+It is safe at any time and takes no locks worth the name: a live session is
+never a candidate, so the sweep cannot sign anybody out.
+
+**Unlike the backup, this unit runs the application image**, so its digest is
+one of the four `deploy/scripts/promote.sh` moves together and CI checks for
+agreement. It is not in the restart list after a promotion, and does not need
+to be: it is timer-driven rather than running, so it picks up the new digest at
+its next elapse once `install.sh` has staged the unit.
 
 <a id="seeding-the-catalogue-and-the-operator-cli"></a>
 ## Seeding the catalogue, and the operator CLI

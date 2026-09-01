@@ -29,6 +29,7 @@ from sqlalchemy import Select, and_, select, tuple_
 from sqlalchemy.orm import Session, contains_eager, selectinload
 
 from app.api.v1.schemas import FeedItemOut, FeedPage, FeedSourceRef
+from app.api.v1.schemas.feed import ReadFilter
 from app.db.models import (
     Bookmark,
     FeedItem,
@@ -49,6 +50,7 @@ def get_feed_page(
     *,
     topics: Sequence[str] | None = None,
     sources: Sequence[str] | None = None,
+    read_state: ReadFilter = ReadFilter.ALL,
     cursor: str | None = None,
     limit: int = 25,
 ) -> FeedPage:
@@ -56,12 +58,13 @@ def get_feed_page(
 
     ``topics``/``sources`` absent means "use the caller's saved
     selection"; present means "narrow to exactly these", including the
-    case where nothing matches. Raises
+    case where nothing matches. ``read_state`` has no saved counterpart —
+    it defaults to :attr:`ReadFilter.ALL` and narrows nothing. Raises
     :class:`app.services.errors.InvalidCursorError` for a cursor we did
     not issue.
     """
     statement = _base_query(user)
-    statement = _apply_filters(db, statement, user, topics, sources)
+    statement = _apply_filters(db, statement, user, topics, sources, read_state)
 
     if cursor is not None:
         position = decode_cursor(cursor)
@@ -113,7 +116,20 @@ def _apply_filters(
     user: User,
     topics: Sequence[str] | None,
     sources: Sequence[str] | None,
+    read_state: ReadFilter,
 ) -> Select[tuple[FeedItem, datetime, datetime]]:
+    # A predicate over the read join the base query already carries, in
+    # the WHERE of the same statement rather than a filter applied to the
+    # page afterwards. That is what keeps keyset pagination honest: the
+    # LIMIT is taken after the narrowing, so pages stay full and the
+    # cursor still names a row that satisfies the filter. Discarding rows
+    # in Python would yield short, ragged pages and a cursor pointing at
+    # an item the caller never saw.
+    if read_state is ReadFilter.UNREAD:
+        statement = statement.where(UserReadItem.read_at.is_(None))
+    elif read_state is ReadFilter.READ:
+        statement = statement.where(UserReadItem.read_at.is_not(None))
+
     source_filter = _effective_sources(db, user, sources)
     if source_filter is not None:
         statement = statement.where(Source.slug.in_(source_filter))

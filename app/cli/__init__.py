@@ -1,4 +1,4 @@
-"""Operator CLI for the source and topic catalogue.
+"""Operator CLI: the source and topic catalogue, and scheduled maintenance.
 
 The PRD gives the administrator role no UI: "in v1 this can be an
 operator-only CLI or an admin database flag". This is that CLI.
@@ -27,6 +27,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from app.auth.sessions import REVOKED_RETENTION_DAYS, prune_sessions
 from app.cli import operations as ops
 from app.cli.catalogue import InvalidMediumTag
 from app.db.engine import create_db_engine
@@ -46,6 +47,19 @@ def _session(database_url: str | None) -> Iterator[Session]:
 
 def _split_topics(value: str | None) -> list[str]:
     return [part.strip() for part in (value or "").split(",") if part.strip()]
+
+
+def _grace_days(value: str) -> int:
+    """A retention window, refused if negative.
+
+    A negative window puts the cutoff in the future, which would sweep
+    every revoked row including one revoked seconds ago — the opposite of
+    what the flag is for, and silent about it.
+    """
+    days = int(value)
+    if days < 0:
+        raise argparse.ArgumentTypeError("a retention window cannot be negative")
+    return days
 
 
 def _stamp(value: datetime | None) -> str:
@@ -202,6 +216,24 @@ def _set_topic_enabled(args: argparse.Namespace, *, enabled: bool) -> int:
     return 0
 
 
+def _cmd_sessions_prune(args: argparse.Namespace) -> int:
+    """Sweep dead session rows. What sre-tab-prune-sessions.service runs.
+
+    Exits zero whether or not anything was deleted: an empty sweep is the
+    steady state on a quiet instance, not a condition worth waking anyone
+    for. Only a failure — which arrives as an exception, not a return
+    code — should show up in ``systemctl --failed``.
+    """
+    with _session(args.database_url) as session:
+        removed = prune_sessions(session, revoked_retention_days=args.revoked_grace_days)
+        session.commit()
+    if not removed:
+        print("no dead sessions; nothing to do")
+        return 0
+    print(f"deleted {removed} dead session row{'' if removed == 1 else 's'}")
+    return 0
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     """The operator status view the PRD's non-functional targets require.
 
@@ -257,7 +289,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sre-tab",
-        description="Operator CLI: source and topic catalogue, and refresh status.",
+        description=(
+            "Operator CLI: source and topic catalogue, refresh status, and the\n"
+            "maintenance sweeps the deployment's timers run."
+        ),
     )
     parser.add_argument(
         "--database-url",
@@ -347,6 +382,35 @@ def build_parser() -> argparse.ArgumentParser:
         sub = topics.add_parser(name, help=helptext)
         sub.add_argument("slug")
         sub.set_defaults(handler=handler)
+
+    sessions = commands.add_parser("sessions", help="Maintain the session table.").add_subparsers(
+        dest="sessions_command", required=True
+    )
+
+    prune = sessions.add_parser(
+        "prune",
+        help="Delete dead session rows; run daily by sre-tab-prune-sessions.timer.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Nothing else deletes from this table, so it grows by one row per sign-in\n"
+            "until this runs. Expired sessions go immediately; revoked ones are kept\n"
+            "for a grace period first, because the revocation timestamp is the only\n"
+            "record that a logout happened. A revoked session cannot authenticate at\n"
+            "any point in that window — see app/auth/sessions.py for the reasoning.\n"
+            "\n"
+            "Safe to run at any time: a live session is never a candidate."
+        ),
+    )
+    prune.add_argument(
+        "--revoked-grace-days",
+        type=_grace_days,
+        default=REVOKED_RETENTION_DAYS,
+        help=(
+            "Keep revoked sessions this long after revocation "
+            f"(default: {REVOKED_RETENTION_DAYS}). 0 deletes them on the next sweep."
+        ),
+    )
+    prune.set_defaults(handler=_cmd_sessions_prune)
 
     return parser
 

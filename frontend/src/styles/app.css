@@ -485,6 +485,12 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 0.9rem 1rem;
+  /* `j`/`k` focus a card, and the browser scrolls it into view for free.
+     The header and the filter bar are both sticky, so without this the card
+     it scrolled to arrives underneath them. Nothing else here styles the
+     cursor: the cursor is the focus ring, and `:focus-visible` in base.css
+     already draws that. */
+  scroll-margin-block: 6.5rem 1rem;
 }
 
 .card:hover {
@@ -644,6 +650,77 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 12rem;
+}
+
+/* --- Keyboard layer -------------------------------------------------- */
+
+/* Where focus lands when the card holding it is removed and the list has
+   nothing left to sit on. Focused programmatically only, like the skip-link
+   target above, so it gets neither ring nor halo. */
+.cursor-root:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.page-head {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+/* Pushed right on its own, so the row still sits correctly on the feed,
+   where the only other item is a visually-hidden heading taking no space. */
+.shortcuts__open {
+  margin-left: auto;
+}
+
+.shortcuts {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  padding: 1.25rem 1.5rem;
+  max-inline-size: min(34rem, calc(100vw - 2rem));
+}
+
+.shortcuts::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+
+.shortcuts__title {
+  margin-top: 0;
+}
+
+.shortcuts__list {
+  margin: 0 0 1rem;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.4rem 1rem;
+  align-items: baseline;
+}
+
+/* The row wrapper exists only to keep each dt/dd pair together in the
+   source; `contents` keeps both of them as direct children of the grid. */
+.shortcuts__row {
+  display: contents;
+}
+
+.shortcuts__row dt {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.shortcuts__row dd {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.shortcuts__note {
+  color: var(--text-muted);
+  font-size: 0.85rem;
 }
 
 /* --- Feed pagination ------------------------------------------------ */

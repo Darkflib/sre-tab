@@ -201,12 +201,20 @@ def assert_address_allowed(ip: IPAddress, *, url: str) -> None:
             raise UnsafeTargetError(url, inner, f"{ip} embeds {embedded}")
 
 
-def _parse_numeric_ipv4(host: str) -> ipaddress.IPv4Address | None:
+def parse_numeric_ipv4(host: str) -> ipaddress.IPv4Address | None:
     """Decode ``inet_aton``-style IPv4 forms the resolver would accept.
 
     Handles decimal, octal (leading ``0``), and hex (leading ``0x``)
     parts, and the 1-, 2-, and 3-part short forms. Returns ``None`` for
     anything that is not one of those, including ordinary hostnames.
+
+    Public (no leading underscore) because ``app.ingest.normalise`` also
+    calls it, for the same reason this module does: an IP literal is an
+    IP literal whether it is being judged for "is this address routable"
+    (here) or "is this host shape even allowed for a feed URL" (there),
+    and a feed-supplied host can be obfuscated the same way in either
+    place. One parser, two callers, rather than a second copy of the
+    trickiest predicate in the codebase drifting from this one.
     """
     parts = host.split(".")
     if not 1 <= len(parts) <= 4:
@@ -449,4 +457,4 @@ def _literal_address(host: str) -> IPAddress | None:
             return ipaddress.IPv6Address(host[1:-1])
         except ValueError:
             return None
-    return _parse_numeric_ipv4(host)
+    return parse_numeric_ipv4(host)

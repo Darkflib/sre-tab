@@ -15,6 +15,9 @@ export function useFeed(filters: FeedFilters, limit: number): PagedResource<Feed
         // Omitted, not empty: the server then applies the saved selection.
         topics: filters.topics ?? undefined,
         sources: filters.sources ?? undefined,
+        // Same reasoning, different default: `all` is what an absent
+        // parameter means, so sending it would be noise on the wire.
+        read_state: filters.readState === 'all' ? undefined : filters.readState,
         cursor,
         limit,
         signal,
