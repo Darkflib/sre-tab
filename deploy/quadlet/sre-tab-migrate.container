@@ -7,7 +7,7 @@ After=sre-tab-db.service
 
 [Container]
 ContainerName=sre-tab-migrate
-Image=ghcr.io/darkflib/sre-tab:sha-c4bf6d600f41a38c51ea1078ca3e89fc6ca5c44e@sha256:7157d060ee9145c639696bfd3d3b5a84f5c7b4e0ce213e82d6a65e6e78ee7b8b
+Image=ghcr.io/darkflib/sre-tab:sha-9238b95dddddcc1b39ddf16a44567f469fed8736@sha256:9e07b64f35a57885b507bbec8e0ed30cf53683859c0de46144b0738fea1e2bbb
 # Pinned by digest and changed only by deploy/scripts/promote.sh, which moves
 # every unit running this image together. They must all name the same digest —
 # CI fails if they disagree — because they are one artefact: migrations, the
