@@ -8,6 +8,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A tag-triggered publish path, so there is a version to ask for.** Until
+  now the registry only ever received `sha-<commit>` and `latest`, because
+  `publish` ran on pushes to `main` and nothing else — which is exactly right
+  for the reference host and useless to anybody else. `ci.yml` now also runs
+  on a `v*` tag, through the identical `needs:` chain, and a tag build
+  publishes `:1.1.0` and `:1.1` alongside the commit tag and creates the
+  GitHub Release with that version's changelog section and the SBOM the job
+  already generates.
+
+  Three decisions are worth stating because each could plausibly have gone
+  the other way. **A tag build does not move `:latest`**, which stays the tip
+  of `main`: a moving tag decides the running version by whoever pushed last,
+  and that is the property the digest pins exist to have removed — a release
+  moving `latest` would hand it back, and in the least expected direction.
+  **A pre-release does not move the floating `:1.1`**, because `1.1.0-rc1`
+  sorts below `1.1.0` and somebody asking for the stable minor line has not
+  asked for a release candidate; `v1.1.0-rc1` publishes its exact version and
+  nothing else. And **a tag with no `CHANGELOG.md` section fails the job**
+  rather than producing a Release with an empty body, which would be a green
+  check that verified nothing.
+
+  The tag parsing, the version-tag rule, and the changelog extraction live in
+  `.github/scripts/release-metadata.py` rather than in YAML, and
+  `tests/test_release_metadata.py` drives them through the refusals —
+  `v1.1`, `1.1.0`, `vfoo`, `v01.1.0`, `v1.1.0+build`, and a version the
+  changelog does not mention — as well as the acceptances. Each guard was
+  broken on purpose and seen to go red before being believed.
 - `SECURITY.md`: a private reporting channel (GitHub security advisories),
   the supported-version table, and a pointer to the accepted findings in
   ROADMAP.md so a reporter can tell a new finding from a held one.
@@ -54,6 +81,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`verify-image.sh` now accepts the set of refs this workflow signs from,
+  not one member of it.** A keyless certificate's subject ends in the ref
+  that produced it, so a release signed on `refs/tags/v1.1.0` fails a check
+  pinned to `…/ci.yml@refs/heads/main` — which is what the script did, and
+  would have failed the publish job's own verification step on the first
+  tagged build. `--certificate-identity` becomes
+  `--certificate-identity-regexp` over exactly `refs/heads/main` or a
+  `vMAJOR.MINOR.PATCH` tag. It is anchored at both ends because cosign
+  applies the pattern with an unanchored `MatchString` — read in
+  `pkg/cosign/verify.go` rather than assumed — so without `^` and `$` a
+  subject merely *containing* the string would pass, including
+  `https://evil.example/https://github.com/Darkflib/…`.
+  `tests/test_verify_image_identity.py` pins thirteen rejections against five
+  acceptances, and the leading anchor was removed once to watch it go red.
 - **The shipped and tested interpreter is Python 3.14.** `.python-version`
   and both Containerfile stages now agree on `python:3.14-slim-trixie`, and
   the workflows read `.python-version` rather than carrying a copy, so

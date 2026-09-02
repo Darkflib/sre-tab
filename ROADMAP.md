@@ -38,8 +38,9 @@ that.
 - [Operations](#operations)
   - Off-host backups.
   - An `OnFailure=` alert unit.
-  - Release hygiene: no Release against `v1.0.0`, and no versioned image tag
-    a self-hoster can pull.
+  - Release hygiene: the machinery is in place and has never been run. No
+    `v1.1.0` tag has been pushed, so no Release object and no versioned image
+    tag exist yet.
   - Frontend coverage for `src/api/client.ts`, and for the parts of
     `usePagedResource` that need a DOM — its decision logic is covered now,
     its effects are not.
@@ -449,21 +450,39 @@ prerequisite for going past it.
   not take the instance out of rotation. Readiness and alerting want
   opposite answers to the same question, and only one of them is being
   asked.
-- **Nothing here can be installed by version.** `v1.0.0` is a git tag and
-  nothing more: no Release object against it, so the tag carries no notes
-  and none of the artefacts the build already produces, the SBOM among them.
-  `CHANGELOG.md` has accumulated an `[Unreleased]` section
-  substantially larger than the release it sits above. And the registry
-  holds only `sha-<commit>` tags, because the publish job runs on pushes to
-  `main` and on nothing else, so the only path to a known-good deployment is
-  `promote.sh` run from a checkout of this repository. That is exactly right
-  for the reference host and useless to anyone else: there is no version to
-  ask for.
+- **Nothing here can be installed by version** — **the machinery has landed;
+  nothing has been released with it.** The original entry is worth keeping in
+  full, because half of it is still true.
 
-  What closes it is one iteration rather than one change — cut 1.1.0, create
-  the Release with notes and the SBOM attached, and add a tag-triggered
-  publish that pushes `:1.1.0` and `:1.1` alongside the digest. The
-  digest-pinned promotion stays exactly as it is, for the reason
+  As written: `v1.0.0` is a git tag and nothing more — no Release object
+  against it, so the tag carries no notes and none of the artefacts the build
+  already produces, the SBOM among them. `CHANGELOG.md` has accumulated an
+  `[Unreleased]` section substantially larger than the release it sits above.
+  And the registry holds only `sha-<commit>` tags, because the publish job
+  runs on pushes to `main` and on nothing else, so the only path to a
+  known-good deployment is `promote.sh` run from a checkout of this
+  repository. That is exactly right for the reference host and useless to
+  anyone else: there is no version to ask for.
+
+  What has changed is the last part. `ci.yml` now triggers on a `v*` tag
+  through the identical `needs:` chain, and a tag build publishes `:1.1.0`
+  and `:1.1` alongside `sha-<commit>`, creates the Release from that
+  version's `CHANGELOG.md` section, and attaches the SBOM. A tag whose shape
+  is wrong, or whose version the changelog does not describe, fails the job
+  before anything is pushed — `.github/scripts/release-metadata.py`, exercised
+  through its refusals by `tests/test_release_metadata.py`. A tag build does
+  not move `:latest`, and a pre-release does not move the floating `:1.1`.
+
+  **What has not changed is that none of it has run.** No `v1.1.0` tag has
+  been pushed, so there is still no Release object anywhere in this
+  repository, still no versioned image in the registry, and still nothing
+  a self-hoster can pull by version. The path is built and untravelled: the
+  first tag is the demonstration, and until it is pushed everything above is
+  a claim about code that has only ever been run on synthetic inputs. Cutting
+  1.1.0 is deliberately held until the rest of the production-readiness work
+  has landed, so that the first release is worth being the first release.
+
+  The digest-pinned promotion stays exactly as it is, for the reason
   [Supply-chain hygiene](#supply-chain-hygiene) gives: a moving tag decides
   the running version by whoever pushed last, which is the property that
   entry exists to have removed. A floating `:1.1` is a convenience for
