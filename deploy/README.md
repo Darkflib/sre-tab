@@ -620,6 +620,7 @@ a moving pointer with the same property `:latest` had, which is why it is not
 what these units name. A release is promoted by digest like any other build:
 `deploy/scripts/promote.sh sha-<commit>`, using the commit the tag points at.
 
+<a id="promote-a-build"></a>
 ### Promote a build
 
 From a checkout, on any machine with `curl`, `cosign`, and `git`:
@@ -1297,6 +1298,18 @@ exits non-zero, `OnFailure=` on `sre-tab-status.service` starts
 `sre-tab-alert@sre-tab-status.service.service`, which gathers the failed
 unit's journal and hands it to a transport the operator writes.
 
+> **On first install of this release, promote before you wait for the timer.**
+> `sre-tab-status.container` pins a digest the way every application unit
+> here does, and on the release that introduces this feature that pin is
+> necessarily older than the `--failures-over` flag the unit passes. Until
+> `deploy/scripts/promote.sh` moves all six units onto a build that has the
+> flag, the hourly check starts, resolves its secret, and exits 2 with
+> `unrecognized arguments: --failures-over 3`. That does alert — correctly,
+> in the sense that a unit really is failing — but about the wrong thing, and
+> it will do so every hour until the digest moves. Promote first and the
+> question never arises. This is the ordinary pin-then-promote sequence and
+> not a fault in the unit; see [Promote a build](#promote-a-build).
+
 It connects as `sretab_readonly`, from `sre-tab-readonly-database-url` — the
 only application unit that holds no write access at all, because the check is
 two `SELECT`s and never commits. It shares the role with the nightly backup
@@ -1410,7 +1423,7 @@ is not an alert path. Fire it:
 
 ```bash
 # 1. The transport alone, with a synthetic report.
-sudo systemctl start sre-tab-alert@sre-tab-status.service
+sudo systemctl start sre-tab-alert@sre-tab-status.service.service
 sudo journalctl -u 'sre-tab-alert@sre-tab-status.service.service' -n 50
 
 # 2. The whole chain — a unit that fails, an OnFailure=, an alert:
