@@ -276,8 +276,8 @@ genuinely held by the three-operator assumption.
   files first and refuses to run if they name anything other than the
   credentials it is about to use, watched failing under four separate
   mutations. `install.sh --start` had the mirror-image problem — it checked
-  for four secrets that predate the cutover and none of the three the units
-  now need — and now checks all seven.
+  for four secrets that predate the cutover and none of the four the units
+  now need — and now checks all eight.
 
   The privilege boundary is demonstrated where it matters rather than only in
   a harness: from inside the running application container on a real Podman
@@ -293,13 +293,23 @@ genuinely held by the three-operator assumption.
   among everything it found, on the ground this entry opened with: it was the
   only item in this section whose severity three operators did not cap.
 
-  **One consumer is outstanding, and it is outstanding by sequencing rather
-  than by decision.** `deploy/quadlet/sre-tab-status.container` — an hourly
-  `sre-tab status` check — arrives with the status-alerting branch and names
-  `sre-tab-database-url`. `sre-tab status` is read-only, so it belongs on
-  `sretab_readonly`; whichever of the two branches merges second owns the
-  change, and `deploy/ROLES.md`'s consumer table carries the row so it cannot
-  be discovered in production instead.
+  **The last consumer has moved, and the gate is what found it.**
+  `deploy/quadlet/sre-tab-status.container` — an hourly `sre-tab status`
+  check — was written on the status-alerting branch while the cutover was
+  written on another, so neither could edit the other's file and it arrived
+  still naming `sre-tab-database-url`. `smoke.sh`'s unit-file step failed on
+  the merge, which is the gate doing exactly what it was added for. It now
+  connects as `sretab_readonly`: the command is two `SELECT`s and never
+  commits, so there is nothing to widen the role for. The obstacle was the
+  shape of the credential rather than the decision — `sretab_readonly`'s only
+  planned consumer was `pg_dump`, which takes a bare `PGPASSWORD`, and the CLI
+  takes a `DATABASE_URL` — and it was closed by minting a fourth secret,
+  `sre-tab-readonly-database-url`, from the same password rather than by
+  putting a read-only job on the DML role to suit a format. Both new guards
+  were watched failing: the unit-file check with the status unit pointed back
+  at the superuser and then at `sretab_app`'s secret, and a new
+  "`sretab_readonly` cannot `DELETE`" assertion with the read-only role
+  widened, which is what keeps it and the session sweep non-interchangeable.
 - **The OAuth state cookie can be overwritten from a sibling subdomain.**
   `set_state_cookie` scopes to `/api/v1/auth` with `HttpOnly`, `SameSite=Lax`,
   and `Secure`, which is careful about everything except *which host* may

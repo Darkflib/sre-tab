@@ -193,14 +193,20 @@ if [ "$start_services" = true ]; then
         fi
     done
 
-    # The three least-privilege role secrets, checked separately because they
+    # The four least-privilege role secrets, checked separately because they
     # come from a different script and because a host can legitimately have
     # the four above and none of these — that is every host that has not yet
     # been cut over.
     #
+    # Four secrets, three roles: sretab_readonly has two, holding one password
+    # in the two shapes its consumers want — bare for the backup's PGPASSWORD,
+    # and a whole URL for sre-tab-status.service, which takes a DATABASE_URL
+    # like every other application unit. A host with only the bare password is
+    # a host whose hourly health check will not start.
+    #
     # sre-tab-database-url stays in the list above even though only the
     # rollback reads it now. It is the rollback: reverting the cutover commit
-    # points three units back at it, and a host that has quietly lost it
+    # points four units back at it, and a host that has quietly lost it
     # cannot take that path.
     #
     # This check earns its place on a first install, where the ordering is
@@ -212,12 +218,12 @@ if [ "$start_services" = true ]; then
     # start with "no such secret", after the timers have been enabled, which
     # says what is missing but not what to do about it.
     for secret in sre-tab-migrate-database-url sre-tab-app-database-url \
-                  sre-tab-readonly-password; do
+                  sre-tab-readonly-password sre-tab-readonly-database-url; do
         if ! podman secret exists "$secret" 2>/dev/null; then
             cat >&2 <<EOF
 error: podman secret '$secret' does not exist.
        The units connect as the three least-privilege roles, so they need
-       the secrets deploy/scripts/create-roles.sh writes. It installs them
+       the four secrets deploy/scripts/create-roles.sh writes. It installs them
        against the running database, which on a first deployment has to be
        started on its own first:
 

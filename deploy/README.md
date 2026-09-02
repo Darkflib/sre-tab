@@ -166,7 +166,7 @@ which is why the allow-list and the `users` table both key on it.
 
 ## Secrets
 
-Seven values are secret to the running stack, and none of them appears in a
+Eight values are secret to the running stack, and none of them appears in a
 unit file, in `podman inspect`, or on a command line. Two scripts write them,
 and which script writes which is worth knowing, because they are run at
 different moments and for different reasons.
@@ -180,21 +180,30 @@ different moments and for different reasons.
 | `sre-tab-session-secret` | `SESSION_SECRET` | app |
 | `sre-tab-github-client-secret` | `GITHUB_CLIENT_SECRET` | app |
 
-`deploy/scripts/create-roles.sh` writes the three least-privilege roles':
+`deploy/scripts/create-roles.sh` writes the three least-privilege roles' four:
 
 | Podman secret | Consumed as | By |
 | --- | --- | --- |
 | `sre-tab-migrate-database-url` | `DATABASE_URL`; `SRE_TAB_RESTORE_URL` | `sre-tab-migrate.service`, and `restore.sh`'s `pg_restore` step |
 | `sre-tab-app-database-url` | `DATABASE_URL` | `sre-tab.service` and `sre-tab-prune-sessions.service` |
 | `sre-tab-readonly-password` | `PGPASSWORD` | `sre-tab-backup.service`, with `PGUSER=sretab_readonly` |
+| `sre-tab-readonly-database-url` | `DATABASE_URL` | `sre-tab-status.service` |
+
+**Four secrets for three roles**, because `sretab_readonly` has two consumers
+that want the same password in different shapes: `pg_dump` takes a bare one
+through `PGPASSWORD`, and `sre-tab status` takes a whole `DATABASE_URL` like
+every other application unit. `create-roles.sh` writes both from one generated
+password and `--rotate` moves both together — a rotation that moved one and
+not the other would leave the backup and the hourly health check on different
+passwords, with only one of them failing.
 
 **Two secrets stopped being read by any unit at the cutover, and neither
 should be deleted.** `sre-tab-database-url` carries the superuser's
 `DATABASE_URL` and is now read by nothing at all; `sre-tab-postgres-password`
 is still read by the database container as `POSTGRES_PASSWORD`, but no longer
 by the backup. Both are the rollback path: reverting the cutover commit
-points three units straight back at them, and a host that has quietly lost
-either cannot take it. `install.sh --start` checks for all seven for exactly
+points four units straight back at them, and a host that has quietly lost
+either cannot take it. `install.sh --start` checks for all eight for exactly
 this reason.
 
 The roles are no longer optional. Every unit but the database connects as one
@@ -272,8 +281,8 @@ Then the rest:
 sudo deploy/install.sh --start
 ```
 
-`--start` refuses to proceed if any of the seven secrets is missing, and when
-one of the three role secrets is the missing one it prints the three commands
+`--start` refuses to proceed if any of the eight secrets is missing, and when
+one of the four role secrets is the missing one it prints the three commands
 above rather than only naming the secret. It enables every timer under
 `deploy/systemd` — the backup and the session sweep — and restarts all five
 long-running units in a single `systemctl` transaction, which is what makes
@@ -384,9 +393,10 @@ git log --oneline -1
 grep -h '^Secret=.*DATABASE_URL' deploy/quadlet/*.container
 ```
 
-**Good:** three `Secret=` lines naming `sre-tab-app-database-url` twice and
-`sre-tab-migrate-database-url` once, and no `sre-tab-database-url` anywhere.
-If you see `sre-tab-database-url`, you are not on the right commit; stop.
+**Good:** four `Secret=` lines — `sre-tab-app-database-url` twice,
+`sre-tab-migrate-database-url` once, and `sre-tab-readonly-database-url` once
+— and no `sre-tab-database-url` anywhere. If you see `sre-tab-database-url`,
+you are not on the right commit; stop.
 
 ### 3. Install the roles
 
@@ -397,8 +407,9 @@ sudo deploy/scripts/create-roles.sh
 ```
 
 **Good:** `sretab_migrate: role created` and the same for `sretab_app` and
-`sretab_readonly`, then a `NOTICE: reassigned public.<table> to
-sretab_migrate` line per existing table, then `Done.` Check:
+`sretab_readonly`, four `wrote secret` lines, then a `NOTICE: reassigned
+public.<table> to sretab_migrate` line per existing table, then `Done.`
+Check:
 
 ```bash
 sudo podman secret ls --format '{{.Name}}' | grep sre-tab- | sort
@@ -406,7 +417,7 @@ sudo podman exec sre-tab-db psql -U sretab -d sretab -c \
   "SELECT rolname, rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname LIKE 'sretab%' ORDER BY 1"
 ```
 
-**Good:** seven secrets, and `f` in all three columns for the three
+**Good:** eight secrets, and `f` in all three columns for the three
 `sretab_*` roles — only `sretab` itself is `t`.
 
 If it refuses because a role and its secret disagree about whether they exist,
@@ -444,10 +455,11 @@ once, at start, and holds what it read. Changing the secret — or changing
 which secret the unit names — does nothing to the process that is running.
 `install.sh` stages; only a restart adopts.
 
-**Why these two and not four.** `sre-tab-prune-sessions.service` and
-`sre-tab-backup.service` also changed, but both are timer-driven oneshots that
-are not running, so there is nothing to restart: each picks up the new unit
-file and the new secret by itself at its next elapse. `sre-tab-web.service`
+**Why these two and not five.** `sre-tab-prune-sessions.service`,
+`sre-tab-backup.service`, and `sre-tab-status.service` also changed, but all
+three are timer-driven oneshots that are not running, so there is nothing to
+restart: each picks up the new unit file and the new secret by itself at its
+next elapse. `sre-tab-web.service`
 and `sre-tab-assets.service` never touch the database. So the units that must
 move *together* are the migration unit and the application, because the
 application `Requires=` the migration unit and must not come up against a
@@ -497,9 +509,9 @@ sudo journalctl -u sre-tab-migrate.service -n 20 --no-pager
 **Good:** alembic reporting a context and either running upgrades or finding
 none to run, and the unit `active (exited)` with status 0.
 
-### 7. Exercise the two timer-driven units now, not at 03:22
+### 7. Exercise the three timer-driven units now, not at 03:22
 
-They are the units nobody watches, and a credential problem in either is
+They are the units nobody watches, and a credential problem in any of them is
 silent until the backup directory has a fortnight-shaped hole in it.
 
 ```bash
@@ -508,12 +520,23 @@ sudo journalctl -u sre-tab-backup.service -n 5 --no-pager
 
 sudo systemctl start sre-tab-prune-sessions.service
 sudo journalctl -u sre-tab-prune-sessions.service -n 5 --no-pager
+
+sudo systemctl start sre-tab-status.service
+sudo journalctl -u sre-tab-status.service -n 20 --no-pager
 ```
 
 **Good:** another `backup complete: … (N bytes)` — this one taken as
-`sretab_readonly` — and either `deleted N dead session rows` or
-`no dead sessions`. A `permission denied` in either is the cutover having gone
-wrong for that unit specifically; roll back.
+`sretab_readonly` — either `deleted N dead session rows` or
+`no dead sessions`, and the status table with a row per source. A `permission
+denied` in any of them is the cutover having gone wrong for that unit
+specifically; roll back.
+
+`sre-tab-status.service` is the one of the three whose *own* failure is not a
+credential problem: it exits non-zero when a source has genuinely been failing,
+which is what it is for, and `systemctl start` on it therefore fires the alert
+path as well. Read the journal rather than the exit status — a
+`permission denied for table sources` is the cutover; a source named with an
+error class beside it is the check working.
 
 Compare the byte count with the dump from step 1. They should be in the same
 ballpark. A dump that is suddenly tiny means `pg_dump` read less than it used
@@ -527,18 +550,21 @@ Three commands, and they have been run:
 git revert --no-edit <the cutover commit>
 sudo deploy/install.sh
 sudo systemctl restart sre-tab.service sre-tab-migrate.service \
-  sre-tab-prune-sessions.service sre-tab-backup.service
+  sre-tab-prune-sessions.service sre-tab-status.service \
+  sre-tab-backup.service
 ```
 
-The last two are oneshots, so restarting them runs them — which is the point,
-because it re-proves them on the superuser credential rather than leaving them
-staged and unexercised until the small hours.
+The last three are oneshots, so restarting them runs them — which is the
+point, because it re-proves them on the superuser credential rather than
+leaving them staged and unexercised until the small hours. Expect
+`sre-tab-status.service` to exit non-zero if a source is genuinely failing;
+that is the check working, not the rollback failing.
 
 This works because nothing above ever touched `sre-tab-database-url` or
 `sre-tab-postgres-password`. **Do not delete either**, then or later; leaving
-them in place *is* the rollback. Leave the three roles and their secrets in
-place too — nothing references them once the units are reverted, and the next
-attempt reuses them as they are.
+them in place *is* the rollback. Leave the three roles and their four secrets
+in place too — nothing references them once the units are reverted, and the
+next attempt reuses them as they are.
 
 `deploy/ROLES.md` has the full reasoning, the verification record, and the
 rotation procedure for the three role passwords.
@@ -1708,6 +1734,14 @@ application image every hour at :48 with up to five minutes of jitter. When it
 exits non-zero, `OnFailure=` on `sre-tab-status.service` starts
 `sre-tab-alert@sre-tab-status.service.service`, which gathers the failed
 unit's journal and hands it to a transport the operator writes.
+
+It connects as `sretab_readonly`, from `sre-tab-readonly-database-url` — the
+only application unit that holds no write access at all, because the check is
+two `SELECT`s and never commits. It shares the role with the nightly backup
+and shares the image with the session sweep, and is deliberately not on the
+sweep's credential: an unattended hourly job is the last thing that should be
+able to write. [deploy/ROLES.md](ROLES.md) has the reasoning and the gates
+that keep the two apart.
 
 The reason it exists: **`/api/v1/healthz` knows a source is failing and
 deliberately will not say so.** `app/scheduler/service.py` reports `ok=true`
