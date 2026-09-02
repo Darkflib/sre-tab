@@ -2,20 +2,27 @@
 #
 # Install the three non-superuser PostgreSQL roles deploy/roles.sql defines
 # (sretab_migrate, sretab_app, sretab_readonly) against the running database
-# container, and mint the podman secrets that will let a future cutover use
-# them: DATABASE_URL for the migration and application roles, and PGPASSWORD
-# for the read-only one, matching how sre-tab-database-url and
-# sre-tab-postgres-password are consumed today (deploy/README.md, "Secrets").
+# container, and mint the podman secrets the Quadlet units consume:
+# DATABASE_URL for the migration and application roles, and PGPASSWORD for the
+# read-only one (deploy/README.md, "Secrets").
 #
 #   deploy/scripts/create-roles.sh              # first install, or a re-run
 #   deploy/scripts/create-roles.sh --rotate      # regenerate all three
 #
-# THIS DOES NOT CHANGE WHAT ANYTHING CURRENTLY CONNECTS AS. DATABASE_URL,
-# PGUSER, and every Quadlet unit are untouched — the application, the
-# migration unit, and the backup keep running as the cluster superuser
-# exactly as they do today. Nothing in deploy/quadlet references the roles
-# this script creates. The cutover that actually switches units over to
-# them is a separate, deliberate step: see deploy/ROLES.md.
+# THIS DOES NOT CHANGE WHAT ANYTHING CURRENTLY CONNECTS AS, even though every
+# unit but the database now names one of these roles. It writes secrets and
+# grants and restarts nothing, and a running container holds the credential it
+# was started with — a podman secret is read once, at container start. So on a
+# host mid-cutover this step is entirely reversible by doing nothing, and on a
+# host already cut over a --rotate here must be followed by a restart or the
+# next one will fail. deploy/ROLES.md has both procedures.
+#
+# It is deliberately not called from install.sh: creating the roles is a
+# different decision from switching anything over to them, and keeping the two
+# apart is what makes the rollback one `git revert`. It has to run against a
+# database that is already up, which is why a first install starts
+# sre-tab-db.service on its own before running this — install.sh --start says
+# so by name if the secrets are missing.
 #
 # bash, not /bin/sh like its neighbours in this directory: `set -o pipefail`
 # needs it, and this script pipes a generated psql script into `podman exec`
@@ -38,8 +45,8 @@ usage() {
 Usage: deploy/scripts/create-roles.sh [options]
 
 Creates sretab_migrate, sretab_app, and sretab_readonly (deploy/roles.sql)
-against the running database container, and writes the podman secrets a
-later cutover will point DATABASE_URL and PGPASSWORD at:
+against the running database container, and writes the podman secrets the
+Quadlet units take DATABASE_URL and PGPASSWORD from:
 
   sre-tab-migrate-database-url   DATABASE_URL for sretab_migrate
   sre-tab-app-database-url       DATABASE_URL for sretab_app
@@ -47,9 +54,10 @@ later cutover will point DATABASE_URL and PGPASSWORD at:
 
 Options:
   --rotate          generate NEW passwords for all three roles and secrets.
-                     Safe at any point before cutover, because nothing reads
-                     these secrets yet; see the rotation note in
-                     deploy/ROLES.md for after cutover.
+                     Three units read these secrets, and a running container
+                     does not pick up a changed one -- follow this with a
+                     restart of sre-tab-migrate.service and sre-tab.service.
+                     See the rotation note in deploy/ROLES.md.
   --user NAME        superuser to connect as while installing (default: sretab)
   --database NAME     database to install into (default: sretab)
   --container NAME    the database container to run psql inside
@@ -73,7 +81,10 @@ secret. Neither pairing can be resolved by generating a new password for
 one without the other; pass --rotate to resynchronise both.
 
 Not called by install.sh. This is operator-invoked, deliberately -- creating
-the roles is not the same decision as switching anything over to them.
+the roles is not the same decision as switching anything over to them, and
+it needs a database that is already running, which on a first install means
+`systemctl start sre-tab-db.service` before this and `install.sh --start`
+after it.
 EOF
 }
 
@@ -224,14 +235,19 @@ echo "Applying deploy/roles.sql..."
 
 cat <<EOF
 
-Done. The roles exist and their grants are current. Nothing that runs today
-connects as any of them -- DATABASE_URL and PGUSER are untouched. Verify
-with:
+Done. The roles exist and their grants are current. Nothing that is already
+running has changed -- a container holds the podman secret it started with,
+so this took effect for the next start and not for the current one. Verify:
 
   podman exec $container psql -U $db_user -d $db_name -c '\du sretab_*'
   podman secret ls | grep sre-tab-
 
-The cutover procedure that actually points a unit at one of these roles,
-including the fourth-place-DATABASE_URL-shows-up problem it exists to avoid,
-is in deploy/ROLES.md.
+  # which roles are actually connected right now
+  podman exec $container psql -U $db_user -d $db_name -c \\
+    "SELECT usename, count(*) FROM pg_stat_activity WHERE datname = '$db_name' GROUP BY usename"
+
+On a host that has not been cut over yet, that last query still answers
+"$db_user" and the ordered procedure to change it is in deploy/README.md,
+under "Cutting a running deployment over to the roles". deploy/ROLES.md has
+the reasoning, the verification record, and the rollback.
 EOF

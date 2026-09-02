@@ -39,6 +39,16 @@ podman info --format '{{.Host.CgroupsVersion}}'
 Everything sits on `sre-tab.network` (`10.89.61.0/24`). Only Caddy publishes a
 port, and only to `127.0.0.1`. The database is unreachable from the host.
 
+Four of those units talk to PostgreSQL, and each does so as a different,
+deliberately limited role: the application and the session sweep as
+`sretab_app` (DML only), the migration unit as `sretab_migrate` (DDL, and it
+owns every table), the backup as `sretab_readonly`. None of the three is a
+superuser, and none can `COPY … TO PROGRAM`. Only `sre-tab-db` itself holds a
+superuser credential, because it has to own the cluster.
+[deploy/ROLES.md](ROLES.md) is why, and the
+[runbook below](#cutting-a-running-deployment-over-to-the-roles) is how to get
+an existing deployment there.
+
 ### Why a proxy split rather than one process
 
 The PRD allows either a single origin serving both, or a reverse proxy routing
@@ -145,29 +155,44 @@ which is why the allow-list and the `users` table both key on it.
 
 ## Secrets
 
-Four values are genuinely secret to the running stack, and none of them
-appears in a unit file, in `podman inspect`, or on a command line:
+Seven values are secret to the running stack, and none of them appears in a
+unit file, in `podman inspect`, or on a command line. Two scripts write them,
+and which script writes which is worth knowing, because they are run at
+different moments and for different reasons.
+
+`deploy/scripts/create-secrets.sh` writes the superuser's four:
 
 | Podman secret | Consumed as | By |
 | --- | --- | --- |
-| `sre-tab-postgres-password` | `POSTGRES_PASSWORD`, `PGPASSWORD` | database, backup |
-| `sre-tab-database-url` | `DATABASE_URL` | app, migrations, session sweep |
+| `sre-tab-postgres-password` | `POSTGRES_PASSWORD` | database (and `restore.sh`, for `DROP`/`CREATE DATABASE`) |
+| `sre-tab-database-url` | — | **nothing, since the cutover.** Keep it: it is the rollback |
 | `sre-tab-session-secret` | `SESSION_SECRET` | app |
 | `sre-tab-github-client-secret` | `GITHUB_CLIENT_SECRET` | app |
 
-A fifth is written by `create-roles.sh` rather than by `create-secrets.sh`,
-and read by one thing:
+`deploy/scripts/create-roles.sh` writes the three least-privilege roles':
 
 | Podman secret | Consumed as | By |
 | --- | --- | --- |
-| `sre-tab-migrate-database-url` | `SRE_TAB_RESTORE_URL` | `restore.sh`, for the `pg_restore` step |
+| `sre-tab-migrate-database-url` | `DATABASE_URL`; `SRE_TAB_RESTORE_URL` | `sre-tab-migrate.service`, and `restore.sh`'s `pg_restore` step |
+| `sre-tab-app-database-url` | `DATABASE_URL` | `sre-tab.service` and `sre-tab-prune-sessions.service` |
+| `sre-tab-readonly-password` | `PGPASSWORD` | `sre-tab-backup.service`, with `PGUSER=sretab_readonly` |
 
-`create-roles.sh` writes two more — `sre-tab-app-database-url` and
-`sre-tab-readonly-password` — which nothing reads yet; they are waiting on the
-cutover of the units to the three least-privilege roles, and
-[deploy/ROLES.md](ROLES.md) has the whole picture. Installing the roles is
-optional today: without them, `restore.sh` needs `--restore-user sretab` and
-says so by name.
+**Two secrets stopped being read by any unit at the cutover, and neither
+should be deleted.** `sre-tab-database-url` carries the superuser's
+`DATABASE_URL` and is now read by nothing at all; `sre-tab-postgres-password`
+is still read by the database container as `POSTGRES_PASSWORD`, but no longer
+by the backup. Both are the rollback path: reverting the cutover commit
+points three units straight back at them, and a host that has quietly lost
+either cannot take it. `install.sh --start` checks for all seven for exactly
+this reason.
+
+The roles are no longer optional. Every unit but the database connects as one
+of them, so `create-roles.sh` is a required step on a first install — see the
+ordering under [First start](#first-start), which is counter-intuitive because
+the roles have to be created against a database that is already running.
+[deploy/ROLES.md](ROLES.md) has the whole picture, and
+[the runbook below](#cutting-a-running-deployment-over-to-the-roles) is how to
+do it to a deployment that is already up.
 
 The database password appears inside `sre-tab-database-url` as well as in
 `sre-tab-postgres-password`, and a mismatch between the two is a tedious way
@@ -194,27 +219,55 @@ outstanding CSRF token.
 
 `create-secrets.sh --rotate-db` writes a new password to both secrets, but
 PostgreSQL will not adopt it on its own — `POSTGRES_PASSWORD` only applies at
-`initdb`. Change it in the database first, then rotate the secrets, then
-restart:
+`initdb`. Change it in the database first, then rotate the secrets:
 
 ```bash
 podman exec -it sre-tab-db psql -U sretab -c "\password sretab"
 sudo deploy/scripts/create-secrets.sh --rotate-db < /path/to/github-client-secret
-sudo systemctl restart sre-tab.service sre-tab-migrate.service
 ```
 
+**No unit needs restarting for this one, since the cutover.** The superuser's
+password is read by `sre-tab-db.service` only at `initdb`, and by `restore.sh`
+at the moment it runs; the application and the migration unit stopped reading
+`sre-tab-database-url` when they moved to their own roles. That is the reverse
+of the situation for the three role passwords, where a rotation *must* be
+followed by a restart — a running container never picks up a changed podman
+secret. `deploy/ROLES.md` has that procedure.
+
+<a id="first-start"></a>
 ## First start
+
+**Start the database on its own first, and install the roles against it.**
+This step looks like it is in the wrong place and is not. Every unit but the
+database connects as one of the three least-privilege roles, and
+`create-roles.sh` creates those roles by talking to the *running* database —
+so the roles cannot exist before the database does, and the rest of the stack
+cannot start before the roles do. The database is the one unit that can be
+started on its own, because it depends on nothing but the network:
+
+<!-- docs:run -->
+```bash
+sudo systemctl start sre-tab-db.service
+sudo deploy/scripts/create-roles.sh
+```
+
+That is once per host. `create-roles.sh` is idempotent and safe to re-run; it
+leaves an existing role's password alone unless asked to rotate it.
+
+Then the rest:
 
 <!-- docs:run -->
 ```bash
 sudo deploy/install.sh --start
 ```
 
-`--start` refuses to proceed if any of the four secrets is missing. It enables
-every timer under `deploy/systemd` — the backup and the session sweep — and
-restarts all five long-running units in a single `systemctl` transaction,
-which is what makes systemd resolve the ordering between them rather than
-starting them in the order typed.
+`--start` refuses to proceed if any of the seven secrets is missing, and when
+one of the three role secrets is the missing one it prints the three commands
+above rather than only naming the secret. It enables every timer under
+`deploy/systemd` — the backup and the session sweep — and restarts all five
+long-running units in a single `systemctl` transaction, which is what makes
+systemd resolve the ordering between them rather than starting them in the
+order typed.
 
 The timers are enumerated from the directory rather than listed by name.
 A timer that the installer stages but never enables is installed, inert, and
@@ -257,6 +310,209 @@ Quadlet services are transient generated units and cannot be enabled with
 `systemctl enable`; their `[Install]` sections are applied by the generator at
 boot and on `daemon-reload`, so starting them explicitly is enough. The timers
 are native units and are enabled normally.
+
+<a id="cutting-a-running-deployment-over-to-the-roles"></a>
+## Cutting a running deployment over to the roles
+
+For a host that is already up and still connecting as the superuser. A fresh
+install does not need this section — [First start](#first-start) already has
+the roles in it.
+
+Read this much before starting, because it is the part that decides whether
+tonight is the night:
+
+- **It needs no new image.** The cutover changes which credential each unit is
+  handed and nothing else; no code in `app/` is involved, and the digest
+  currently pinned works exactly as it stands. Do **not** fold a `promote.sh`
+  into this. One change at a time is the whole reason the cutover is a single
+  commit with a one-command rollback, and a promotion in the same window
+  entangles the two — if something misbehaves you want to know which of them
+  did it.
+- **Budget one application restart**, which is roughly 40 seconds of 502s
+  through the outer proxy on the reference host. See
+  [How long a deploy actually takes](#how-long-a-deploy-actually-takes); the
+  service is unreachable for about 20 seconds *after* `systemctl` returns, so
+  do not read the prompt coming back as the all-clear.
+- **The reversible point is step 4.** Everything before it can be abandoned by
+  doing nothing at all.
+- Every step below has been executed end to end on a Debian 13 host with
+  podman 5.4.2, rollback included.
+
+### 1. Take a backup, and check it arrived
+
+`create-roles.sh` reassigns the owner of every table in `public`. That is a
+change to the database, not only to unit files, so this is the one step not to
+skip.
+
+```bash
+sudo systemctl start sre-tab-backup.service
+sudo journalctl -u sre-tab-backup.service -n 5 --no-pager
+sudo ls -l /srv/sre-tab/backups | tail -3
+```
+
+**Good:** a `backup complete: … (N bytes)` line, and a dump with today's
+timestamp beside a `.sha256` sidecar. This one still runs as the superuser;
+that is expected, it is the last such run.
+
+### 2. Pull the commit that carries the cutover
+
+```bash
+cd /path/to/sre-tab && git pull
+git log --oneline -1
+grep -h '^Secret=.*DATABASE_URL' deploy/quadlet/*.container
+```
+
+**Good:** three `Secret=` lines naming `sre-tab-app-database-url` twice and
+`sre-tab-migrate-database-url` once, and no `sre-tab-database-url` anywhere.
+If you see `sre-tab-database-url`, you are not on the right commit; stop.
+
+### 3. Install the roles
+
+The database is already running, so this is one command.
+
+```bash
+sudo deploy/scripts/create-roles.sh
+```
+
+**Good:** `sretab_migrate: role created` and the same for `sretab_app` and
+`sretab_readonly`, then a `NOTICE: reassigned public.<table> to
+sretab_migrate` line per existing table, then `Done.` Check:
+
+```bash
+sudo podman secret ls --format '{{.Name}}' | grep sre-tab- | sort
+sudo podman exec sre-tab-db psql -U sretab -d sretab -c \
+  "SELECT rolname, rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname LIKE 'sretab%' ORDER BY 1"
+```
+
+**Good:** seven secrets, and `f` in all three columns for the three
+`sretab_*` roles — only `sretab` itself is `t`.
+
+If it refuses because a role and its secret disagree about whether they exist,
+it will say which way round, and `--rotate` is the answer. `deploy/ROLES.md`
+has the reasoning; nothing is broken and nothing has changed yet.
+
+**Nothing that is running has changed.** The application is still connected as
+the superuser. Walking away here costs nothing.
+
+### 4. Stage the new units
+
+```bash
+sudo deploy/install.sh
+grep -h '^Secret=.*DATABASE_URL\|^Environment=PGUSER' \
+  /etc/containers/systemd/sre-tab*.container
+```
+
+**Good:** the same three `Secret=` lines as in step 2, plus
+`Environment=PGUSER=sretab_readonly`.
+
+Still nothing running has changed: a staged unit file has no effect on a
+container that is already up. This is the last cheap stopping point.
+
+### 5. Restart the two units that hold a credential
+
+```bash
+sudo systemctl restart sre-tab-migrate.service sre-tab.service
+```
+
+One invocation, not two, so systemd builds a single transaction and honours
+the ordering between them.
+
+**Why a restart is needed at all:** a running container reads a podman secret
+once, at start, and holds what it read. Changing the secret — or changing
+which secret the unit names — does nothing to the process that is running.
+`install.sh` stages; only a restart adopts.
+
+**Why these two and not four.** `sre-tab-prune-sessions.service` and
+`sre-tab-backup.service` also changed, but both are timer-driven oneshots that
+are not running, so there is nothing to restart: each picks up the new unit
+file and the new secret by itself at its next elapse. `sre-tab-web.service`
+and `sre-tab-assets.service` never touch the database. So the units that must
+move *together* are the migration unit and the application, because the
+application `Requires=` the migration unit and must not come up against a
+schema a failed migration left behind.
+
+### 6. Check it, and do not trust the prompt returning
+
+```bash
+systemctl --failed --no-pager
+
+for _ in $(seq 1 60); do
+    curl --fail --silent --max-time 5 http://127.0.0.1:8080/api/v1/healthz && break
+    sleep 2
+done
+echo
+```
+
+**Good:** no failed units, and `{"status":"ok","live":true,"ready":true,…}`
+with the database probe `"ok":true`.
+
+Then the question this whole exercise is about — *which role is actually
+connected?* Ask the database, not the unit file:
+
+```bash
+sudo podman exec sre-tab-db psql -U sretab -d sretab -c \
+  "SELECT usename, count(*) FROM pg_stat_activity WHERE datname = 'sretab' GROUP BY usename ORDER BY 1"
+```
+
+**Good:** `sretab_app` with a handful of connections, and **no `sretab`**.
+Seeing `sretab` here means a container is still running on the old credential
+— almost always because step 5 was run before step 4, so `install.sh` had not
+yet staged the new unit.
+
+And the migration unit, which has already run by now:
+
+```bash
+sudo journalctl -u sre-tab-migrate.service -n 20 --no-pager
+```
+
+**Good:** alembic reporting a context and either running upgrades or finding
+none to run, and the unit `active (exited)` with status 0.
+
+### 7. Exercise the two timer-driven units now, not at 03:22
+
+They are the units nobody watches, and a credential problem in either is
+silent until the backup directory has a fortnight-shaped hole in it.
+
+```bash
+sudo systemctl start sre-tab-backup.service
+sudo journalctl -u sre-tab-backup.service -n 5 --no-pager
+
+sudo systemctl start sre-tab-prune-sessions.service
+sudo journalctl -u sre-tab-prune-sessions.service -n 5 --no-pager
+```
+
+**Good:** another `backup complete: … (N bytes)` — this one taken as
+`sretab_readonly` — and either `deleted N dead session rows` or
+`no dead sessions`. A `permission denied` in either is the cutover having gone
+wrong for that unit specifically; roll back.
+
+Compare the byte count with the dump from step 1. They should be in the same
+ballpark. A dump that is suddenly tiny means `pg_dump` read less than it used
+to, which is what a missing grant looks like when it does not fail outright.
+
+### If it is not good: roll back
+
+Three commands, and they have been run:
+
+```bash
+git revert --no-edit <the cutover commit>
+sudo deploy/install.sh
+sudo systemctl restart sre-tab.service sre-tab-migrate.service \
+  sre-tab-prune-sessions.service sre-tab-backup.service
+```
+
+The last two are oneshots, so restarting them runs them — which is the point,
+because it re-proves them on the superuser credential rather than leaving them
+staged and unexercised until the small hours.
+
+This works because nothing above ever touched `sre-tab-database-url` or
+`sre-tab-postgres-password`. **Do not delete either**, then or later; leaving
+them in place *is* the rollback. Leave the three roles and their secrets in
+place too — nothing references them once the units are reverted, and the next
+attempt reuses them as they are.
+
+`deploy/ROLES.md` has the full reasoning, the verification record, and the
+rotation procedure for the three role passwords.
 
 ## Migrations on deploy
 
@@ -668,6 +924,13 @@ dumps older than `BACKUP_KEEP_DAYS` (14). Verifying at write time is the
 difference between a backup job that fails visibly and a backup that only
 reveals itself as useless during a restore.
 
+It runs as `sretab_readonly` — `PGUSER` in the unit, `PGPASSWORD` from
+`sre-tab-readonly-password` — so the job that reads every row in the database
+every night cannot write one. That role holds `SELECT` on sequences as well as
+on tables, which is not decoration: a custom-format dump emits a `setval()`
+per sequence, and a role without it makes `pg_dump` fail outright rather than
+produce a dump whose restore hands out ids that are already taken.
+
 ```bash
 systemctl list-timers 'sre-tab-*'
 systemctl start sre-tab-backup.service     # take one now
@@ -756,12 +1019,24 @@ CONTAINER_ENGINE=docker SRE_TAB_IMAGE=sre-tab:dev deploy/scripts/smoke.sh
 CI runs it on every push under Podman. It has been run under Docker on macOS
 during development and passes end to end.
 
-What that does **not** cover, and what still needs one pass on a real Linux
-host before release: Quadlet generation into live systemd units, the `After=`
-and `Requires=` ordering actually holding at boot, `Notify=healthy`, the
-Podman secret plumbing, and the timer firing. CI validates unit *generation*
-with `podman-system-generator --dryrun`, which catches malformed keys but not
-runtime behaviour.
+Since the cutover it also opens the four unit files before it starts anything
+and refuses to run if they name credentials other than the ones it is about to
+use. Without that it was a test of the roles and not of the deployment: it
+invents its own connection strings — it has no podman secrets and under
+`CONTAINER_ENGINE=docker` cannot have any — so every assertion in it would
+have gone on passing with all four units reverted to the superuser.
+
+What the smoke test still does **not** cover, because systemd is not involved
+in it: Quadlet generation into live units, the `After=` and `Requires=`
+ordering holding at boot, `Notify=healthy`, and the Podman secret plumbing. CI
+validates unit *generation* with `podman-system-generator --dryrun`, which
+catches malformed keys and nothing else. Those have now been exercised by hand
+on three separate Debian 13 hosts, most recently on the cut-over units from a
+completely empty host — see the verification record in
+[deploy/ROLES.md](ROLES.md#the-cutover-itself-was-run). What remains genuinely
+unproven is the timers *firing on their own*, and `Persistent=true` catching
+up after downtime; starting the units by hand, which the runbook above does,
+tests the job and not the schedule.
 
 <a id="session-retention"></a>
 ## Session retention

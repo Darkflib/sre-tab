@@ -41,13 +41,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   so a `pg_dump` never races the `DELETE`.
 - Three least-privilege PostgreSQL roles in `deploy/roles.sql` —
   `sretab_migrate` (DDL), `sretab_app` (DML), `sretab_readonly` (the dump)
-  — installed by `deploy/scripts/create-roles.sh`, with the cutover
-  procedure, the full consumer list, and the rollback in
-  `deploy/ROLES.md`. **Nothing uses them yet, deliberately**: no
-  `.container` and no `DATABASE_URL` changed, so the running deployment is
-  unaltered and the cutover is its own iteration. Verified against a real
-  `postgres:18-trixie`: `COPY … TO PROGRAM` is refused for all three,
-  including the DDL role, which is the mechanism the finding turns on.
+  — installed by `deploy/scripts/create-roles.sh`, with the reasoning, the
+  full consumer list, and the rollback in `deploy/ROLES.md`. They landed
+  ahead of anything using them, deliberately, so that the commit which
+  switched the units over could touch nothing but `deploy/quadlet/` and be
+  revertible on its own; see **Security**, below, for that step. Verified
+  against a real `postgres:18-trixie`: `COPY … TO PROGRAM` is refused for
+  all three, including the DDL role, which is the mechanism the finding
+  turns on.
 - **The deployment smoke test now runs as the three least-privilege roles
   and asserts what they may not do.** It installs `roles.sql` against its
   own throwaway PostgreSQL before the migrations, then runs the migration
@@ -73,6 +74,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The smoke test reads the unit files before it trusts itself.** It ran as
+  the three least-privilege roles already, and that was taken to mean a
+  reverted cutover would fail CI. It would not have: the harness has no podman
+  secrets — under `CONTAINER_ENGINE=docker` it cannot have any — so it invents
+  its own connection strings, and nothing in it ever opened a file under
+  `deploy/quadlet`. Every assertion would have gone on passing with all four
+  units pointed back at the superuser. It now asserts, before starting a
+  container, that each unit names the credential the corresponding container
+  is about to be handed, that none consumes `sre-tab-database-url`, and that
+  `sre-tab-db.container` still bootstraps the superuser. Watched failing under
+  four mutations: the whole cutover reverted, the session sweep left behind,
+  the backup half-cut, and the migration unit handed the application's role.
+- **`install.sh --start` checks all seven secrets, not the pre-cutover four.**
+  A guard naming the old set would have passed and then watched three units
+  fail to resolve a `Secret=` reference. When a role secret is the missing
+  one it prints the first-install ordering, which is genuinely
+  counter-intuitive: `create-roles.sh` installs the roles against the
+  *running* database, so a fresh host has to start `sre-tab-db.service` on its
+  own, install the roles, and only then run `--start`.
 - **`restore.sh` restores with a split credential.** `DROP DATABASE` and
   `CREATE DATABASE` keep the superuser (`--user`/`--password-secret`,
   unchanged defaults), because database-level administration is not
@@ -99,6 +119,45 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   calls a CPython feature release a *minor* update, so the weekly group had
   moved the workflow steps alone; interpreter bumps are approval-gated now,
   and 3.15 arrives as a dashboard tick rather than as a PR.
+
+### Security
+
+- **The deployment no longer connects to PostgreSQL as a superuser.** Every
+  Quadlet unit but the database itself now uses one of the three
+  least-privilege roles: the application and `sre-tab sessions prune` as
+  `sretab_app` (`sre-tab-app-database-url`), the migration unit as
+  `sretab_migrate` (`sre-tab-migrate-database-url`), and the backup as
+  `sretab_readonly` (`PGUSER` plus `sre-tab-readonly-password`).
+  `sre-tab-db.container` keeps `POSTGRES_USER=sretab`, because the superuser
+  has to own the cluster and is what `create-roles.sh` installs the other
+  three with. This closes the one accepted finding in `ROADMAP.md` whose
+  severity three operators did not cap: an application-level SQL injection
+  reached `COPY … TO PROGRAM`, which executes commands under the postmaster,
+  and now does not.
+
+  The session sweep takes the application's role rather than the migration
+  unit's: it is a `DELETE` on one table, and it is the unit that runs
+  unattended on a timer with nobody watching.
+
+  It landed as one commit touching nothing but `deploy/quadlet/`, so the
+  rollback is one `git revert`, `install.sh`, and a restart — executed, not
+  described. `sre-tab-database-url` and `sre-tab-postgres-password` are
+  deliberately left in place and are what the rollback returns to; do not
+  delete either.
+
+  Demonstrated from inside the running application container on a Debian 13
+  host rather than only in a harness: `current_user` is `sretab_app`,
+  `is_superuser` is `off`, `CREATE TABLE`, `COPY … TO PROGRAM`, and
+  `TRUNCATE` are refused, and the `DELETE` the application needs is not. A
+  full cold install proved the rest — a migration creating tables the
+  application can use with no manual `GRANT`, a restorable
+  `sretab_readonly` dump with its sequences intact, and a session sweep that
+  really deletes. `deploy/README.md` carries the ordered rollout runbook for
+  an existing deployment and `deploy/ROLES.md` the reasoning.
+
+  One consumer is outstanding: `sre-tab-status.container`, which arrives on
+  another branch and should move to `sretab_readonly`. It is named in
+  `deploy/ROLES.md`'s consumer table rather than left to be found.
 
 ### Fixed
 

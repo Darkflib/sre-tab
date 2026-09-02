@@ -10,10 +10,12 @@
 -- application, and read-only for `pg_dump`. None of them is superuser, and
 -- none can create a database or another role.
 --
--- Installing this script does NOT change what DATABASE_URL, PGUSER, or any
--- Quadlet unit points at. The three roles it creates are not referenced
--- anywhere in deploy/quadlet until a later, deliberate cutover — see
--- deploy/ROLES.md for that procedure.
+-- Every Quadlet unit but the database itself now connects as one of these
+-- three; the cutover has happened. Applying this file is still not what
+-- performs it, though — it creates roles and grants and restarts nothing, and
+-- a running container holds the credential it started with. On a host that
+-- has not been cut over yet, the ordered procedure is in deploy/README.md and
+-- the reasoning is in deploy/ROLES.md.
 --
 -- Run through one of the three scripts that know how to feed it, never by
 -- hand: create-roles.sh installs the roles and rotates their passwords,
@@ -73,15 +75,14 @@
 -- sretab_migrate. The ones that exist already were created by the
 -- superuser before this script ever ran, so the sweep below reassigns them
 -- once (a no-op on repeat: it only touches objects it does not already
--- own). The future ones need no such sweep: once the migration unit
--- connects as sretab_migrate instead of the superuser (the cutover in
--- deploy/ROLES.md), it is the role doing the CREATE TABLE, so it is the
--- owner from the moment the table exists — which is also exactly why the
+-- own). The future ones need no such sweep: the migration unit connects as
+-- sretab_migrate, so it is the role doing the CREATE TABLE and is the owner
+-- from the moment the table exists — which is also exactly why the
 -- `ALTER DEFAULT PRIVILEGES` below is written `FOR ROLE sretab_migrate`:
 -- default privileges attach to the role that creates an object, not to
 -- whoever happens to run the ALTER DEFAULT PRIVILEGES statement (that
--- would be the superuser, here, which is not the role that will ever
--- create a table again after cutover).
+-- would be the superuser, here, which is no longer the role that creates a
+-- table in this schema at all).
 
 \set ON_ERROR_STOP on
 
@@ -239,8 +240,11 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 -- === Existing-object ownership =============================================
 --
 -- One-off sweep: reassign every table already in `public` to sretab_migrate,
--- so that after cutover it can ALTER and DROP them, not only the tables a
--- future `alembic upgrade` creates. Idempotent by construction — it only
+-- so that it can ALTER and DROP the tables the superuser created before this
+-- file first ran, not only the ones a later `alembic upgrade` creates itself.
+-- This is what a host being cut over needs and a fresh one does not, and it
+-- is also what puts right a restore run with `--restore-user sretab`.
+-- Idempotent by construction — it only
 -- touches objects it does not already own, so re-running finds nothing to
 -- do.
 --
@@ -291,8 +295,7 @@ GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO sretab_readonly;
 -- attach to the role that CREATEs the object, not to whoever runs this
 -- ALTER DEFAULT PRIVILEGES statement (the superuser, here). Get this wrong
 -- — omit it, or name the wrong role — and it silently does nothing, because
--- the superuser is not the role that will ever create a table again once
--- the migration unit is cut over to sretab_migrate.
+-- the superuser is not the role the migration unit creates tables as.
 
 ALTER DEFAULT PRIVILEGES FOR ROLE sretab_migrate IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO sretab_app;
