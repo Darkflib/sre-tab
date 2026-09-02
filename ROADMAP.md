@@ -24,7 +24,8 @@ that.
     actions, or replace `download-syft` with a registry pull.
 - [Security findings this deployment absorbs](#security-findings-this-deployment-absorbs)
   - Cut the deployment over to the three least-privilege database roles —
-    the roles exist and are verified; nothing uses them yet.
+    `restore.sh` and the smoke test use them now, and every Quadlet unit
+    still connects as the superuser.
   - The OAuth state cookie can be overwritten from a sibling subdomain.
   - `upsert_user` has no conflict handling for a concurrent first sign-in.
 - [API surface](#api-surface)
@@ -240,11 +241,22 @@ count at all.
   `alembic upgrade` yields tables the application cannot read, with
   nothing to say why.
 
-  What the cutover still needs a decision on: `restore.sh` does
-  `DROP`/`CREATE DATABASE`, which is database-level admin that none of the
-  three roles holds, and `smoke.sh` exercises only the superuser today, so
-  it would keep passing through a broken or silently reverted cutover.
-  Both are named in ROLES.md rather than guessed at.
+  **Both sub-decisions the cutover was waiting on are now closed, and the
+  units are still what is open.** `restore.sh` does `DROP`/`CREATE DATABASE`,
+  which is database-level admin none of the three roles holds; it now keeps
+  the superuser credential for exactly that step and runs `pg_restore` as
+  `sretab_migrate`, rather than granting the DDL role `CREATEDB` and widening
+  what the migration unit carries unattended on every deploy. And `smoke.sh`,
+  which exercised only the superuser and would therefore have kept passing
+  through a broken or silently reverted cutover, now installs the roles,
+  runs migrate, app, session sweep, and backup as them, and asserts the
+  refusals by their error text — `COPY … TO PROGRAM` for all three,
+  `CREATE TABLE` for `sretab_app`, `INSERT` for `sretab_readonly` — so
+  widening a role by accident fails CI instead of leaving ROLES.md quietly
+  wrong.
+
+  What remains is the cutover itself: the `Secret=` and `Environment=` lines
+  in `deploy/quadlet/`, as its own commit, with the rollback in ROLES.md.
 
   The production-readiness review of 1 September 2026 put the cutover first
   among everything it found, on the ground this entry opens with: it is the

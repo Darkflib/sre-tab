@@ -145,8 +145,8 @@ which is why the allow-list and the `users` table both key on it.
 
 ## Secrets
 
-Four values are genuinely secret and none of them appears in a unit file, in
-`podman inspect`, or on a command line:
+Four values are genuinely secret to the running stack, and none of them
+appears in a unit file, in `podman inspect`, or on a command line:
 
 | Podman secret | Consumed as | By |
 | --- | --- | --- |
@@ -154,6 +154,20 @@ Four values are genuinely secret and none of them appears in a unit file, in
 | `sre-tab-database-url` | `DATABASE_URL` | app, migrations, session sweep |
 | `sre-tab-session-secret` | `SESSION_SECRET` | app |
 | `sre-tab-github-client-secret` | `GITHUB_CLIENT_SECRET` | app |
+
+A fifth is written by `create-roles.sh` rather than by `create-secrets.sh`,
+and read by one thing:
+
+| Podman secret | Consumed as | By |
+| --- | --- | --- |
+| `sre-tab-migrate-database-url` | `SRE_TAB_RESTORE_URL` | `restore.sh`, for the `pg_restore` step |
+
+`create-roles.sh` writes two more — `sre-tab-app-database-url` and
+`sre-tab-readonly-password` — which nothing reads yet; they are waiting on the
+cutover of the units to the three least-privilege roles, and
+[deploy/ROLES.md](ROLES.md) has the whole picture. Installing the roles is
+optional today: without them, `restore.sh` needs `--restore-user sretab` and
+says so by name.
 
 The database password appears inside `sre-tab-database-url` as well as in
 `sre-tab-postgres-password`, and a mismatch between the two is a tedious way
@@ -698,12 +712,26 @@ This destroys the target database and rebuilds it from the dump. The script:
 2. prompts for the database name as confirmation (`--yes` skips it);
 3. stops `sre-tab.service` and `sre-tab-migrate.service` so nothing writes
    during the restore;
-4. `DROP DATABASE ... WITH (FORCE)` and recreates it;
-5. restores with `--single-transaction --exit-on-error`, so the database ends
-   up either fully restored or empty for a second attempt — never
-   half-restored with the application then migrating on top of it;
-6. reports the table count and the `alembic_version` row;
-7. restarts the application and waits for `/api/v1/healthz`.
+4. `DROP DATABASE ... WITH (FORCE)` and recreates it, as the superuser —
+   database-level administration that none of the three least-privilege roles
+   holds, and none of them should;
+5. re-applies `deploy/roles.sql` to the new database when those roles exist,
+   because grants and default privileges live *inside* a database and the
+   drop took them with it;
+6. restores as `sretab_migrate` — not as the superuser — with
+   `--single-transaction --exit-on-error`, so the database ends up either
+   fully restored or empty for a second attempt, never half-restored with the
+   application then migrating on top of it;
+7. re-applies `roles.sql` once more, which settles ownership and grants over
+   whatever the restore actually created;
+8. reports the table count and the `alembic_version` row;
+9. restarts the application and waits for `/api/v1/healthz`.
+
+Steps 4 and 6 are two different credentials on purpose, and
+[deploy/ROLES.md](ROLES.md) carries the reasoning. On a host where the roles
+were never installed, `--restore-user sretab` collapses them back into one;
+the script checks for the role and says so before it drops anything, rather
+than failing at authentication time with the database already gone.
 
 Point-in-time recovery is out of scope for v1: these are nightly logical
 dumps, so the recovery point is the last successful backup.
@@ -711,12 +739,15 @@ dumps, so the recovery point is the last successful backup.
 ### The restore has been tested
 
 `deploy/scripts/smoke.sh` runs the same `restore.sh`, unmodified, against a
-throwaway database: it brings up PostgreSQL on an empty volume, migrates,
-starts the application and Caddy, checks the health endpoint and the front-door
-behaviour, writes a marker row, takes a backup with the real `backup.sh`, drops
-the marker, restores with the real `restore.sh`, and asserts that the marker
-and the Alembic revision both come back and the application goes healthy
-again.
+throwaway database: it brings up PostgreSQL on an empty volume, installs the
+three least-privilege roles, migrates as `sretab_migrate`, starts the
+application and Caddy as `sretab_app`, checks the health endpoint and the
+front-door behaviour, writes a marker row, takes a backup as
+`sretab_readonly` with the real `backup.sh`, drops the marker, restores with
+the real `restore.sh` and its split credential, and asserts that the marker
+and the Alembic revision both come back, that the restored tables are owned
+by `sretab_migrate` and readable by `sretab_app`, and that the application
+goes healthy again.
 
 ```bash
 CONTAINER_ENGINE=docker SRE_TAB_IMAGE=sre-tab:dev deploy/scripts/smoke.sh

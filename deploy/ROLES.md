@@ -10,9 +10,14 @@ superuser, and it executes commands.
 
 This document covers what the three roles are, how to install them, and —
 because installing them and using them are two different, deliberately
-separated decisions — the cutover that actually switches something over to
-them, which is later work and not part of this change. Nothing described
-under "Installing" below alters what any running container connects as.
+separated decisions — the cutover that switches the deployment over to them.
+That cutover has not happened: every unit under `deploy/quadlet/` still
+connects as the superuser, and nothing described under "Installing" below
+alters what any running container connects as. What has landed ahead of it is
+the operator-facing half — `restore.sh` restores with a split credential, and
+`smoke.sh` runs its whole throwaway stack as the three roles and asserts what
+they may not do — so that the commit which finally changes the `Secret=`
+lines is proved by CI rather than merely believed.
 
 ## The three roles
 
@@ -106,7 +111,7 @@ will consume:
 
 | Podman secret | Holds | For |
 | --- | --- | --- |
-| `sre-tab-migrate-database-url` | a `DATABASE_URL` for `sretab_migrate` | the migration unit, post-cutover |
+| `sre-tab-migrate-database-url` | a `DATABASE_URL` for `sretab_migrate` | `restore.sh`, today; the migration unit, post-cutover |
 | `sre-tab-app-database-url` | a `DATABASE_URL` for `sretab_app` | the application and prune-sessions units, post-cutover |
 | `sre-tab-readonly-password` | just the password, for `PGPASSWORD` | the backup unit, post-cutover, alongside `PGUSER=sretab_readonly` |
 
@@ -153,6 +158,13 @@ direction:
 
 ## Verification
 
+**Most of what follows is now asserted on every push** rather than only
+recorded here: `deploy/scripts/smoke.sh` installs the roles, runs the whole
+stack as them, and matches on the text of each refusal — see
+"[`smoke.sh` tests the cutover](#smoke-tests-the-cutover)" below for the list.
+A document is the wrong place for a claim a gate can hold, and this section
+had exactly the shape that goes stale first.
+
 Checked against a real `postgres:18-trixie` container (not assumed), after
 running this repository's own Alembic migrations against it:
 
@@ -198,25 +210,60 @@ running this repository's own Alembic migrations against it:
   `NOTICE` lines from the ownership sweep (nothing left to reassign) and
   succeeds — the idempotency claim above is exercised, not asserted.
 
-Podman itself was not available on the machine this was written on
-(Docker was; `create-roles.sh`'s shell logic — the exists/drift/rotate
-decision tree and the secret writes — was exercised against the same
-container by shimming the handful of `podman` subcommands it calls onto
-Docker equivalents). The SQL in `roles.sql` runs unmodified either way,
-since `create-roles.sh` only ever feeds it to `psql` over stdin; the shim
-stood in for `podman exec`, `podman inspect`, and `podman secret`, not for
-anything `psql` executed. Re-running `create-roles.sh` itself against a
-real podman host once one is available is worth doing before the cutover
-below, even though the mechanism it drives has already been checked
-directly.
+Podman was not available on the machine this file was first written on, so
+`create-roles.sh`'s shell logic was originally exercised under Docker with
+the handful of `podman` subcommands it calls shimmed onto Docker
+equivalents — real for everything `psql` executed, a stand-in for
+`podman exec`, `podman inspect`, and `podman secret`.
+
+**That caveat is now discharged.** `create-roles.sh` has since been run
+unmodified on a real Debian 13 host with podman 5.4.2 — the reference
+environment — against a `postgres:18-trixie` container with this
+repository's migrations already applied, and the whole decision tree
+behaved as documented:
+
+- A first run created the three roles, wrote all three podman secrets, and
+  swept every existing table onto `sretab_migrate`. `pg_roles` confirms none
+  of the three holds `SUPERUSER`, `CREATEDB`, or `CREATEROLE`.
+- A second run with no flags printed "already exists, password left
+  unchanged" three times and produced zero `NOTICE` lines from the sweep —
+  the idempotency claim above, on the engine that matters.
+- Both drift directions refuse rather than guess, and say which way round
+  the drift is: deleting `sre-tab-app-database-url` and re-running produced
+  "role sretab_app already exists, but sre-tab-app-database-url does not",
+  and dropping `sretab_readonly` while its secret remained produced the
+  mirror image. `--rotate` resolved both.
+- After `--rotate`, connecting as `sretab_migrate` over the container
+  network with the password from the rewritten secret succeeds and reports
+  `inet_server_addr()` non-null (so it really was a `host` connection, not
+  the loopback one that would have accepted anything), while a deliberately
+  wrong password is refused with `FATAL: password authentication failed for
+  user "sretab_migrate"`.
+- `restore.sh` was run end to end on the same host with **no** `PGPASSWORD`
+  or `SRE_TAB_RESTORE_URL` in the environment, so both credentials came from
+  podman secrets — the branch neither Docker nor CI can reach. It recreated
+  the target database as the superuser, re-applied `roles.sql` either side
+  of `pg_restore`, restored as `sretab_migrate`, and left all fourteen
+  tables owned by `sretab_migrate` with `sretab_app` holding `INSERT` and
+  not `TRUNCATE`, and `sretab_readonly` holding `SELECT`.
 
 ## Cutover procedure (a later, deliberate iteration)
 
-Not part of this change. `DATABASE_URL`, `PGUSER`, and every Quadlet unit
-still name the superuser. This section exists so that whoever does the
-cutover has the complete list of what currently uses the superuser
-credential, rather than finding the last one in production — which is
-exactly the failure mode this section is written to prevent.
+**The units have not been cut over.** `DATABASE_URL`, `PGUSER`, and every
+file under `deploy/quadlet/` still name the superuser, and switching them is
+its own commit for the reason the rollback section gives.
+
+What *has* landed is the preparation the two subsections below describe:
+`restore.sh` now takes a split credential, and `smoke.sh` runs the whole
+stack as the three roles and asserts what they may not do. That ordering is
+deliberate — it means CI can prove the cutover rather than route around it,
+and the commit that changes the `Secret=` lines is then the smallest thing it
+can be.
+
+This section exists so that whoever does the cutover has the complete list of
+what currently uses the superuser credential, rather than finding the last
+one in production — which is exactly the failure mode it is written to
+prevent.
 
 ### Every current consumer of the superuser credential
 
@@ -228,65 +275,138 @@ exactly the failure mode this section is written to prevent.
 | `deploy/quadlet/sre-tab-prune-sessions.container` | `Secret=sre-tab-database-url,type=env,target=DATABASE_URL`, runs `sre-tab sessions prune` (a `DELETE` on `sessions`) | `sre-tab-app-database-url` → `sretab_app` — it is a DML operation, the same role as the application |
 | `deploy/quadlet/sre-tab-backup.container` | `Environment=PGUSER=sretab` + `Secret=sre-tab-postgres-password,type=env,target=PGPASSWORD`, runs `pg_dump` | `Environment=PGUSER=sretab_readonly` + `Secret=sre-tab-readonly-password,type=env,target=PGPASSWORD` |
 | `deploy/scripts/create-secrets.sh` | builds `sre-tab-database-url` as `postgresql+psycopg://sretab:...@...`, `--user` defaults to `sretab` | not itself part of the cutover — it still needs to exist for the superuser's own secrets and for `--rotate-db` — but its defaults document the pre-cutover assumption and are worth re-reading when this file's own defaults change |
-| `deploy/scripts/restore.sh` | `--user` defaults to `sretab`; `PGUSER=$db_user` on its throwaway TCP client; `CREATE DATABASE "$database" OWNER "$db_user"`; `DROP DATABASE ... WITH (FORCE)` | **needs a decision, not a mechanical swap — see below** |
-| `deploy/scripts/smoke.sh` | starts its own throwaway `postgres:18` with only `POSTGRES_USER=sretab`; every container it launches (app, migrate, the `psql_db` helper) connects as `sretab` | **needs to actually exercise the new roles to remain meaningful — see below** |
-| `deploy/README.md` | its "Secrets" table lists `sre-tab-postgres-password` and `sre-tab-database-url` only | add the three new secrets to that table once they are live; note the two that stop being read by anything once the corresponding unit's `Secret=` line changes |
+| `deploy/scripts/restore.sh` | **done** — `--user`/`--password-secret` still default to the superuser and now cover only `DROP DATABASE`/`CREATE DATABASE`; `pg_restore` runs as `--restore-user`, defaulting to `sretab_migrate` and taking its credential from `sre-tab-migrate-database-url` | nothing further; [see below](#restore-split-credential) for the decision and its reasoning |
+| `deploy/scripts/smoke.sh` | **done** — applies `roles.sql` to its throwaway PostgreSQL and runs migrate as `sretab_migrate`, app and session sweep as `sretab_app`, backup as `sretab_readonly`, with the negative assertions [below](#smoke-tests-the-cutover) | nothing further; a cutover that is half-done or silently reverted now fails CI |
+| `deploy/README.md` | its "Secrets" table lists the four `create-secrets.sh` writes, plus `sre-tab-migrate-database-url` as the one role secret something reads today (`restore.sh`) | add the other two to that table once they are live; note the two that stop being read by anything once the corresponding unit's `Secret=` line changes |
 
-### `restore.sh` needs a decision, not a mechanical swap
+<a id="restore-split-credential"></a>
+### `restore.sh` takes a split credential — decided, and landed
 
-`ROADMAP.md` calls this out by name, and it is genuinely unresolved here on
-purpose: restoring a database is not a DML or even a DDL operation in the
-schema sense — `DROP DATABASE` and `CREATE DATABASE ... OWNER ...` are
-database-level administrative operations that none of the three roles in
-this file are given, because none of them should be. `sretab_migrate` owns
-objects *inside* the `sretab` database; it is not the *owner of* the
-database, and PostgreSQL does not conflate the two.
+`ROADMAP.md` called this out by name, and it was genuinely open: restoring a
+database is not a DML or even a DDL operation in the schema sense —
+`DROP DATABASE` and `CREATE DATABASE ... OWNER ...` are database-level
+administrative operations that none of the three roles above is given,
+because none of them should be. `sretab_migrate` owns objects *inside* the
+`sretab` database; it is not the *owner of* the database, and PostgreSQL does
+not conflate the two.
 
-Two ways to close this, neither implemented here:
+Two ways to close it were on the table, and **option 1 is what landed**: keep
+a separate administrative credential — the superuser that already exists —
+used only for the `DROP DATABASE`/`CREATE DATABASE` step, and run the actual
+`pg_restore` as `sretab_migrate`, which needs exactly the rights
+`alembic upgrade` needs and nothing beyond them.
 
-1. **Keep a superuser (or `CREATEDB`-and-cluster-admin) credential for
-   restore specifically**, separate from the three roles above, used only
-   by `restore.sh` for the `DROP DATABASE`/`CREATE DATABASE` step. The
-   actual `pg_restore` step immediately after could still run as
-   `sretab_migrate` (it needs to create every table, after all — the same
-   right `alembic upgrade` needs), but the recreate step cannot.
-2. **Grant `sretab_migrate` `CREATEDB`** so it can own the database it
-   restores into. This is a real widening of what "the DDL role" means —
-   worth naming as such rather than doing quietly — since `CREATEDB` is
-   cluster-wide, not schema-scoped, and lets the role create *other*
-   databases too, not just recreate this one.
+The other option was granting `sretab_migrate` `CREATEDB` so that one
+credential could do both, and it is worth saying why it was not taken, since
+it is the cheaper change to write and the more expensive one to live with.
+`CREATEDB` is cluster-wide and permanent: it would widen the role the
+migration unit runs **unattended on every deploy**, and let it create *other*
+databases besides this one, in exchange for convenience in a break-glass
+procedure that a human runs with host root already in hand. The superuser
+credential has to keep existing either way — the rollback below depends on
+`sre-tab-database-url` and `sre-tab-postgres-password` staying untouched — so
+option 1 costs nothing new and grants nothing new, while option 2 would have
+bought a one-flag simplification at the price of a permanent widening.
 
-Either way, `restore.sh`'s `--user`/`--password-secret` flags already
-parameterise the credential it connects as, so the mechanical part (making
-it take a different default) is small. The part that needs a human
-decision is which credential that should be, and that decision belongs to
-whoever does the cutover, with current production traffic and the
-operator count in front of them — not to this file.
+| Flag | Default | Used for |
+| --- | --- | --- |
+| `--user` / `--password-secret` | `sretab` / `sre-tab-postgres-password` | `DROP DATABASE`, `CREATE DATABASE`, and re-applying `roles.sql` |
+| `--restore-user` / `--restore-url-secret` | `sretab_migrate` / `sre-tab-migrate-database-url` | `pg_restore` itself |
 
-### `smoke.sh` needs to test the cutover, not route around it
+Setting `--restore-user` to the same value as `--user` collapses the two back
+into the single credential the script used before, which is the supported
+path on a host where the roles were never installed.
 
-Today `smoke.sh` never uses anything but the superuser, so it would keep
-reporting success even if the cutover were half-done or silently reverted
-— it is not currently capable of catching a regression in this area at
-all. At cutover, it needs to:
+Three things about that are not obvious from the flags alone:
 
-1. Run `deploy/scripts/create-roles.sh` (or apply `roles.sql` directly)
-   against its own throwaway PostgreSQL, the same way it already runs
-   migrations against it.
-2. Start the migrate, app, and prune-sessions containers it launches with
-   the new roles' `DATABASE_URL`s instead of the superuser's.
-3. Run its backup step as `sretab_readonly` rather than `sretab`.
-4. Add the negative assertions this file's "Verification" section did by
-   hand — `sretab_app` cannot `CREATE TABLE`, cannot `COPY ... PROGRAM` —
-   so a future change that widens one of these roles by accident fails CI
-   instead of only this document going stale.
+- **The restore role's credential arrives as a whole `DATABASE_URL`**, not as
+  a bare password, because that is the secret `create-roles.sh` mints for it;
+  a second secret holding the same password in another shape would be one
+  more thing to keep in step. The password is lifted out of the URL *inside*
+  the client container and exported as `PGPASSWORD` — passing the URI to
+  `pg_restore --dbname` instead would publish the password in the host's
+  process table, which is the thing the podman secret exists to prevent. The
+  role named in the URL is checked against `--restore-user` rather than
+  trusted: the two arrive from different flags, and disagreeing about them
+  otherwise surfaces as `password authentication failed for user ...`, which
+  reads as a rotation problem and is not one.
+- **`roles.sql` is re-applied to the new database, on both sides of the
+  restore.** Grants and default privileges live *inside* a database and the
+  restore drops it, so every table-level `GRANT` and every `pg_default_acl`
+  row goes with it. The pass *before* `pg_restore` is what makes the restore
+  possible at all — it gives `sretab_migrate` `CREATE` on schema `public`,
+  without which the first `CREATE TABLE` in the dump is refused, and it
+  re-establishes `ALTER DEFAULT PRIVILEGES FOR ROLE sretab_migrate` so that
+  every table the restore creates arrives with `sretab_app`'s DML grants and
+  `sretab_readonly`'s `SELECT` already attached. The pass *after* it covers
+  what the first cannot: a restore run with `--restore-user sretab` leaves
+  every table owned by the superuser, which those default privileges do not
+  reach, and the ownership sweep is what puts that right. On the default path
+  the second pass is a genuine no-op — which is worth having as well, because
+  it means every restore exercises the idempotency the install path relies
+  on.
+- **A missing role is an error before anything is dropped.** The restore role
+  is checked on the administrative connection, ahead of the confirmation
+  prompt, and the message names both ways out: install the roles, or pass
+  `--restore-user sretab` on a host that has not been cut over. Finding out
+  after `DROP DATABASE` would mean the failure had already destroyed the
+  thing it was about to fail on.
+
+<a id="smoke-tests-the-cutover"></a>
+### `smoke.sh` tests the cutover rather than routing around it
+
+It used to connect as nothing but the superuser, so it would have kept
+reporting success through a half-done or silently reverted cutover — it was
+not capable of catching a regression in this area at all. It now:
+
+1. **Applies `roles.sql` against its own throwaway PostgreSQL**, before the
+   migrations rather than after. That makes `sretab_migrate` the role running
+   every `CREATE TABLE` from the start, which is both the post-cutover steady
+   state and the only arrangement in which `ALTER DEFAULT PRIVILEGES` is load
+   bearing. The SQL goes through `psql` directly rather than through
+   `create-roles.sh`, which writes podman secrets and would tie the file to
+   one engine — `CONTAINER_ENGINE=docker` is a supported configuration and CI
+   runs podman. The discipline is kept either way: the three passwords reach
+   `psql` over stdin as `\set` variables, never as literals in the SQL and
+   never on a command line.
+2. **Runs the migration container as `sretab_migrate`, the application and
+   `sre-tab sessions prune` as `sretab_app`, and the backup as
+   `sretab_readonly`.** Each role gets a different password, deliberately: a
+   shared one would let a container handed the wrong `DATABASE_URL` connect
+   anyway, and every assertion below would pass while testing the wrong
+   thing. Nothing but the superuser `psql` helper and `restore.sh`'s
+   `DROP`/`CREATE DATABASE` step connects as `sretab`.
+3. **Asserts the refusals by their text**, not merely by a non-zero exit: a
+   `psql` that fails from a typo, the wrong database, or a connection it
+   never made would otherwise read as a passing negative assertion.
+   `sretab_app` cannot `CREATE TABLE` (`permission denied for schema
+   public`); none of the three can `COPY ... TO PROGRAM` (the
+   `pg_execute_server_program` refusal — the mechanism this whole document is
+   about, asserted for the DDL role too); `sretab_readonly` cannot `INSERT`.
+4. **Exercises the default-privileges mechanism rather than reading it.** A
+   table `sretab_migrate` creates is immediately writable by `sretab_app` and
+   readable by `sretab_readonly`, sequence included, with no `GRANT` anywhere
+   in the test. This is the piece most likely to be silently misconfigured,
+   because naming the wrong role in `FOR ROLE` applies without error and then
+   simply never fires — and the assertion was watched failing with exactly
+   that mutation before it was believed.
+5. **Restores through the split credential**, so the `restore.sh` path above
+   is covered on every run, and re-checks after the restore that the tables
+   came back owned by `sretab_migrate` and that `sretab_app` can read them
+   but still cannot `CREATE TABLE`.
+
+Every table in `public` is also checked to be owned by `sretab_migrate` after
+the migration, and the three roles are checked to hold none of `SUPERUSER`,
+`CREATEDB`, `CREATEROLE`, `REPLICATION`, or `BYPASSRLS`.
 
 ## Rotating a role's password
 
 Before cutover, `deploy/scripts/create-roles.sh --rotate` is unconditionally
-safe — nothing reads `sre-tab-migrate-database-url`,
-`sre-tab-app-database-url`, or `sre-tab-readonly-password` yet, so there is
-nothing to break by changing what they contain.
+safe. No running unit reads `sre-tab-migrate-database-url`,
+`sre-tab-app-database-url`, or `sre-tab-readonly-password`, so there is
+nothing to break by changing what they contain. `restore.sh` reads the first
+of the three, but it reads it at the moment it runs and holds nothing across
+a rotation.
 
 After cutover, it is the same shape as rotating the superuser's password
 today (`create-secrets.sh --rotate-db`, documented in `deploy/README.md`):

@@ -48,12 +48,49 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   unaltered and the cutover is its own iteration. Verified against a real
   `postgres:18-trixie`: `COPY … TO PROGRAM` is refused for all three,
   including the DDL role, which is the mechanism the finding turns on.
+- **The deployment smoke test now runs as the three least-privilege roles
+  and asserts what they may not do.** It installs `roles.sql` against its
+  own throwaway PostgreSQL before the migrations, then runs the migration
+  container as `sretab_migrate`, the application and `sre-tab sessions
+  prune` as `sretab_app`, and the backup as `sretab_readonly` — each with
+  its own password, so a container handed the wrong `DATABASE_URL` fails
+  instead of connecting anyway. The negative assertions that `deploy/
+  ROLES.md` had only made by hand are gates now: no role can `COPY … TO
+  PROGRAM` (the mechanism the whole finding turns on, asserted for the DDL
+  role too), `sretab_app` cannot `CREATE TABLE`, `sretab_readonly` cannot
+  `INSERT`. Each matches on the *text* of the refusal, because a `psql`
+  that fails from a typo or an unmade connection would otherwise read as a
+  passing negative assertion. Every one was watched failing first: granting
+  `sretab_app` `CREATE` on schema `public`, or membership of
+  `pg_execute_server_program`, trips the assertion it should. So does
+  naming the wrong role in `ALTER DEFAULT PRIVILEGES FOR ROLE` — which
+  applies without error and then silently never fires, and is now caught by
+  a table `sretab_migrate` creates having to be immediately usable by the
+  other two.
 - An open-work index at the top of `ROADMAP.md`. The file keeps landed
   items on purpose, which left no way to see what was still open without
   reading all 39KB of it.
 
 ### Changed
 
+- **`restore.sh` restores with a split credential.** `DROP DATABASE` and
+  `CREATE DATABASE` keep the superuser (`--user`/`--password-secret`,
+  unchanged defaults), because database-level administration is not
+  something any of the three least-privilege roles holds or should;
+  `pg_restore` itself now runs as `sretab_migrate`
+  (`--restore-user`/`--restore-url-secret`), which needs exactly the rights
+  `alembic upgrade` needs. The alternative — granting `sretab_migrate`
+  `CREATEDB` so one credential could do both — was rejected on the ground
+  that it permanently widens the role the migration unit runs unattended on
+  every deploy, cluster-wide, to buy convenience in a break-glass procedure
+  a human runs with host root in hand. `roles.sql` is re-applied either side
+  of the restore, because grants and default privileges live inside the
+  database the restore drops; without that the application comes back to a
+  database it cannot read. A host without the roles installed passes
+  `--restore-user sretab`, and a missing role is now a message naming both
+  ways out, raised on the administrative connection before anything is
+  dropped rather than as `password authentication failed` with the database
+  already gone.
 - **The shipped and tested interpreter is Python 3.14.** `.python-version`
   and both Containerfile stages now agree on `python:3.14-slim-trixie`, and
   the workflows read `.python-version` rather than carrying a copy, so
