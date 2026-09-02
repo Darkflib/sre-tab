@@ -44,7 +44,7 @@ ContainerName=sre-tab-status
 # with deploy/scripts/promote.sh, whose UNITS list must name this file —
 # never by hand. See sre-tab.container for why Pull=missing rather than
 # newer.
-Image=ghcr.io/darkflib/sre-tab:sha-9238b95dddddcc1b39ddf16a44567f469fed8736@sha256:9e07b64f35a57885b507bbec8e0ed30cf53683859c0de46144b0738fea1e2bbb
+Image=ghcr.io/darkflib/sre-tab:sha-7dc886b6efc813a288062e92c9ba0751094da764@sha256:56c7418331c2a4cce392f36c208ef2042aadcee8dcf4828d422db503a8bc8fd5
 Pull=missing
 Network=sre-tab.network
 
