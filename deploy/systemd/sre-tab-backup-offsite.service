@@ -1,0 +1,133 @@
+[Unit]
+Description=Copy the newest Developer News Dashboard dump off-host and verify it
+Documentation=file:/etc/sre-tab/backup-offsite.sh
+
+# Nothing happens on a host that has not asked for off-host copies. Without
+# this the unit would be pulled in by the drop-in on every successful backup,
+# fail for want of configuration, and hand every existing deployment a nightly
+# alert for a feature it never enabled. A skipped condition is reported as
+# such by `systemctl status`, so it is visible without being noisy.
+ConditionPathExists=/etc/sre-tab/backup-offsite.env
+
+# Ordering only, and inert on the ordinary path. This unit is started by
+# OnSuccess= from sre-tab-backup.service, which by definition has already
+# exited by then; the line matters only if an operator starts both in one
+# transaction. No Wants= or Requires=: this must never pull in a backup.
+After=sre-tab-backup.service
+After=network-online.target
+Wants=network-online.target
+
+# NOT Requires=sre-tab-db.service. The copy reads a file and talks to a remote
+# host; it has no business failing because the database is down, and a dump
+# taken before an outage is exactly the one worth getting off the box during
+# it.
+#
+# NOT Requisite=sre-tab-backup.service either, which is the obvious way to
+# write "only when the backup ran" and does not work. sre-tab-backup.service
+# is a oneshot with no RemainAfterExit, so it is `inactive (dead)` the instant
+# it succeeds, and Requisite= refuses to start against an inactive unit.
+# Measured on Debian 13 / systemd 257: with the backup having *just* completed
+# with Result=success, a Requisite= dependant fails with "Dependency failed"
+# and never runs. That gate would have reported nothing wrong while copying
+# nothing, forever. The causality is expressed by OnSuccess= in
+# sre-tab-backup.service.d/50-offsite.conf instead, which fires on success and
+# does not fire on failure -- verified in both directions on the same host.
+
+# A silently failing off-host copy is precisely the failure this feature must
+# not have: the operator would believe they had disaster recovery. The alert
+# template is a separate unit shipped alongside the dispatcher; see
+# deploy/README.md.
+OnFailure=sre-tab-alert@%n.service
+
+[Service]
+Type=oneshot
+
+# The only uncontainerised thing in this deployment, so it pays for that with
+# the sandbox below rather than with an argument.
+User=sre-tab-offsite
+Group=sre-tab-offsite
+
+# Read as root before the privilege drop, so the S3 secret and the target list
+# never appear in the unit, in `systemctl show`, or on a command line.
+# Not optional with a leading `-`: ConditionPathExists= above already means
+# the unit does not run without this file, and a missing one at this point is
+# a race worth failing on rather than starting with no configuration at all.
+EnvironmentFile=/etc/sre-tab/backup-offsite.env
+ExecStart=/etc/sre-tab/backup-offsite.sh
+
+# Scratch space: 0700, owned by this unit's user, on tmpfs, removed when the
+# unit stops. The script writes its curl configuration here -- a file carrying
+# a request signature -- rather than into /tmp.
+RuntimeDirectory=sre-tab-offsite
+RuntimeDirectoryMode=0700
+
+# ssh writes nothing, but it insists on a home directory existing before it
+# will read a key, and openssl wants somewhere to be.
+StateDirectory=sre-tab-offsite
+Environment=HOME=/var/lib/sre-tab-offsite
+
+# A dump of a v1-sized database over a domestic uplink is minutes. Two hours
+# is headroom for a slow link, not an expectation; a copy still running when
+# the next night's backup starts is a problem worth being told about.
+TimeoutStartSec=2h
+
+# --- sandbox -------------------------------------------------------------
+#
+# Verify rather than believe:
+#     systemd-analyze security sre-tab-backup-offsite.service
+
+NoNewPrivileges=true
+# Nothing here needs a capability. Reading the dumps is granted by a POSIX ACL
+# on /srv/sre-tab/backups rather than by CAP_DAC_READ_SEARCH, which would have
+# been the lazy way to solve the same problem and would have handed this unit
+# read access to every file on the host, /etc/shadow and the podman secrets
+# included. See deploy/install.sh for the grant.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+ProtectSystem=strict
+ProtectHome=true
+# The whole filesystem is read-only under ProtectSystem=strict; these two are
+# the exceptions, and StateDirectory=/RuntimeDirectory= would grant them
+# anyway. Named explicitly so the list of writable paths is readable here.
+ReadWritePaths=/var/lib/sre-tab-offsite
+# Redundant against the ACL, which grants read and not write -- and kept for
+# the case where it is not redundant. An operator who loosens the directory to
+# debug something should still not find this unit able to delete the dumps it
+# is copying.
+ReadOnlyPaths=/srv/sre-tab/backups
+
+# Safe here, and not safe everywhere: PrivateTmp=true gives a private /tmp AND
+# a private /var/tmp, both discarded when the unit exits, and a tool that
+# spools its uploads there would lose them with a zero exit status. Nothing on
+# this path spools -- curl streams the dump straight from the file and the
+# digests come from sha256sum -- which is one of the reasons the AWS CLI is
+# not what backup-offsite.sh calls.
+PrivateTmp=true
+PrivateDevices=true
+PrivateUsers=false
+ProtectProc=invisible
+ProcSubset=pid
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# ssh and curl, and nothing else. AF_UNIX is for the resolver's socket.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+DevicePolicy=closed
+UMask=0077
+RemoveIPC=true
+
+# The dumps are the entire user table. Neither the journal nor a core file
+# should end up holding a piece of one.
+LimitCORE=0

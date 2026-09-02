@@ -28,11 +28,13 @@ ContainerName=sre-tab-prune-sessions
 # policy in it, rather than a hand-written DELETE that would have to be
 # kept in step with app/auth/sessions.py by hand.
 #
-# Byte-identical to the pin in sre-tab.container, sre-tab-migrate.container,
-# and sre-tab-assets.container, and CI fails if it is not: the check in
-# .github/workflows/ci.yml greps every Image= line under deploy/quadlet and
-# demands exactly one distinct reference. Change it with
-# deploy/scripts/promote.sh, which moves all four together — never by hand.
+# Byte-identical to the pin in every other unit running this image, and CI
+# fails if it is not: the check in .github/workflows/ci.yml greps every
+# Image= line under deploy/quadlet and demands exactly one distinct
+# reference. deploy/scripts/promote.sh holds the authoritative list in UNITS
+# and moves them together; this comment deliberately does not repeat it,
+# because a list written here goes stale the next time a unit is added and
+# nothing checks prose. Change the pin with promote.sh — never by hand.
 # See sre-tab.container for why Pull=missing rather than newer.
 Image=ghcr.io/darkflib/sre-tab:sha-9238b95dddddcc1b39ddf16a44567f469fed8736@sha256:9e07b64f35a57885b507bbec8e0ed30cf53683859c0de46144b0738fea1e2bbb
 Pull=missing

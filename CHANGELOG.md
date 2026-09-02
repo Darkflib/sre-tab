@@ -35,6 +35,43 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `v1.1`, `1.1.0`, `vfoo`, `v01.1.0`, `v1.1.0+build`, and a version the
   changelog does not mention — as well as the acceptances. Each guard was
   broken on purpose and seen to go red before being believed.
+- **Off-host backups, verified at the far end.**
+  `deploy/scripts/backup-offsite.sh` copies the newest dump and its `.sha256`
+  sidecar to an `ssh://` target, an `s3://` target, or both — one
+  space-separated list of URLs, where the scheme picks the transport, so an
+  ssh mode configured with an S3 address cannot be written down. The copy is
+  not the point: an upload exiting zero says nothing about the bytes at the
+  far end, so ssh re-derives the checksum there and S3 is asked what SHA-256
+  it recorded against the stored object (`x-amz-checksum-sha256`, never the
+  ETag, which is an MD5 of part MD5s for a multipart upload and would quietly
+  stop meaning anything once the dump got big). Proven by corrupting things:
+  one flipped byte at the ssh far end and a truncated object in the store are
+  each rejected non-zero.
+
+  Caused by a successful backup rather than scheduled beside one — a drop-in
+  adds `OnSuccess=` to `sre-tab-backup.service`, so it runs when a backup has
+  just succeeded and does not run when one has just failed. `Requisite=` is
+  the obvious spelling and is wrong: a oneshot without `RemainAfterExit` is
+  inactive the instant it succeeds, so that gate never fires at all. Off
+  unless `/etc/sre-tab/backup-offsite.env` exists, and loud once it does,
+  including `OnFailure=sre-tab-alert@%n.service`.
+
+  Neither transport gets a credential that can destroy what it has already
+  sent. The ssh far end runs a forced command with four verbs and no delete,
+  refuses to overwrite a published name, and does its own retention only
+  after verifying the new dump; the documented IAM policy grants `PutObject`
+  and `GetObject` on one prefix, with bucket versioning and Object Lock in
+  compliance mode as the recommendation and a lifecycle rule as the retention
+  mechanism. Requests are signed with `curl` and `openssl` rather than the
+  AWS CLI, which on Debian 13 is 23 packages and 144MB and spools to a `/tmp`
+  that `PrivateTmp=true` discards.
+
+  The one uncontainerised unit in the deployment, and it pays for that:
+  a dedicated `sre-tab-offsite` user, `ProtectSystem=strict`, an empty
+  `CapabilityBoundingSet=`, and `systemd-analyze security` at 1.5. It reads
+  the `0700` backup directory through a POSIX ACL the installer grants —
+  rather than `CAP_DAC_READ_SEARCH`, which would have given it every file on
+  the host in order to read two.
 - `SECURITY.md`: a private reporting channel (GitHub security advisories),
   the supported-version table, and a pointer to the accepted findings in
   ROADMAP.md so a reporter can tell a new finding from a held one.
@@ -181,9 +218,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   base64url — but the cookie is deliberately not `HttpOnly` (that is the
   double-submit mechanism) and carries no `__Host-` prefix, so a sibling
   subdomain can set one, the same exposure already recorded for the OAuth
-  state cookie. Recorded rather than fixed, with two `it.fails` tests
-  asserting the behaviour we want, so that whoever hardens `readCookie`
-  gets an "expected to fail but passed" and deletes the markers.
+  state cookie. Recorded rather than fixed at the time, with two `it.fails`
+  tests asserting the behaviour we want — and closed later in this same
+  release, which is what the markers were for. See the fix under Fixed
+  below for the choice they forced: the raw value, not an absent one.
+- **Host prerequisites, because a thin Debian install has no container
+  DNS.** `aardvark-dns` is a *Recommends* of Debian's `podman` package, so
+  a host built with `--no-install-recommends` has podman, has netavark, and
+  cannot resolve one container from another — which is how every hop in
+  this stack works: five units reach the database as `sre-tab-db`, and
+  Caddy's upstream is `sre-tab-app:8000`. Podman does not fail, it warns
+  once (`aardvark-dns binary not found, container dns will not be
+  enabled`) and carries on, so the first symptom is a psycopg "could not
+  translate host name" traceback out of `sre-tab-migrate.service`, which
+  reads like a database that is down. Observed on a fresh Debian 13 host
+  with podman 5.4.2, where `deploy/scripts/smoke.sh` failed the same way at
+  its first cross-container step.
+
+  `deploy/README.md`'s host preparation now names both packages and
+  installs them under a `docs:run` marker, so the throwaway host that
+  executes that document bootstraps itself rather than being assumed. And
+  `install.sh --start` refuses to start the stack when podman reports no
+  aardvark-dns, before the timers are enabled — the check asks
+  `podman info` for the path it resolved rather than looking on `PATH`,
+  where the binary never is, since Debian puts it under `/usr/lib/podman`
+  and other distributions under `/usr/libexec/podman`. A podman that
+  cannot answer that query at all warns rather than refuses: a guard
+  deciding on evidence it does not have is the wrong failure, and one that
+  says nothing is the green check that checks nothing. All three branches
+  were exercised against a stubbed `podman` before being believed.
 
 - **Host prerequisites, because a thin Debian install has no container
   DNS.** `aardvark-dns` is a *Recommends* of Debian's `podman` package, so
@@ -480,6 +543,48 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the count-based check it actually performs, rather than a number that
   goes stale each time a unit is added, and points at `promote.sh`'s
   `UNITS` as the list that does need editing.
+- **A malformed CSRF cookie no longer breaks every write in the app.**
+  `readCookie` ended in `decodeURIComponent`, which throws `URIError` on a
+  value containing a stray `%`. The throw escaped the openapi-fetch request
+  middleware *before* `fetch` was called, so `guard` in `endpoints.ts`
+  normalised it to `ApiError(0, 'Could not reach the server.')`: every
+  mutating request in the application reported a network outage that was not
+  happening, no request was ever sent, and no amount of retrying could clear
+  it — the user had to know to delete a cookie. The decode is now attempted
+  and the raw value handed back when it fails.
+
+  **Raw rather than absent, and the choice is the whole of the fix.** The
+  alternatives were to return `null` — treat an undecodable cookie as no
+  cookie — or to raise something the UI could name. Both are the client
+  guessing at a question it cannot answer: only the server holds
+  `SESSION_SECRET` and the session binding, so only the server can say
+  whether a value is legitimate. Handing the raw bytes over sends the
+  request, and the bytes are exactly what the browser puts in the `Cookie`
+  header, so `require_csrf` compares like with like and answers 403 "CSRF
+  validation failed" — a true message, surfaced verbatim by `describe`.
+  Returning `null` would have reached the same 403 by a worse route, with
+  the header omitted, a tampered cookie indistinguishable from the ordinary
+  not-signed-in case, and nothing in the server's log to attribute the
+  refusal to. It is the same reasoning that already sends a mutating request
+  with no CSRF header rather than withholding it client-side.
+
+  The two `it.fails` markers left by the coverage pass are ordinary passing
+  tests now, and the request-level one gained the assertion that makes it
+  discriminate: it pins the raw value arriving in `X-CSRF-Token`, where
+  before it asserted only that *a* request was sent, which returning `null`
+  would also have satisfied. Both were seen to fail against the unfixed
+  module, and both catch a `null` fallback.
+
+  **The vector this was reachable through is not closed**, which is why the
+  entry is here and not under Security. The CSRF cookie is deliberately not
+  `HttpOnly` — the frontend has to read it, that is the double-submit
+  mechanism — and carries no `__Host-` prefix, so a sibling subdomain on the
+  same registrable domain can still write one. What changes is the blast
+  radius: an injected value used to wedge the client into a phantom offline
+  state, and now produces a 403 that says what happened. `ROADMAP.md` records
+  the prefix decision, which turned out to have a prerequisite rather than a
+  cost, and folds the CSRF cookie into the OAuth state cookie's entry — they
+  are one finding.
 
 ## [1.0.0] - 2026-08-29
 
