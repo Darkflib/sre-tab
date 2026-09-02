@@ -228,16 +228,17 @@ describe('readCookie', () => {
     expect(mod.readCookie('csrftoken')).toBe('');
   });
 
-  // Marked `.fails`: this asserts the behaviour we want and records that
-  // the client does not have it. `decodeURIComponent` throws `URIError` on
-  // a stray `%`, and `readCookie` does not catch it.
+  // `decodeURIComponent` throws `URIError` on a stray `%`, so the decode is
+  // wrapped and the raw value handed back. The server never writes such a
+  // value — the token is base64url — but the cookie is not `HttpOnly` (that
+  // is the whole mechanism: this file has to read it) and it carries no
+  // `__Host-` prefix, so a sibling subdomain can set one, which is the same
+  // exposure the roadmap records for the OAuth state cookie.
   //
-  // The server never writes such a value — the token is base64url — but the
-  // cookie is not `HttpOnly` (that is the whole mechanism: this file has to
-  // read it) and it carries no `__Host-` prefix, so a sibling subdomain can
-  // set one, which is the same exposure the roadmap already records for the
-  // OAuth state cookie. See the request-level consequence below.
-  it.fails('tolerates a value that is not valid percent-encoding', async () => {
+  // Raw rather than `null`, so that a tampered cookie stays distinguishable
+  // from the ordinary no-cookie case and the server gets to refuse it. The
+  // request-level half is at the bottom of this file.
+  it('tolerates a value that is not valid percent-encoding', async () => {
     const { mod } = await loadClient(ok);
     withCookie('csrftoken=100%-genuine');
 
@@ -490,19 +491,23 @@ describe('onUnauthorised', () => {
 // --- the consequence of the readCookie gap above ------------------------
 
 describe('a malformed CSRF cookie', () => {
-  // Marked `.fails` for the same reason as the `readCookie` case above,
-  // and recorded separately because this is the half a user would notice:
-  // the `URIError` escapes the request middleware, so `guard` in
-  // endpoints.ts normalises it to status 0, "Could not reach the server".
-  // Every write in the app then reports a network outage that is not
-  // happening, and no request is ever sent — indistinguishable, from the
-  // screen, from being offline.
-  it.fails('does not stop a mutating request from being sent', async () => {
+  // The half a user would notice, and the reason the `readCookie` case
+  // above is not merely tidiness. The `URIError` used to escape the request
+  // middleware, so `guard` in endpoints.ts normalised it to status 0,
+  // "Could not reach the server": every write in the app reported a network
+  // outage that was not happening, no request was ever sent, and retrying
+  // could not help — indistinguishable, from the screen, from being offline.
+  it('does not stop a mutating request from being sent', async () => {
     const { mod, sent } = await loadClient(ok);
     withCookie('csrftoken=100%-genuine');
 
     await mod.api.POST('/api/v1/auth/logout', {});
 
     expect(sent).toHaveLength(1);
+    // Carrying the raw value, not omitted. Dropping the header would also
+    // let the request through and would also end in a 403, but it would
+    // discard the evidence: the server logs a refusal it cannot attribute,
+    // and a tampered cookie looks exactly like a missing one.
+    expect(sent[0].headers.get('X-CSRF-Token')).toBe('100%-genuine');
   });
 });
