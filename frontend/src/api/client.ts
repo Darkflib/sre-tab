@@ -26,7 +26,28 @@ export function readCookie(name: string): string | null {
   for (const part of document.cookie.split(';')) {
     const candidate = part.trimStart();
     if (candidate.startsWith(prefix)) {
-      return decodeURIComponent(candidate.slice(prefix.length));
+      const raw = candidate.slice(prefix.length);
+      // Decoding is a convenience for values written by script, and it must
+      // never be able to fail the read. `decodeURIComponent` throws
+      // `URIError` on a stray `%`, and this cookie is not `HttpOnly` by
+      // design, so a sibling subdomain can write one; the throw would escape
+      // the request middleware before `fetch` is reached, leaving `guard` in
+      // endpoints.ts to report a network outage that is not happening, with
+      // no request sent and no retry that could help.
+      //
+      // The raw bytes go up instead. They are what the browser puts in the
+      // `Cookie` header, and the server compares the two byte for byte
+      // against a token it signed for this session, so a value it did not
+      // mint comes back 403 "CSRF validation failed" — a true message, from
+      // the only party holding the secret to judge it. Returning `null` here
+      // would instead make a tampered cookie indistinguishable from the
+      // ordinary not-signed-in case, which is the same reasoning that sends
+      // a mutating request with no header at all rather than withholding it.
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        return raw;
+      }
     }
   }
   return null;
