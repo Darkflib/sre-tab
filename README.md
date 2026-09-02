@@ -248,20 +248,29 @@ not been demonstrated, which is a different thing from being tested.
 - **Backups sit on the same host as the database.** That is a backup, not
   disaster recovery. The `.sha256` sidecars exist so a copy taken off-host
   can be verified at the far end.
-- **The Quadlet units have had one Linux pass, not a long soak.** Unit
+- **The Quadlet units have had three cold installs, not a long soak.** Unit
   generation is machine-checked in CI with `podman-system-generator --dryrun`,
-  which catches a malformed key and nothing about runtime behaviour.
-- **Five reviewed security findings are open by decision, not by oversight.**
-  They are held open by the shape of this deployment — one instance, three
-  allow-listed operators, a catalogue only the CLI can add to — and the
-  assumption behind each is written down next to it in
-  [ROADMAP.md](ROADMAP.md#security-findings-this-deployment-absorbs). The one
-  that does not depend on the operator count is that the application connects
-  to PostgreSQL as a superuser, which would turn any future SQL injection
-  into command execution inside the database container — bounded there by
-  that unit's hardening, and not the same thing as the host. Read that
-  section before adding an operator, a second instance, or a route that
+  which catches a malformed key and nothing about runtime behaviour; the rest
+  — the ordering, `Notify=healthy`, the podman secret plumbing, and both
+  timer-driven jobs — has been exercised by hand on Debian 13 hosts. What no
+  run has yet covered is the timers firing on their own, or catching up after
+  the host has been off overnight.
+- **Two of the five reviewed security findings are open by decision, not by
+  oversight.** They are held open by the shape of this deployment — one
+  instance, three allow-listed operators, a catalogue only the CLI can add to
+  — and the assumption behind each is written down next to it in
+  [ROADMAP.md](ROADMAP.md#security-findings-this-deployment-absorbs). Read
+  that section before adding an operator, a second instance, or a route that
   accepts a feed URL.
+
+  The one finding that did *not* depend on the operator count is now closed:
+  the application used to connect to PostgreSQL as the cluster superuser,
+  which would have turned any future SQL injection into command execution
+  inside the database container. Every unit but the database now connects as
+  one of three non-superuser roles — DML for the application, DDL for the
+  migration unit, read-only for the backup — and none of them can
+  `COPY … TO PROGRAM`. [deploy/ROLES.md](deploy/ROLES.md) is the whole
+  picture.
 
 [ROADMAP.md](ROADMAP.md) is the full list of what was deliberately deferred
 and why.
