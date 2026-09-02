@@ -323,7 +323,7 @@ if [ ! -x "$config_dir/alert.sh" ]; then
 
 warning: $config_dir/alert.sh does not exist, or is not executable.
          sre-tab-status.timer checks hourly for a failing source and fires
-         sre-tab-alert@sre-tab-status.service when one is found. That unit
+         sre-tab-alert@sre-tab-status.service.service when one is found. That unit
          hands the report to $config_dir/alert.sh, and without it the alert
          reaches this host's journal and \`systemctl --failed\` and no
          further.
@@ -334,6 +334,6 @@ warning: $config_dir/alert.sh does not exist, or is not executable.
 
          Then prove it, rather than assuming it:
 
-           systemctl start sre-tab-alert@sre-tab-status.service
+           systemctl start sre-tab-alert@sre-tab-status.service.service
 WARNING
 fi
