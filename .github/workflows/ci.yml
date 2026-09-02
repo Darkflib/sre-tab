@@ -2,8 +2,19 @@ name: CI
 
 on:
   pull_request:
+  # A push to either matches: `branches` and `tags` are alternatives, not a
+  # conjunction, so a tag push runs this workflow whether or not the commit
+  # it names is on main.
+  #
+  # `v*` and not `v[0-9]*`: the filter's job is to decide what *runs*, and
+  # the shape of a version is decided in one place — the resolver step in
+  # `publish` — which refuses anything that is not vMAJOR.MINOR.PATCH and
+  # says why. A narrower filter here would split that judgement in two, and
+  # the half that lives in a glob cannot explain itself: `v1.1` would simply
+  # not run, which reads as a broken workflow rather than as a rejected tag.
   push:
     branches: [main]
+    tags: ["v*"]
   # Nothing here is triggered by the passage of time, and several of these
   # jobs answer questions whose answer changes without a commit: a new CVE
   # against a pinned dependency, a base image that has moved underneath the
@@ -30,6 +41,13 @@ permissions:
 # Keyed on the event as well as the ref: without that, a scheduled run on
 # main shares a group with a push to main, and `cancel-in-progress` lets the
 # timer cancel a publish.
+#
+# The ref half is what keeps a release safe from the merge that follows it. A
+# tag push carries `refs/tags/v1.1.0` and a branch push carries
+# `refs/heads/main`, so the two land in different groups and neither can
+# cancel the other — which matters here because tagging and merging are
+# minutes apart in practice, and `cancel-in-progress` would otherwise kill a
+# half-finished release build that had already pushed an image.
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
@@ -505,11 +523,18 @@ jobs:
       #
       # So the tested image travels instead of the recipe. Only reached when
       # every check above passed, because a failing step fails the job.
+      #
+      # The tag ref is in these two conditions for the same reason it is in
+      # `publish`'s, and it has to be in *all three* or none: a tag build
+      # whose `container` job skipped the export reaches `publish` and fails
+      # at `download-artifact`, having run the entire gate first. The three
+      # conditions are one decision written three times, because GitHub
+      # Actions has no anchors and no way to name a boolean once.
       - name: Export the tested image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         run: podman save --format docker-archive --output "$RUNNER_TEMP/image.tar" sre-tab:ci
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         with:
           name: tested-image
           path: ${{ runner.temp }}/image.tar
@@ -539,14 +564,27 @@ jobs:
   # image, a signature over its digest, SLSA provenance, and an SBOM. All
   # three attachments are bound to the *digest*, never to a tag, because a tag
   # is a mutable pointer and signing one would sign nothing durable.
+  #
+  # Two events reach this job and they publish different things. A push to
+  # main publishes `sha-<commit>` and moves `latest`. A version tag publishes
+  # `sha-<commit>`, the exact version, the floating minor, and a GitHub
+  # Release — and does *not* touch `latest`. The `needs:` chain is identical
+  # for both, which is the point of putting the trigger here rather than in a
+  # release workflow of its own: a tagged build is gated by the same six jobs
+  # as any merge, on the same runner, from the same tested bytes.
   publish:
     name: Publish, sign, and attest image
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: [python, postgres, audit, sast, frontend, container]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read
+      # `contents: write` is here and nowhere else. The workflow default
+      # stays `contents: read`, so every other job keeps it; this one needs
+      # write because `gh release create` writes a Release object, and that
+      # is the smallest grant the API will take for it. There is no
+      # finer-grained "releases" scope in the Actions permission set.
+      contents: write
       packages: write # push the image and its sigstore attachments
       id-token: write # keyless signing: the OIDC token IS the identity
       attestations: write # provenance and SBOM, recorded against this repo
@@ -557,6 +595,31 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes podman
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+
+      # First, before anything is downloaded, loaded, or pushed. A tag can be
+      # wrong in exactly two ways and both are knowable from the repository
+      # alone: its shape, and whether CHANGELOG.md describes the version it
+      # names. Asking here costs a second and fails a job that has published
+      # nothing; asking at the release step at the bottom would fail a job
+      # that had already pushed a signed, attested, publicly pullable image
+      # with no Release to explain it — and a registry tag, unlike a draft,
+      # cannot be taken back.
+      #
+      # The logic is a script with a test suite rather than a `case` in YAML:
+      # tests/test_release_metadata.py drives it through the refusals as well
+      # as the acceptances, in the `python` job, on every push. A guard that
+      # has never been seen to go red is not a guard.
+      #
+      # python3 is the runner image's, not setup-python's — this job has no
+      # interpreter step and the script imports nothing outside the standard
+      # library, so adding one would buy a version pin nothing here needs.
+      - name: Resolve the release version
+        id: release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python3 .github/scripts/release-metadata.py \
+            --tag "$GITHUB_REF_NAME" \
+            --notes-out "$RUNNER_TEMP/release-notes.md"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -593,6 +656,8 @@ jobs:
         id: publish
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Empty on a main build, because the resolver step did not run.
+          VERSION_TAGS: ${{ steps.release.outputs.image-tags }}
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
@@ -610,14 +675,53 @@ jobs:
           printf '%s' "$GHCR_TOKEN" | podman login ghcr.io \
             --username "$GITHUB_ACTOR" --password-stdin --authfile "$authfile"
 
+          # The one tag every build gets, on either trigger. --digestfile
+          # rather than inspecting the local image: this is the digest the
+          # registry accepted, and it is what every signature, attestation,
+          # and deployment pin below refers to. Every further tag in this
+          # step is another name for these same bytes, so the digest is
+          # captured once, from the first push.
           podman tag sre-tab:ci "$image:sha-${GITHUB_SHA}"
-          podman tag sre-tab:ci "$image:latest"
-          # --digestfile rather than inspecting the local image: this is the
-          # digest the registry accepted, and it is what every signature,
-          # attestation, and deployment pin below refers to.
           podman push --authfile "$authfile" \
             --digestfile "$RUNNER_TEMP/digest" "$image:sha-${GITHUB_SHA}"
-          podman push --authfile "$authfile" "$image:latest"
+
+          # `latest` belongs to main and to nothing else, and a tag build
+          # must not move it. The reasoning is ROADMAP.md's supply-chain
+          # entry, which exists because these units used to track a moving
+          # tag: whoever pushed last decided what a restart would run. A
+          # release moving `latest` would hand that property back — and
+          # would do it in the least expected direction, by making a
+          # deliberate act change what an unrelated host runs on its next
+          # reboot. `latest` therefore stays what it has always been, the
+          # tip of main, and a release is asked for by name.
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            podman tag sre-tab:ci "$image:latest"
+            podman push --authfile "$authfile" "$image:latest"
+            echo "moved $image:latest"
+          fi
+
+          # The version tags, on a tag build only: the exact version always,
+          # the floating MAJOR.MINOR for a final release and never for a
+          # pre-release. Which of those this is was decided by the resolver
+          # step, not here — the rule and its reasoning live next to the test
+          # that pins them.
+          #
+          # The word splitting on the next line is the point of it, and it is
+          # safe for a stated reason rather than a hopeful one:
+          # release-metadata.py builds each element out of a matched semver,
+          # so none can contain whitespace or a glob character. The directive
+          # sits on that line alone and not above the loop, so everything in
+          # the loop body stays checked — actionlint runs shellcheck over
+          # these blocks, and a `disable` wide enough to cover the body would
+          # switch it off exactly where a mistake would matter.
+          # shellcheck disable=SC2086
+          set -- $VERSION_TAGS
+          for tag in "$@"; do
+            podman tag sre-tab:ci "$image:$tag"
+            podman push --authfile "$authfile" "$image:$tag"
+            echo "published $image:$tag"
+          done
+
           digest=$(cat "$RUNNER_TEMP/digest")
           {
             echo "image=$image"
@@ -627,10 +731,17 @@ jobs:
 
       # Keyless. There is no key to store, rotate, or leak: cosign exchanges
       # this job's OIDC token for a short-lived Fulcio certificate whose
-      # subject is this workflow on this branch, and records the signature in
+      # subject is this workflow on this ref, and records the signature in
       # Rekor. What a verifier checks is therefore "was this built by
-      # Darkflib/sre-tab's ci.yml on main", which is the question worth
-      # asking — not "does this match a key someone put in a secret".
+      # Darkflib/sre-tab's ci.yml", which is the question worth asking — not
+      # "does this match a key someone put in a secret".
+      #
+      # "on this ref" is load-bearing and used to be "on main". The subject
+      # of a tag build's certificate ends `@refs/tags/v1.1.0`, not
+      # `@refs/heads/main`, so a verifier pinned to the branch string rejects
+      # a release it should accept. deploy/scripts/verify-image.sh was
+      # exactly that verifier, and now matches the set of refs this workflow
+      # is permitted to sign from rather than one member of it.
       - name: Sign the manifest
         env:
           IMAGE: ${{ steps.publish.outputs.image }}
@@ -678,3 +789,76 @@ jobs:
           IMAGE: ${{ steps.publish.outputs.image }}
           DIGEST: ${{ steps.publish.outputs.digest }}
         run: deploy/scripts/verify-image.sh --require-attestations "${IMAGE}@${DIGEST}"
+
+      # Last in the job, and after the verification above rather than before
+      # it. A Release is the announcement: it is what a self-hoster reads,
+      # what the SBOM hangs off, and the only artefact here that a person
+      # will ever look at directly. Announcing a build whose signature or
+      # attestations did not check out would be announcing the one thing
+      # this pipeline exists to make impossible, so the order is: publish,
+      # sign, attest, *prove it verifies from outside*, then say so.
+      #
+      # `gh` rather than a release action, on the standing rule that every
+      # action here is pinned by commit SHA and audited and adding one is a
+      # supply-chain decision. gh is preinstalled on the runner and this
+      # workflow already trusts it: verify-image.sh runs `gh attestation
+      # verify` in the step immediately above.
+      - name: Create the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+          IMAGE: ${{ steps.publish.outputs.image }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          # The notes are CHANGELOG.md's section for this version, extracted
+          # by the resolver step at the top of the job — so the Release and
+          # the changelog cannot disagree, and neither can be written after
+          # the fact to say something the other does not. Appended to them is
+          # the one thing the changelog cannot carry, because it does not
+          # exist until the push above: the digest, which is what anybody
+          # pinning this release actually needs.
+          {
+            cat "$RUNNER_TEMP/release-notes.md"
+            echo
+            echo '## Image'
+            echo
+            echo '```'
+            echo "${IMAGE}:${VERSION}@${DIGEST}"
+            echo '```'
+            echo
+            echo 'Verify it before pinning it:'
+            echo
+            echo '```'
+            echo "deploy/scripts/verify-image.sh ${IMAGE}@${DIGEST}"
+            echo '```'
+          } > "$RUNNER_TEMP/release-body.md"
+
+          # Positional, so the flag is either present or absent rather than
+          # present-and-empty — `gh release create ""` is an argument, not a
+          # no-op. A pre-release is marked as one so it does not become the
+          # repository's "Latest release" banner, which is the same call the
+          # floating :MAJOR.MINOR tag makes in the registry.
+          if [ "$PRERELEASE" = true ]; then
+            set -- --prerelease
+          else
+            set --
+          fi
+
+          # --verify-tag: refuse to invent a tag. Without it, gh will create
+          # the git tag as well, which on this path could only mean the tag
+          # that triggered the run has gone missing underneath it — worth
+          # failing on rather than papering over.
+          #
+          # There is deliberately no --clobber equivalent here: `gh release
+          # create` fails if a Release already exists for this tag, and that
+          # is the behaviour wanted. Re-running a tag build must not silently
+          # rewrite the notes of a release people have already read.
+          gh release create "$GITHUB_REF_NAME" "$@" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/release-body.md" \
+            "$RUNNER_TEMP/sbom.spdx.json#SPDX SBOM (${VERSION})"
