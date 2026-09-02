@@ -78,6 +78,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   *next* install's intention, and this loop has to poll the port that is
   published now.
 
+  **An unanswerable question now fails the check rather than falling back to
+  8080**, and the first version of this fix got that wrong in a way worth
+  recording. It warned and used 8080 anyway, on the reasoning that the
+  fallback could only fail closed. It cannot: the hosts that set
+  `SRE_TAB_WEB_PORT` are exactly the hosts where something else already owns
+  8080 — that is the only reason to move it — so on the one host where this
+  question matters, the fallback aims the health check at a *different
+  service*. Staged on the test host in that exact shape, with the front door
+  stopped and an unrelated 200-answering listener on 8080, the fallback
+  version printed `Waiting for the health check on 127.0.0.1:8080... Healthy.
+  Restore complete.` and exited 0 while nothing served the dashboard at all.
+  The refusal names what it could not determine and exits 1, saying plainly
+  that the database itself is restored and verified; the happy path on a moved
+  port still passes. Raised in review by CodeRabbit on #27.
+
 ### Changed
 
 - **`deploy/README.md`'s verification steps ask the front door which port it
