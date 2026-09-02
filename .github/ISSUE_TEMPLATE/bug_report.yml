@@ -1,0 +1,68 @@
+name: Bug report
+description: Something behaves differently from how it is documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not report security vulnerabilities here — see
+        [SECURITY.md](https://github.com/Darkflib/sre-tab/blob/main/SECURITY.md)
+        for the private channel.
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How are you running it?
+      description: >-
+        This matters more than it usually would. The quickstart runs the
+        application on SQLite with the scheduler in-process; the Quadlets run
+        it on PostgreSQL behind Caddy with least-privilege database roles.
+        Several behaviours differ between the two by design.
+      options:
+        - Quadlets on a Debian host (deploy/)
+        - Quickstart / development mode (SQLite)
+        - The container image, orchestrated some other way
+        - Other, or not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >-
+        A release tag, or the image digest the units are pinned to
+        (`grep Image= /etc/containers/systemd/sre-tab.container`).
+      placeholder: "1.1.0, or ghcr.io/darkflib/sre-tab@sha256:…"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and where you got that expectation
+      description: >-
+        A link to the line of documentation that led you to expect it is the
+        most useful thing you can put here. If the docs are wrong, that is
+        itself the bug, and it is one this project takes seriously.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: >-
+        Exact commands and exact output, please, rather than a paraphrase.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: >-
+        `journalctl -u sre-tab.service -n 100`, or `podman logs sre-tab-app`.
+        **Read them before pasting.** Logs are scrubbed of secrets on a
+        best-effort basis and that is a backstop, not a guarantee.
+      render: shell

@@ -54,6 +54,34 @@ If a rule here blocks you, say so rather than working around it.
   a branch-protection rule naming checks that never report. When you add
   a guard, make it fail once on purpose before you believe it.
 
+  **1.1.0 added eleven more, and they were a different shape.** Every one
+  of those six was a guard that could not fail. The new ones could — they
+  went red on demand — and still answered a question next to the one they
+  were relied on for:
+
+  - `smoke.sh` ran the whole stack as the three least-privilege roles and
+    was therefore believed to protect the cutover. It never opened a unit
+    file, so it would have passed with every unit reverted to the
+    superuser.
+  - `restore.sh` proved the restore *role existed* before dropping the
+    database. It did not prove the credential *authenticated*, which is
+    the thing that fails.
+  - `pg_isready` with no host answered for the temporary server the
+    postgres image starts during bootstrap, not the one about to serve.
+  - `ALTER DEFAULT PRIVILEGES` naming the wrong role applies without
+    error and then never fires.
+  - A tag list that failed to populate answered "nothing is newer" for
+    every version, which is indistinguishable from a correct pass.
+
+  So making a guard fail on purpose proves it *can* fail. It does not
+  prove it fails for the right reason, and it does not prove its subject
+  is the thing you care about. Two questions catch the rest, and both are
+  cheap: **what does this say when its subject is missing or empty?** —
+  the silent-pass direction, where an absent input reads as a satisfied
+  condition — and **would this still pass if the thing it protects were
+  reverted?** If you cannot answer the second by trying it, the guard is
+  documentation.
+
 ## Data-access rules
 
 The service is sync SQLAlchemy by contract, but a later async migration

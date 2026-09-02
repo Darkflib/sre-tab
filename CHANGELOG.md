@@ -8,6 +8,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Issue and pull-request templates, and a repository that can be found.**
+  Neither template existed, and the repository carried no topics, no homepage,
+  and no social preview — so it was discoverable by name, by someone who
+  already knew the name. The templates ask for the two things that are
+  actually hard to get out of a self-hosted bug report: which of the two
+  deployment shapes is running, since the quickstart and the Quadlets differ
+  by design in ways that look like bugs, and *where the reporter's
+  expectation came from*, because a wrong document is a bug this project
+  treats as one. Blank issues are disabled and the security advisory channel
+  is the first link a reporter sees, rather than something found after
+  posting publicly.
+- **`AGENTS.md`'s "a green check is not a passed check" rule now covers the
+  harder half.** The six instances it named were guards that *could not*
+  fail. This release found eleven that could, went red on demand, and still
+  answered a question next to the one they were relied on for — `smoke.sh`
+  running as the least-privilege roles while never opening a unit file, so a
+  reverted cutover would have passed; `restore.sh` proving the restore role
+  existed but never that its credential authenticated; `pg_isready` answering
+  for the temporary server the postgres image starts during bootstrap. The
+  rule now asks the two questions that catch those: what the guard says when
+  its subject is missing or empty, and whether it would still pass with the
+  thing it protects reverted.
+
 - **A tag-triggered publish path, so there is a version to ask for.** Until
   now the registry only ever received `sha-<commit>` and `latest`, because
   `publish` ran on pushes to `main` and nothing else — which is exactly right
