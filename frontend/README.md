@@ -13,11 +13,42 @@ React client for the v1 API. Built with Vite, generated against the frozen
 | `npm run preview` | Serve the built output locally |
 | `npm run lint` | ESLint 9, flat config, type-aware rules |
 | `npm run typecheck` | `tsc --build --force` over app and tooling projects |
-| `npm run check` | lint + typecheck + build, in that order |
+| `npm test` | Vitest, one shot |
+| `npm run test:watch` | Vitest, watching |
+| `npm run check` | lint + typecheck + test + build, in that order |
 | `npm run generate:api` | Regenerate `src/api/schema.d.ts` from `openapi.json` |
 
 Node 20.19 or newer (Vite 8's floor); CI and the container build should pin
 Node 24.
+
+## Tests
+
+Vitest, in its default `node` environment. That is a deliberate constraint
+rather than an oversight: the theme tests install by hand every global the
+theme layer touches, so a new dependency on, say, `window.sessionStorage`
+shows up as a failure instead of being supplied silently by an ambient DOM.
+`theme-init.test.ts` executes `public/theme-init.js` in a `node:vm` context,
+and `tokens.test.ts` parses `tokens.css` and recomputes WCAG contrast ratios.
+None of that wants a browser.
+
+Two files do. `src/api/client.test.ts` and
+`src/data/usePagedResource.effects.test.ts` each opt in with a docblock:
+
+```ts
+// @vitest-environment happy-dom
+```
+
+Per-file, not in `vite.config.ts`, so the rest of the suite keeps its
+property of failing loudly when it reaches for a global it did not install.
+`happy-dom` is the only test-environment dependency; there is no
+request-mocking library (`globalThis.fetch` is stubbed with `vi.fn()`) and no
+renderer library (`usePagedResource.effects.test.ts` mounts the hook on
+`createRoot` with React 19's own `act`, in about thirty lines).
+
+`client.ts` genuinely needs the DOM rather than merely liking it: the client
+is built with no `baseUrl`, so openapi-fetch constructs
+`new Request('/api/v1/me')` with a root-relative URL. A browser resolves that
+against the document; Node's undici throws.
 
 ## Deployment shape
 

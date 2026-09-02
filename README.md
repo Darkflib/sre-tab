@@ -268,14 +268,15 @@ not been demonstrated, which is a different thing from being tested.
   surveyed redirects at all. The refusal branches — downgrade to `http`, a
   private or link-local destination, a `file:` URL, a loop, a `Location`-less
   `302` — are the ones with real-world provenance.
-- **Frontend coverage is narrow, though no longer absent.** The Vitest suite
-  under `frontend/` is gated in CI and covers the theme layer thoroughly —
+- **Frontend coverage stops at the components.** The Vitest suite under
+  `frontend/` is gated in CI and covers the theme layer thoroughly —
   resolution and its storage fallbacks, the anti-flash script executed in a
   VM context, and WCAG contrast recomputed from `tokens.css` for both themes
-  — and, since the filter work, the feed's filter model and volume signals.
-  What remains uncovered is everything that needs a DOM and a mocked
-  `fetch`: `src/api/client.ts`, `src/data/usePagedResource.ts`, and every
-  component and route. That is the expensive half, and it is unstarted.
+  — the feed's filter model and volume signals, and now the fetch layer
+  (`src/api/client.ts`) and the pagination hook's effects
+  (`src/data/usePagedResource.ts`), the last two under a per-file
+  `happy-dom` environment. What remains uncovered is `src/components/` and
+  `src/routes/`: nothing renders a screen and asserts what a user would see.
 - **Backups sit on the same host as the database.** That is a backup, not
   disaster recovery. The `.sha256` sidecars exist so a copy taken off-host
   can be verified at the far end.
