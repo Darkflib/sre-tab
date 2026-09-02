@@ -95,6 +95,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`actions/attest-sbom` is deprecated; the SBOM attestation now uses
+  `actions/attest`.** The old action still works — it is currently a wrapper
+  around the new one, which is why the inputs are unchanged — but a
+  deprecated action in the one workflow that publishes signed artefacts is a
+  thing that stops working on somebody else's schedule. Renovate would have
+  kept bumping its version and never told us it was going away.
+  `actions/attest-build-provenance` is *not* deprecated and is untouched.
+
+  The migration is checked by the publish job rather than rehearsed, since a
+  publish-only step cannot be rehearsed: `verify-image.sh
+  --require-attestations` runs later in the same job and asserts an SBOM
+  attestation against the image just pushed. Review pushed back on how much
+  that claim was worth, correctly, and measuring it against the published
+  1.1.0 image narrowed it twice. `gh attestation verify` matches by digest and
+  will accept any attestation the API holds for one, not specifically this
+  run's — what makes the check meaningful is that every build produces a new
+  digest, so the only attestations that exist for it are this run's. And the
+  predicate assertion is a prefix match rather than equality: the recorded
+  type is `https://spdx.dev/Document/v2.3` and the verifier asks for
+  `https://spdx.dev/Document`. That is deliberate, because pinning the SPDX
+  version would turn an SBOM-format bump into an apparent supply-chain
+  failure, but it means the check answers "an SPDX document is attested"
+  rather than "exactly this version is". A bogus predicate type is still
+  refused, which is what keeps it an assertion.
+
 - **`deploy/README.md`'s verification steps ask the front door which port it
   is on** instead of hardcoding 8080, in first start, in the roles cutover,
   and in Operations. A runbook that names the number sends an operator who has
