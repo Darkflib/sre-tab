@@ -105,6 +105,44 @@ if [ "$start_services" = true ]; then
         fi
     done
 
+    # The three least-privilege role secrets, checked separately because they
+    # come from a different script and because a host can legitimately have
+    # the four above and none of these — that is every host that has not yet
+    # been cut over.
+    #
+    # sre-tab-database-url stays in the list above even though only the
+    # rollback reads it now. It is the rollback: reverting the cutover commit
+    # points three units back at it, and a host that has quietly lost it
+    # cannot take that path.
+    #
+    # This check earns its place on a first install, where the ordering is
+    # genuinely counter-intuitive. create-roles.sh talks to the running
+    # database, so the roles cannot exist before the database does, and the
+    # database is started by this script — so a fresh host has to start
+    # sre-tab-db.service on its own, install the roles, and only then run
+    # --start. Without this the sequence fails as three units refusing to
+    # start with "no such secret", after the timers have been enabled, which
+    # says what is missing but not what to do about it.
+    for secret in sre-tab-migrate-database-url sre-tab-app-database-url \
+                  sre-tab-readonly-password; do
+        if ! podman secret exists "$secret" 2>/dev/null; then
+            cat >&2 <<EOF
+error: podman secret '$secret' does not exist.
+       The units connect as the three least-privilege roles, so they need
+       the secrets deploy/scripts/create-roles.sh writes. It installs them
+       against the running database, which on a first deployment has to be
+       started on its own first:
+
+           sudo systemctl start sre-tab-db.service
+           sudo deploy/scripts/create-roles.sh
+           sudo deploy/install.sh --start
+
+       deploy/ROLES.md has the whole picture, including the rollback.
+EOF
+            exit 1
+        fi
+    done
+
     # Quadlet services are transient generated units and cannot be enabled
     # with `systemctl enable`; their [Install] sections are applied by the
     # generator at boot and on daemon-reload, so starting them explicitly is
