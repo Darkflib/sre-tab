@@ -76,10 +76,28 @@ install -d -m 0700 -o 999 -g 999 "$backup_dir" 2>/dev/null \
 
 install -m 0644 "$script_dir/Caddyfile" "$config_dir/Caddyfile"
 install -m 0755 "$script_dir/scripts/backup.sh" "$config_dir/backup.sh"
+install -m 0755 "$script_dir/scripts/backup-offsite.sh" "$config_dir/backup-offsite.sh"
+# Not run on this host. Staged here so an operator setting up the far end has
+# it to copy across, and so an upgrade updates the copy they will send next.
+install -m 0644 "$script_dir/scripts/backup-offsite-receive.sh" \
+    "$config_dir/backup-offsite-receive.sh"
+install -m 0644 "$script_dir/backup-offsite.env.example" \
+    "$config_dir/backup-offsite.env.example"
 install -m 0644 "$script_dir/quadlet/"*.network "$quadlet_dir/"
 install -m 0644 "$script_dir/quadlet/"*.volume "$quadlet_dir/"
 install -m 0644 "$script_dir/quadlet/"*.container "$quadlet_dir/"
 install -m 0644 "$script_dir/systemd/"*.timer "$systemd_dir/"
+install -m 0644 "$script_dir/systemd/"*.service "$systemd_dir/"
+
+# Drop-ins for units Quadlet generates. systemd merges these from
+# /etc/systemd/system/<unit>.d/ for a generated unit exactly as for an ordinary
+# one, which is how sre-tab-backup.service gains its OnSuccess= without
+# deploy/quadlet/sre-tab-backup.container being edited.
+for dropin_dir in "$script_dir/systemd/"*.service.d; do
+    [ -d "$dropin_dir" ] || continue
+    install -d -m 0755 "$systemd_dir/$(basename "$dropin_dir")"
+    install -m 0644 "$dropin_dir/"*.conf "$systemd_dir/$(basename "$dropin_dir")/"
+done
 
 # The operator's file. Seeded once, then left alone — an installer that
 # overwrites it turns every upgrade into an outage.
@@ -91,6 +109,64 @@ fi
 if [ -n "$install_root" ]; then
     echo "Developer News Dashboard deployment files staged below $install_root"
     exit 0
+fi
+
+# The identity sre-tab-backup-offsite.service runs as. Created unconditionally,
+# even where off-host copies are not configured: a shell-less system account
+# with no home costs nothing, and making it conditional on
+# /etc/sre-tab/backup-offsite.env would mean an operator who writes that file
+# without re-running this installer gets their first off-host copy at 03:22
+# with no user and no ACL, which is a trap with a twelve-hour fuse.
+if ! getent passwd sre-tab-offsite >/dev/null 2>&1; then
+    useradd --system --user-group --no-create-home \
+        --home-dir /nonexistent --shell /usr/sbin/nologin \
+        --comment "sre-tab off-host backup copier" sre-tab-offsite
+    echo "Created the sre-tab-offsite system user"
+fi
+
+# How that user is allowed to read the dumps, and the only way it is.
+#
+# $backup_dir is 0700 and owned by uid 999 for the reason spelled out above, so
+# an unprivileged account cannot read a thing in it. The alternatives were to
+# loosen the mode, which reintroduces the gid 999 / systemd-journal problem, or
+# to give the unit CAP_DAC_READ_SEARCH, which grants it read access to every
+# file on the host — /etc/shadow and the podman secrets included — in order to
+# read two. A POSIX ACL grants exactly one extra reader on exactly this tree,
+# is enforced by the kernel's own DAC, and leaves CapabilityBoundingSet= empty.
+#
+# The default ACL is the half that is easy to miss. New dumps are created by
+# the backup container under `umask 077`; when a directory carries a default
+# ACL the umask is ignored and the default supplies the mode instead, so each
+# night's dump comes out `-rw-r-----+` with `user::rw-, group::---, other::---`
+# and a single named entry for sre-tab-offsite. Measured on Debian 13 / ext4:
+# a member of gid 999 still gets EACCES on both the directory and the files.
+# `ls -ld` shows `drwxr-x---+`, which looks like group access and is not — the
+# group bits of a file with an ACL are the mask, not `group::`.
+#
+# Re-applied on every run, deliberately: the `install -d -m 0700` above sets
+# the mask to `---` and silently masks the grant out, so an installer re-run is
+# how this breaks and an installer re-run is how it is fixed.
+if command -v setfacl >/dev/null 2>&1; then
+    setfacl -m u:sre-tab-offsite:rx "$backup_dir"
+    setfacl -d -m u:sre-tab-offsite:r "$backup_dir"
+else
+    echo "warning: setfacl not found, so sre-tab-offsite cannot be granted" >&2
+    echo "         read access to $backup_dir. Off-host copies will fail" >&2
+    echo "         with a permission error. Install it and re-run:" >&2
+    echo "           apt-get install acl && $0" >&2
+fi
+
+# The operator's own file, holding the S3 secret. Not created here — its
+# existence is what switches the feature on — but its mode is worth one look.
+if [ -f "$config_dir/backup-offsite.env" ]; then
+    offsite_mode=$(stat -c %a "$config_dir/backup-offsite.env")
+    # Leading 0 so the shell reads it as octal, then any group or other bit.
+    if [ "$(( 0$offsite_mode & 077 ))" -ne 0 ]; then
+        echo "warning: $config_dir/backup-offsite.env is mode $offsite_mode." >&2
+        echo "         It carries the off-host S3 secret, and systemd reads it" >&2
+        echo "         as root before dropping privilege, so nothing else needs" >&2
+        echo "         to:  chmod 0600 $config_dir/backup-offsite.env" >&2
+    fi
 fi
 
 systemctl daemon-reload
