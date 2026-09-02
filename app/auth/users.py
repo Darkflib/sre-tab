@@ -14,6 +14,16 @@ RETURNING`` statement: there is no window between reading and writing,
 because there is no second statement. ``app.services.upsert`` carries the
 reasoning for DO UPDATE over DO NOTHING, which is not the reasoning one
 would guess.
+
+One consequence worth naming, because the convention elsewhere in this
+schema is the opposite one. DO UPDATE fires on every sign-in, whether or
+not GitHub sent a changed field, so ``users.updated_at`` means *last
+profile sync* rather than *last profile change*. That is accurate — every
+mutable column on this row is a mirror of the profile just fetched, and
+all of them are rewritten each time — but it is not how
+``sources.updated_at`` behaves, which deliberately keeps meaning "the
+operator changed the configuration" and is why refresh state lives in
+``source_status`` instead. Do not read one as evidence for the other.
 """
 
 from __future__ import annotations
