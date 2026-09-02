@@ -21,10 +21,17 @@
 # sretab_migrate, the application and the session sweep as sretab_app, the
 # backup as sretab_readonly. Nothing but the throwaway psql helper and
 # restore.sh's DROP/CREATE DATABASE step connects as the superuser. That is
-# what makes the negative assertions further down meaningful, and it is what
-# stops a half-done or silently reverted cutover from passing CI — the gap
-# deploy/ROLES.md named, and now records as closed, under "smoke.sh tests the
-# cutover rather than routing around it".
+# what makes the negative assertions further down meaningful.
+#
+# It is not, on its own, what stops a reverted cutover from passing CI — and
+# that claim was made before it was true. The credentials below are this
+# file's own; it has no podman secrets, and under CONTAINER_ENGINE=docker it
+# cannot have any. So every assertion here would go on passing with all four
+# units pointed back at the superuser, because nothing in this script opened
+# them. The first step of the run now does exactly that: it reads
+# deploy/quadlet and asserts each unit names the credential the corresponding
+# container below is about to be handed. Without it, "smoke.sh proves the
+# cutover" is a claim about files this script never looks at.
 #
 # roles.sql is applied through psql directly rather than by calling
 # create-roles.sh, which writes podman secrets and would tie this file to one
@@ -157,6 +164,55 @@ apply_roles() {
         --username sretab --dbname sretab
 }
 
+step "The Quadlet units name the credentials this run is about to use"
+# First, before a single container starts: a disagreement here is a
+# repository bug rather than a runtime failure, and it costs three minutes to
+# reach if it is discovered at the backup step instead.
+#
+# This is the join between two halves that would otherwise never meet. The
+# units name podman secrets; this script hands its containers URLs it made up
+# itself. Both describe a deployment, and nothing made them describe the same
+# one — revert the cutover commit and every assertion below still passes,
+# because none of them opens a unit file.
+#
+# What it deliberately does not check is the other link in the chain: that
+# `sre-tab-app-database-url` actually contains a URL for sretab_app. That is
+# create-roles.sh's to keep, it only exists on a host with podman secrets, and
+# asserting it here would mean grepping a printf format string for a role
+# name — a check that breaks on reformatting and holds nothing.
+unit_names_credential() {
+    unit_file="$repo_root/deploy/quadlet/$1"
+    grep -qxF "$2" "$unit_file" || fail \
+        "deploy/quadlet/$1 does not contain '$2' — the units and this harness disagree about which role the deployment connects as, so everything below would test a deployment that is not the one shipping"
+    echo "  $1: $2"
+}
+unit_names_credential sre-tab.container \
+    'Secret=sre-tab-app-database-url,type=env,target=DATABASE_URL'
+unit_names_credential sre-tab-migrate.container \
+    'Secret=sre-tab-migrate-database-url,type=env,target=DATABASE_URL'
+unit_names_credential sre-tab-prune-sessions.container \
+    'Secret=sre-tab-app-database-url,type=env,target=DATABASE_URL'
+unit_names_credential sre-tab-backup.container \
+    'Environment=PGUSER=sretab_readonly'
+unit_names_credential sre-tab-backup.container \
+    'Secret=sre-tab-readonly-password,type=env,target=PGPASSWORD'
+
+# The superuser's DATABASE_URL secret still exists on a deployed host, and
+# deploy/ROLES.md says to leave it there — it is the rollback. What must not
+# happen is a unit consuming it again without the rollback being a deliberate,
+# reviewed commit, which is what this catches.
+if grep -rl '^Secret=sre-tab-database-url' "$repo_root/deploy/quadlet/" 2>/dev/null | grep .; then
+    fail "the unit(s) above still consume the superuser's DATABASE_URL"
+fi
+
+# The one place the superuser is still correct. It bootstraps the cluster and
+# it is the credential create-roles.sh installs the other three with, so
+# losing this line breaks the roles rather than tightening anything.
+grep -qxF 'Environment=POSTGRES_USER=sretab' \
+    "$repo_root/deploy/quadlet/sre-tab-db.container" \
+    || fail "sre-tab-db.container no longer bootstraps the sretab superuser"
+echo "  sre-tab-db.container still bootstraps the superuser, which owns the cluster"
+
 step "Preparing $NET"
 "$ENGINE" rm --force sre-tab-web sre-tab-app sre-tab-db >/dev/null 2>&1 || true
 "$ENGINE" network rm --force "$NET" >/dev/null 2>&1 || true
@@ -189,8 +245,23 @@ step "Starting PostgreSQL on a fresh volume"
     --pids-limit 256 \
     "$PG_IMAGE" >/dev/null
 
+# --host=127.0.0.1 is load-bearing, and its absence was a real race rather
+# than a tidiness point. The official image's entrypoint bootstraps a cluster
+# by starting a *temporary* server for initdb and the init scripts, and it
+# starts that one with `listen_addresses=''` — reachable on the unix socket
+# and on nothing else. A pg_isready with no host talks to that socket, so it
+# answers "ready" during the bootstrap, and the entrypoint then shuts the
+# temporary server down to start the real one. Whatever connected next got
+# `FATAL: the database system is shutting down`.
+#
+# The race has been here all along and only started biting when a step was
+# added that connects immediately: applying roles.sql. Migrations, which used
+# to be next, run in a container that takes long enough to start that the
+# restart had always finished first. Asking over TCP is what distinguishes
+# the two servers, because only the real one is listening there.
 attempt=0
-until "$ENGINE" exec sre-tab-db pg_isready --quiet --username=sretab --dbname=sretab; do
+until "$ENGINE" exec sre-tab-db \
+    pg_isready --quiet --host=127.0.0.1 --username=sretab --dbname=sretab; do
     attempt=$((attempt + 1))
     [ "$attempt" -ge 60 ] && fail "PostgreSQL never accepted connections"
     sleep 1

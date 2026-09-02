@@ -23,10 +23,8 @@ that.
   - The build path's dependency on `codeload.github.com` — vendor the
     actions, or replace `download-syft` with a registry pull.
 - [Security findings this deployment absorbs](#security-findings-this-deployment-absorbs)
-  - Cut the deployment over to the three least-privilege database roles —
-    `restore.sh` and the smoke test use them now, and every Quadlet unit
-    still connects as the superuser.
   - The OAuth state cookie can be overwritten from a sibling subdomain.
+  - PostgreSQL traffic inside the deployment is cleartext.
 - [API surface](#api-surface)
   - Serve `/api/v1/openapi.json` from the committed file in
     `deploy/Caddyfile`, not from the running application.
@@ -48,7 +46,7 @@ that.
   - The backup timer's `Persistent=true` catch-up, demonstrated rather than
     assumed.
   - The fetcher's accept-a-redirect branch, against a live server.
-  - Quadlet runtime under a real soak — still just two cold installs and a
+  - Quadlet runtime under a real soak — still just three cold installs and a
     handful of restarts.
   - The ~20s of deploy outage after `systemctl` returns — cause still
     unknown.
@@ -175,16 +173,30 @@ And the assumption each one rests on is invisible from the code: nothing in
 `app/` says "this is fine because there are three users". **This is the
 section to re-read before adding a fourth operator, a second instance, or a
 route that lets a user add a source** — most of what follows changes
-severity at that moment, and the first item does not depend on the operator
-count at all.
+severity at that moment.
 
-- **The application connects to PostgreSQL as a superuser.** The one item
-  here whose severity the operator count does not cap. `sre-tab-db.container`
-  sets `POSTGRES_USER=sretab`, which the official image creates as the
-  cluster superuser, and the application, the migration unit, and the backup
-  all share the single `DATABASE_URL` secret. An application-level SQL
-  injection therefore does not stop at reading the tables: `COPY … PROGRAM`
-  is available to a superuser, and it executes commands.
+That caveat used to carry a second half: one item here did not depend on the
+operator count at all, and so was not really absorbed by the deployment's
+shape so much as parked. It is the first bullet below, and it is now closed —
+which is why the sentence is shorter than it was. Everything that remains is
+genuinely held by the three-operator assumption.
+
+- **The application connected to PostgreSQL as a superuser** — **landed, and
+  it was the one item here whose severity the operator count did not cap.**
+  `sre-tab-db.container` sets `POSTGRES_USER=sretab`, which the official image
+  creates as the cluster superuser, and the application, the migration unit,
+  and the backup all shared that single `DATABASE_URL` secret. An
+  application-level SQL injection therefore did not stop at reading the
+  tables: `COPY … PROGRAM` is available to a superuser, and it executes
+  commands.
+
+  Every unit now connects as one of three non-superuser roles — the
+  application and the session sweep as `sretab_app`, the migration unit as
+  `sretab_migrate`, the backup as `sretab_readonly` — and only
+  `sre-tab-db.container` still carries a superuser credential, which it needs
+  to own the cluster. The rest of this entry is the reasoning, which is worth
+  keeping: it is what a future reviewer needs in order to tell whether a
+  change reopens this.
 
   **Where those commands run is the part worth stating precisely, because
   the first draft of this entry got it wrong and said "the database host".**
@@ -210,21 +222,22 @@ count at all.
   severity multiplier on a bug that does not exist yet rather than a live
   hole.
 
-  Closing it means at least three roles rather than one: DDL for
+  Closing it meant at least three roles rather than one: DDL for
   `alembic upgrade`, DML for the application, and read for the dump. That
-  touches the migration unit, `restore.sh`'s ownership handling, and
-  `smoke.sh`, which is why it is filed rather than fixed, and why it should
-  be done deliberately rather than squeezed into an unrelated change.
+  touched the migration unit, `restore.sh`'s ownership handling, and
+  `smoke.sh`, which is why it was filed rather than fixed, and why it was done
+  deliberately rather than squeezed into an unrelated change.
 
-  **The roles now exist; nothing uses them yet, deliberately.**
+  **The roles landed first, and nothing used them for a while, deliberately.**
   `deploy/roles.sql` defines `sretab_migrate` (DDL), `sretab_app` (DML),
   and `sretab_readonly` (the dump), all `NOSUPERUSER NOCREATEDB
   NOCREATEROLE NOREPLICATION NOBYPASSRLS`;
-  `deploy/scripts/create-roles.sh` installs them and is deliberately *not*
-  called by `install.sh`. No `.container` file and no `DATABASE_URL`
-  changed, so the running deployment is exactly as it was. The cutover is
-  its own iteration, and `deploy/ROLES.md` carries the procedure, the full
-  list of consumers, and the rollback.
+  `deploy/scripts/create-roles.sh` installs them and is still deliberately
+  *not* called by `install.sh`. Splitting "create the roles" from "use them"
+  is what makes the cutover a single commit touching only
+  `deploy/quadlet/`, and therefore what makes the rollback one `git revert`.
+  `deploy/ROLES.md` carries the reasoning, the full list of consumers, the
+  verification record, and that rollback.
 
   Verified against a real `postgres:18-trixie` rather than reasoned about,
   because the whole entry turns on one claim. `COPY … TO PROGRAM` is
@@ -241,26 +254,80 @@ count at all.
   `alembic upgrade` yields tables the application cannot read, with
   nothing to say why.
 
-  **Both sub-decisions the cutover was waiting on are now closed, and the
-  units are still what is open.** `restore.sh` does `DROP`/`CREATE DATABASE`,
-  which is database-level admin none of the three roles holds; it now keeps
-  the superuser credential for exactly that step and runs `pg_restore` as
-  `sretab_migrate`, rather than granting the DDL role `CREATEDB` and widening
-  what the migration unit carries unattended on every deploy. And `smoke.sh`,
-  which exercised only the superuser and would therefore have kept passing
-  through a broken or silently reverted cutover, now installs the roles,
-  runs migrate, app, session sweep, and backup as them, and asserts the
-  refusals by their error text — `COPY … TO PROGRAM` for all three,
-  `CREATE TABLE` for `sretab_app`, `INSERT` for `sretab_readonly` — so
-  widening a role by accident fails CI instead of leaving ROLES.md quietly
-  wrong.
+  **Both sub-decisions the cutover was waiting on closed first.**
+  `restore.sh` does `DROP`/`CREATE DATABASE`, which is database-level admin
+  none of the three roles holds; it keeps the superuser credential for exactly
+  that step and runs `pg_restore` as `sretab_migrate`, rather than granting
+  the DDL role `CREATEDB` and widening what the migration unit carries
+  unattended on every deploy. And `smoke.sh`, which exercised only the
+  superuser, now installs the roles, runs migrate, app, session sweep, and
+  backup as them, and asserts the refusals by their error text —
+  `COPY … TO PROGRAM` for all three, `CREATE TABLE` for `sretab_app`,
+  `INSERT` for `sretab_readonly` — so widening a role by accident fails CI
+  instead of leaving ROLES.md quietly wrong.
 
-  What remains is the cutover itself: the `Secret=` and `Environment=` lines
-  in `deploy/quadlet/`, as its own commit, with the rollback in ROLES.md.
+  **Then the units moved, and one claim about that preparation turned out to
+  be wrong.** `smoke.sh` running as the three roles was taken to mean a
+  reverted cutover would fail CI. It would not have: the harness invents its
+  own connection strings — it has no podman secrets, and under
+  `CONTAINER_ENGINE=docker` cannot have any — and never opened a file under
+  `deploy/quadlet`, so every assertion in it would have gone on passing with
+  all four units pointed back at the superuser. That is the same shape as the
+  six green checks this repository has already shipped. It now reads the unit
+  files first and refuses to run if they name anything other than the
+  credentials it is about to use, watched failing under four separate
+  mutations. `install.sh --start` had the mirror-image problem — it checked
+  for four secrets that predate the cutover and none of the three the units
+  now need — and now checks all seven.
+
+  The privilege boundary is demonstrated where it matters rather than only in
+  a harness: from inside the running application container on a real Podman
+  host, `current_user` is `sretab_app`, `is_superuser` is `off`, and
+  `CREATE TABLE`, `COPY … TO PROGRAM`, and `TRUNCATE` are all refused while
+  the `DELETE` the application genuinely needs succeeds. The backup produces a
+  restorable dump as `sretab_readonly` with sequences intact, the session
+  sweep still deletes, a migration still creates tables the application can
+  use with no manual `GRANT`, and the rollback has been executed rather than
+  described. `deploy/ROLES.md` records each.
 
   The production-readiness review of 1 September 2026 put the cutover first
-  among everything it found, on the ground this entry opens with: it is the
-  only item in this section whose severity three operators do not cap.
+  among everything it found, on the ground this entry opened with: it was the
+  only item in this section whose severity three operators did not cap.
+
+  **One consumer is outstanding, and it is outstanding by sequencing rather
+  than by decision.** `deploy/quadlet/sre-tab-status.container` — an hourly
+  `sre-tab status` check — arrives with the status-alerting branch and names
+  `sre-tab-database-url`. `sre-tab status` is read-only, so it belongs on
+  `sretab_readonly`; whichever of the two branches merges second owns the
+  change, and `deploy/ROLES.md`'s consumer table carries the row so it cannot
+  be discovered in production instead.
+- **PostgreSQL traffic inside the deployment is cleartext.** Raised by review
+  of the role cutover, and it is correct: the generated `DATABASE_URL`s and the
+  backup's `PGPASSWORD` path use libpq's default `sslmode=prefer`, and
+  `sre-tab-db.container` enables no TLS, so `prefer` degrades to a plaintext
+  connection every time. Passwords are SCRAM-authenticated and so are not on
+  the wire in the clear, but every row is — which for this schema means every
+  session token hash, every bookmark, and every user record.
+
+  Held, on the shape of the deployment rather than on a judgement that
+  cleartext is fine. The database publishes no port, is reachable only from
+  `sre-tab.network`, and every peer on that network is a container this
+  repository defines on the same host. An attacker positioned to read that
+  traffic is already inside the network namespace, at which point the podman
+  secrets holding the credentials are readable too and TLS buys nothing
+  against them. **This changes the day the database moves off the host, or a
+  second host joins that network**, and it is the first thing to revisit at
+  that point rather than after it.
+
+  Closing it is not a configuration line, which is the honest reason it is not
+  done here: `sslmode=verify-full` is only meaningful with a CA the client
+  trusts and a server certificate naming `sre-tab-db`, so it wants a decision
+  about who issues that certificate, where the key lives, how a read-only
+  container gets it, and what rotates it. That is a piece of work with its own
+  design, not a flag on a connection string, and it does not belong in a
+  change about *roles* — `sslmode=require` without verification would look
+  like progress while authenticating nothing.
+
 - **The OAuth state cookie can be overwritten from a sibling subdomain.**
   `set_state_cookie` scopes to `/api/v1/auth` with `HttpOnly`, `SameSite=Lax`,
   and `Secure`, which is careful about everything except *which host* may
@@ -766,7 +833,20 @@ during an incident.
   35.6s to 15.4s. See the deploy-window table in
   [deploy/README.md](deploy/README.md).
 
-  Still not a soak: this is two cold installs and a handful of restarts, not
+  A third cold install went further, because the least-privilege cutover
+  needed it to: a host with no `/etc/sre-tab`, no secrets, and no volumes,
+  taken through `install.sh`, `create-secrets.sh`, `create-roles.sh`, and
+  `install.sh --start` with every unit on its new credential, then a
+  `downgrade base` and a re-migration through the real migration unit, a
+  backup, a session sweep, a restore reading both credentials from podman
+  secrets, and a `git revert` rollback and re-application. `systemctl
+  --failed` stayed empty throughout. That is the Podman secret plumbing,
+  `Notify=healthy`, and the `After=`/`Requires=` ordering exercised a second
+  time on a third host, and it is the first time either oneshot timer unit has
+  been run against a live systemd install at all — by hand, which tests the
+  job and not the schedule.
+
+  Still not a soak: this is three cold installs and a handful of restarts, not
   weeks of uptime, and the backup timer's catch-up is still unproven above.
 
 - **~20s of the deploy outage happens after `systemctl` returns, and nothing

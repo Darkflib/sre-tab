@@ -45,7 +45,21 @@ EnvironmentFile=/etc/sre-tab/app.env
 # Everything genuinely secret arrives as a podman secret, never inline in this
 # file and never on a command line. DATABASE_URL is a secret in its own right
 # because it carries the database password in the URL.
-Secret=sre-tab-database-url,type=env,target=DATABASE_URL
+#
+# sre-tab-app-database-url, not sre-tab-database-url: this connects as
+# sretab_app, which holds SELECT/INSERT/UPDATE/DELETE on every table and no
+# DDL at all. The superuser credential it used to carry made an
+# application-level SQL injection an arbitrary-command primitive, because
+# `COPY ... TO PROGRAM` is available to a superuser and executes commands
+# under the postmaster. sretab_app is refused it — PostgreSQL gates it behind
+# pg_execute_server_program, which deploy/roles.sql grants to nobody.
+#
+# The secret is written by deploy/scripts/create-roles.sh, which has to have
+# run against the live database before this unit will start; install.sh
+# --start checks for it and says so. sre-tab-database-url is deliberately
+# left in place and unread — it is the rollback path, and deploy/ROLES.md
+# says not to delete it.
+Secret=sre-tab-app-database-url,type=env,target=DATABASE_URL
 Secret=sre-tab-github-client-secret,type=env,target=GITHUB_CLIENT_SECRET
 Secret=sre-tab-session-secret,type=env,target=SESSION_SECRET
 

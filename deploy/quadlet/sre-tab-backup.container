@@ -18,14 +18,32 @@ Volume=/etc/sre-tab/backup.sh:/usr/local/bin/sre-tab-backup:ro
 Exec=/usr/local/bin/sre-tab-backup
 
 Environment=PGHOST=sre-tab-db
-Environment=PGUSER=sretab
+# sretab_readonly, not the superuser. pg_dump needs SELECT and nothing else,
+# and this unit runs unattended every night against a database whose entire
+# contents it is authorised to read — which is precisely the credential worth
+# keeping incapable of writing anything.
+#
+# SELECT on sequences as well as on tables is not optional here, and it is
+# the non-obvious half: a custom-format dump emits a setval() per sequence so
+# that a restore's next INSERT does not collide with the rows it just loaded,
+# and reading a sequence's current value needs SELECT on the sequence itself.
+# A role granted table-SELECT alone makes pg_dump fail outright rather than
+# produce a subtly wrong dump — checked, and the reason deploy/roles.sql
+# grants both.
+Environment=PGUSER=sretab_readonly
 Environment=PGDATABASE=sretab
 Environment=BACKUP_DIR=/backups
 Environment=BACKUP_KEEP_DAYS=14
 # PGPASSWORD from a podman secret rather than the environment file: the
 # backup job is the one place outside the database container that needs the
 # password, and it should not be readable in /etc.
-Secret=sre-tab-postgres-password,type=env,target=PGPASSWORD
+#
+# sre-tab-readonly-password holds a bare password rather than a URL, because
+# that is the shape libpq's PGPASSWORD wants and the shape
+# create-roles.sh mints for this role. sre-tab-postgres-password is left in
+# place and unread by this unit — the database container still consumes it as
+# POSTGRES_PASSWORD, and it is half of the rollback path.
+Secret=sre-tab-readonly-password,type=env,target=PGPASSWORD
 
 ReadOnly=true
 Tmpfs=/tmp:rw,nosuid,nodev,size=64M
