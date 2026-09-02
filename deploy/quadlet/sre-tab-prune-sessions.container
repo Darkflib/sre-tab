@@ -41,8 +41,16 @@ Network=sre-tab.network
 # Same two sources of configuration as sre-tab-migrate.container: the
 # operator's non-secret file, and DATABASE_URL as a podman secret because it
 # carries the database password in the URL.
+#
+# The APPLICATION's credential, not the migration unit's, even though this is
+# the same image and the same EnvironmentFile. `sre-tab sessions prune` is a
+# DELETE against one table — DML, exactly what sretab_app is for — and giving
+# a job that runs unattended on a timer the DDL role's rights would widen the
+# blast radius of the one unit nobody watches. The two share
+# sre-tab-app-database-url, which is why rotating sretab_app's password means
+# restarting sre-tab.service and this unit together.
 EnvironmentFile=/etc/sre-tab/app.env
-Secret=sre-tab-database-url,type=env,target=DATABASE_URL
+Secret=sre-tab-app-database-url,type=env,target=DATABASE_URL
 
 # No `$` anywhere in this line — see the note in sre-tab-migrate.container
 # about quadlet emitting Exec= into ExecStart=, where systemd would expand it

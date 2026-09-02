@@ -217,6 +217,37 @@ secrets, migrations on deploy, backup and a **tested** restore, the
 client-address chain, and the failure modes that have actually bitten. Read
 it before the first deploy rather than during it.
 
+<a id="installing-a-version"></a>
+### Installing a version
+
+Published builds live at `ghcr.io/darkflib/sre-tab`, under four kinds of tag:
+
+| Tag | Points at | Moves |
+| --- | --- | --- |
+| `1.1.0` | the release of that exact version | never |
+| `1.1` | the newest patch of the 1.1 line | on each 1.1.x release |
+| `latest` | the tip of `main` | on every merge |
+| `sha-<commit>` | one commit's build | never |
+
+`1.1.0` is the one to ask for. `1.1` is a convenience for anyone who wants
+patch releases without watching for them, and it is a *moving* pointer: what
+it resolves to changes underneath you, so a restart can change the version
+you are running. A pre-release never moves it — `v1.1.0-rc1` publishes
+`1.1.0-rc1` and nothing else, because someone asking for the stable minor
+line has not asked to be given a release candidate.
+
+Every release also has a [GitHub
+Release](https://github.com/Darkflib/sre-tab/releases) carrying that
+version's changelog section and its SPDX SBOM.
+
+**The reference deployment pins a digest instead, and that is deliberate.**
+The Quadlets under `deploy/` name `sre-tab:sha-<commit>@sha256:…`, so an
+upgrade is a reviewed commit rather than a restart, and podman refuses
+anything that does not hash to the pinned digest.
+[deploy/scripts/promote.sh](deploy/scripts/promote.sh) is what writes those
+pins, and it refuses to write one cosign cannot verify. A version tag is a
+name for a build; a digest *is* the build.
+
 ## Known gaps
 
 What v1 ships without, and what it ships without having proved. The second
@@ -237,31 +268,41 @@ not been demonstrated, which is a different thing from being tested.
   surveyed redirects at all. The refusal branches — downgrade to `http`, a
   private or link-local destination, a `file:` URL, a loop, a `Location`-less
   `302` — are the ones with real-world provenance.
-- **Frontend coverage is narrow, though no longer absent.** The Vitest suite
-  under `frontend/` is gated in CI and covers the theme layer thoroughly —
+- **Frontend coverage stops at the components.** The Vitest suite under
+  `frontend/` is gated in CI and covers the theme layer thoroughly —
   resolution and its storage fallbacks, the anti-flash script executed in a
   VM context, and WCAG contrast recomputed from `tokens.css` for both themes
-  — and, since the filter work, the feed's filter model and volume signals.
-  What remains uncovered is everything that needs a DOM and a mocked
-  `fetch`: `src/api/client.ts`, `src/data/usePagedResource.ts`, and every
-  component and route. That is the expensive half, and it is unstarted.
+  — the feed's filter model and volume signals, and now the fetch layer
+  (`src/api/client.ts`) and the pagination hook's effects
+  (`src/data/usePagedResource.ts`), the last two under a per-file
+  `happy-dom` environment. What remains uncovered is `src/components/` and
+  `src/routes/`: nothing renders a screen and asserts what a user would see.
 - **Backups sit on the same host as the database.** That is a backup, not
   disaster recovery. The `.sha256` sidecars exist so a copy taken off-host
   can be verified at the far end.
-- **The Quadlet units have had one Linux pass, not a long soak.** Unit
+- **The Quadlet units have had three cold installs, not a long soak.** Unit
   generation is machine-checked in CI with `podman-system-generator --dryrun`,
-  which catches a malformed key and nothing about runtime behaviour.
-- **Five reviewed security findings are open by decision, not by oversight.**
-  They are held open by the shape of this deployment — one instance, three
-  allow-listed operators, a catalogue only the CLI can add to — and the
-  assumption behind each is written down next to it in
-  [ROADMAP.md](ROADMAP.md#security-findings-this-deployment-absorbs). The one
-  that does not depend on the operator count is that the application connects
-  to PostgreSQL as a superuser, which would turn any future SQL injection
-  into command execution inside the database container — bounded there by
-  that unit's hardening, and not the same thing as the host. Read that
-  section before adding an operator, a second instance, or a route that
+  which catches a malformed key and nothing about runtime behaviour; the rest
+  — the ordering, `Notify=healthy`, the podman secret plumbing, and both
+  timer-driven jobs — has been exercised by hand on Debian 13 hosts. What no
+  run has yet covered is the timers firing on their own, or catching up after
+  the host has been off overnight.
+- **Two of the five reviewed security findings are open by decision, not by
+  oversight.** They are held open by the shape of this deployment — one
+  instance, three allow-listed operators, a catalogue only the CLI can add to
+  — and the assumption behind each is written down next to it in
+  [ROADMAP.md](ROADMAP.md#security-findings-this-deployment-absorbs). Read
+  that section before adding an operator, a second instance, or a route that
   accepts a feed URL.
+
+  The one finding that did *not* depend on the operator count is now closed:
+  the application used to connect to PostgreSQL as the cluster superuser,
+  which would have turned any future SQL injection into command execution
+  inside the database container. Every unit but the database now connects as
+  one of three non-superuser roles — DML for the application, DDL for the
+  migration unit, read-only for the backup — and none of them can
+  `COPY … TO PROGRAM`. [deploy/ROLES.md](deploy/ROLES.md) is the whole
+  picture.
 
 [ROADMAP.md](ROADMAP.md) is the full list of what was deliberately deferred
 and why.
