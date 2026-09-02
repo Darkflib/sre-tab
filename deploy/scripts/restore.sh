@@ -557,9 +557,36 @@ if [ "$use_systemd" = true ]; then
     echo "Starting the application..."
     systemctl start sre-tab-migrate.service
     systemctl start sre-tab.service
-    echo "Waiting for the health check..."
+
+    # Which port the front door is on, asked of the front door.
+    #
+    # This used to be the literal 8080, which is only the default — a host
+    # that has moved it with SRE_TAB_WEB_PORT would poll a port nothing
+    # serves and end a successful restore by declaring the application
+    # unhealthy. Caddy is untouched by a restore and is still running here,
+    # so it can simply be asked.
+    #
+    # Asked of the container rather than read out of /etc/sre-tab/install.env
+    # on purpose: that file is the *next* install's intention, and this loop
+    # has to poll the port that is published *now*. An operator who edited it
+    # and has not re-run the installer would otherwise send this check to the
+    # wrong port at the one moment it is being relied on.
+    web_port=$("$engine" port sre-tab-web 8080/tcp 2>/dev/null \
+        | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -1)
+    if [ -z "$web_port" ]; then
+        # Not silently defaulted. A missing answer here means the front door
+        # is not running, which is worth saying out loud before spending two
+        # minutes discovering it against a guess.
+        echo "warning: could not ask sre-tab-web which port it publishes;" >&2
+        echo "         assuming the default 8080. If sre-tab-web.service is" >&2
+        echo "         down, the check below will fail for that reason." >&2
+        web_port=8080
+    fi
+
+    echo "Waiting for the health check on 127.0.0.1:$web_port..."
     attempt=0
-    until curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/healthz >/dev/null; do
+    until curl --fail --silent --show-error \
+        "http://127.0.0.1:$web_port/api/v1/healthz" >/dev/null; do
         attempt=$((attempt + 1))
         if [ "$attempt" -ge 30 ]; then
             echo "error: the application did not become healthy after the restore" >&2
