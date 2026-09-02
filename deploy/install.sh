@@ -7,17 +7,19 @@ usage() {
 Usage: deploy/install.sh [--start]
 
 Install the Developer News Dashboard Quadlets, the maintenance timers, the
-Caddy configuration, and the backup script.
+alert template, the Caddy configuration, and the helper scripts.
 
   --start  Enable the timers and start the stack. Secrets must already
            exist (deploy/scripts/create-secrets.sh) and /etc/sre-tab/app.env
            must have been edited.
 
-The installer is idempotent. Tracked files — Quadlets, the timers, the
-Caddyfile, and backup.sh — are replaced on every run; keep intentional
-changes in the repository rather than editing the installed copies.
-/etc/sre-tab/app.env is the exception: it is seeded once from
-deploy/app.env.example and never overwritten, because it is the operator's.
+The installer is idempotent. Tracked files — Quadlets, the timers and the
+alert template, the Caddyfile, backup.sh, and alert-dispatch.sh — are
+replaced on every run; keep intentional changes in the repository rather
+than editing the installed copies. Two files are the operator's and are
+never overwritten: /etc/sre-tab/app.env, seeded once from
+deploy/app.env.example, and /etc/sre-tab/alert.sh, which is never written
+at all — alert.sh.example is installed beside it to be copied and edited.
 EOF
 }
 
@@ -76,6 +78,13 @@ install -d -m 0700 -o 999 -g 999 "$backup_dir" 2>/dev/null \
 
 install -m 0644 "$script_dir/Caddyfile" "$config_dir/Caddyfile"
 install -m 0755 "$script_dir/scripts/backup.sh" "$config_dir/backup.sh"
+# Run by sre-tab-alert@.service as root. 0755 rather than 0700 only because
+# an operator wants to be able to run it by hand to test the alert path.
+install -m 0755 "$script_dir/scripts/alert-dispatch.sh" "$config_dir/alert-dispatch.sh"
+# NOT executable, and not named alert.sh: this is the template to copy, and
+# a mode bit is the difference between a worked example and a transport that
+# tries to mail ops@example.com.
+install -m 0644 "$script_dir/scripts/alert.sh.example" "$config_dir/alert.sh.example"
 install -m 0755 "$script_dir/scripts/backup-offsite.sh" "$config_dir/backup-offsite.sh"
 # Not run on this host. Staged here so an operator setting up the far end has
 # it to copy across, and so an upgrade updates the copy they will send next.
@@ -87,8 +96,11 @@ install -m 0644 "$script_dir/quadlet/"*.network "$quadlet_dir/"
 install -m 0644 "$script_dir/quadlet/"*.volume "$quadlet_dir/"
 install -m 0644 "$script_dir/quadlet/"*.container "$quadlet_dir/"
 install -m 0644 "$script_dir/systemd/"*.timer "$systemd_dir/"
+# The alert template, which is a .service and would have been missed by the
+# .timer glob above — a template that is never installed makes every
+# OnFailure= pointing at it a no-op, and the failure it would have reported
+# is the one this repository has no other way of reporting.
 install -m 0644 "$script_dir/systemd/"*.service "$systemd_dir/"
-
 # Drop-ins for units Quadlet generates. systemd merges these from
 # /etc/systemd/system/<unit>.d/ for a generated unit exactly as for an ordinary
 # one, which is how sre-tab-backup.service gains its OnSuccess= without
@@ -181,10 +193,62 @@ if [ "$start_services" = true ]; then
         fi
     done
 
+    # The three least-privilege role secrets, checked separately because they
+    # come from a different script and because a host can legitimately have
+    # the four above and none of these — that is every host that has not yet
+    # been cut over.
+    #
+    # sre-tab-database-url stays in the list above even though only the
+    # rollback reads it now. It is the rollback: reverting the cutover commit
+    # points three units back at it, and a host that has quietly lost it
+    # cannot take that path.
+    #
+    # This check earns its place on a first install, where the ordering is
+    # genuinely counter-intuitive. create-roles.sh talks to the running
+    # database, so the roles cannot exist before the database does, and the
+    # database is started by this script — so a fresh host has to start
+    # sre-tab-db.service on its own, install the roles, and only then run
+    # --start. Without this the sequence fails as three units refusing to
+    # start with "no such secret", after the timers have been enabled, which
+    # says what is missing but not what to do about it.
+    for secret in sre-tab-migrate-database-url sre-tab-app-database-url \
+                  sre-tab-readonly-password; do
+        if ! podman secret exists "$secret" 2>/dev/null; then
+            cat >&2 <<EOF
+error: podman secret '$secret' does not exist.
+       The units connect as the three least-privilege roles, so they need
+       the secrets deploy/scripts/create-roles.sh writes. It installs them
+       against the running database, which on a first deployment has to be
+       started on its own first:
+
+           sudo systemctl start sre-tab-db.service
+           sudo deploy/scripts/create-roles.sh
+           sudo deploy/install.sh --start
+
+       deploy/ROLES.md has the whole picture, including the rollback.
+EOF
+            exit 1
+        fi
+    done
+
     # Quadlet services are transient generated units and cannot be enabled
     # with `systemctl enable`; their [Install] sections are applied by the
     # generator at boot and on daemon-reload, so starting them explicitly is
     # enough. The timers are native units and are enabled normally.
+    #
+    # The glob is *.timer and not *.service, which is what keeps
+    # sre-tab-alert@.service out of this loop. A template does not want
+    # enabling: OnFailure= instantiates it on demand, and it has no [Install]
+    # section to enable anyway.
+    #
+    # Widening the glob would not have failed loudly, which is why it is
+    # worth a comment. Measured on Debian 13 with systemd 257:
+    # `systemctl enable sre-tab-alert@.service` prints "the unit files have
+    # no installation config ... not meant to be enabled" and then EXITS
+    # ZERO. Under `set -e` that reads as success, so the loop would have
+    # gone on reporting a clean install while enabling nothing — a green
+    # check that checked nothing, in a loop whose entire purpose is to make
+    # sure a unit that was installed actually runs.
     #
     # Enumerated from deploy/systemd rather than listed by hand: the units are
     # installed by a glob a few lines up, so a timer added to the repository
@@ -234,4 +298,36 @@ fi
 echo "Developer News Dashboard deployment files installed"
 if [ "$start_services" = false ]; then
     echo "Run $0 --start to enable the timers and start the stack"
+fi
+
+# The hourly source health check is installed and, with --start, enabled —
+# and until this file exists it has nowhere to send anything. Said here, at
+# install time, because the alternative is finding out at the moment an
+# alert was supposed to arrive and did not, which is the exact failure the
+# whole sre-tab-status/sre-tab-alert pair exists to remove.
+#
+# A warning rather than a refusal: a first install cannot be expected to
+# have a transport written yet, and refusing would make the alert path a
+# precondition for the deployment rather than part of it. It is not silent
+# either way — alert-dispatch.sh exits non-zero when this file is missing,
+# so an alert with nowhere to go lands in `systemctl --failed` with the
+# report already in the journal.
+if [ ! -x "$config_dir/alert.sh" ]; then
+    cat >&2 <<WARNING
+
+warning: $config_dir/alert.sh does not exist, or is not executable.
+         sre-tab-status.timer checks hourly for a failing source and fires
+         sre-tab-alert@sre-tab-status.service when one is found. That unit
+         hands the report to $config_dir/alert.sh, and without it the alert
+         reaches this host's journal and \`systemctl --failed\` and no
+         further.
+
+           cp $config_dir/alert.sh.example $config_dir/alert.sh
+           \$EDITOR $config_dir/alert.sh    # mail via msmtp, or a webhook
+           chmod 0755 $config_dir/alert.sh
+
+         Then prove it, rather than assuming it:
+
+           systemctl start sre-tab-alert@sre-tab-status.service
+WARNING
 fi

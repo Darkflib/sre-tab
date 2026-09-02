@@ -3,9 +3,15 @@
 # Create the podman secrets the deployment needs.
 #
 #   sre-tab-postgres-password      POSTGRES_PASSWORD for the database
-#   sre-tab-database-url           DATABASE_URL for the app and migrations
+#   sre-tab-database-url           the superuser's DATABASE_URL
 #   sre-tab-session-secret         SESSION_SECRET for CSRF/HMAC signing
 #   sre-tab-github-client-secret   the OAuth app's client secret
+#
+# The second of those is read by no unit any more -- the application and the
+# migration unit connect as sretab_app and sretab_migrate, whose secrets
+# create-roles.sh writes. It is still written here and must not be deleted:
+# reverting the cutover points three units straight back at it, so leaving it
+# in place IS the rollback. See deploy/ROLES.md.
 #
 # The database password appears in two of those, and a mismatch between them
 # is the obvious way to spend an afternoon. This script generates it once and

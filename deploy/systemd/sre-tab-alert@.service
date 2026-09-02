@@ -1,0 +1,63 @@
+[Unit]
+# %i is the full name of the unit that failed — sre-tab-status.service —
+# because sre-tab-status.container instantiates this template with %n rather
+# than %N. That makes %i something `journalctl -u` and `systemctl show`
+# take unmodified, which is the whole reason for the choice.
+Description=Alert an operator that %i failed
+Documentation=file:/etc/sre-tab/alert.sh.example
+
+# Deliberately NO OnFailure= of its own. This unit is the end of the chain;
+# pointing it back at the alert template would turn one broken transport
+# into a loop, and a loop is how an alert path takes a host down instead of
+# reporting on one. Its own failure surfaces in `systemctl --failed`, which
+# is where the absent-alert.sh case is designed to land.
+
+# No start rate limit. systemd's default — five starts in ten seconds, then
+# the unit refuses to start at all until it is reset — would silence the
+# alert path precisely when it is firing most, which is the failure mode
+# this unit is built to avoid. An hourly check cannot approach the default
+# anyway; removing it costs nothing and closes the case where something else
+# instantiates this template in a tight loop.
+#
+# In [Unit], not [Service]: systemd still parses the old [Service] spelling
+# for compatibility and logs a warning about it, and a warning at
+# daemon-reload is exactly the sort of thing nobody reads.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+
+# This gathers context and hands it to the operator's own transport. The
+# repository ships no transport, on purpose: reaching a person is a property
+# of the host, not of this application, and mail, a webhook, a pager, and an
+# existing monitoring agent are all correct answers. Adding any of them here
+# would add a dependency to a repository whose dependency set is a
+# supply-chain decision.
+#
+# /etc/sre-tab/alert.sh is the seam. install.sh never writes it — it ships
+# alert.sh.example beside it with two worked implementations and warns when
+# the real file is absent — and alert-dispatch.sh exits non-zero when it is
+# missing, so an unconfigured alert path lands in `systemctl --failed`
+# rather than doing nothing quietly. An alerting path that fails silently is
+# the exact defect this whole unit exists to remove, so it fails loudly.
+ExecStart=/etc/sre-tab/alert-dispatch.sh %i
+
+# Two minutes. A transport that has not reached anybody by then is not going
+# to, and a hung curl holding this unit open would keep the next hour's
+# alert from starting.
+TimeoutStartSec=2m
+
+# No sandboxing directives, deliberately. The script this runs is the
+# operator's, and a transport plausibly needs the network, /etc for its own
+# credentials, and a resolver — msmtp and curl both do. Locking it down here
+# breaks implementations this file cannot see, which is a worse failure than
+# the one it would prevent, given that anything able to write
+# /etc/sre-tab/alert.sh is already root.
+#
+# PrivateTmp=true was here and was removed after it bit on the reference
+# host: it gives the unit its own /tmp AND its own /var/tmp, so a transport
+# that spools or keeps a deduplication marker under either writes into a
+# namespace that is discarded the moment the unit exits — silently, with a
+# zero exit status. That is precisely the shape of failure this whole chain
+# exists to remove, and it was found by watching a test transport's output
+# fail to appear rather than by reading the directive's manual page.

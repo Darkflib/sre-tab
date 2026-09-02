@@ -23,10 +23,7 @@ that.
   - The build path's dependency on `codeload.github.com` — vendor the
     actions, or replace `download-syft` with a registry pull.
 - [Security findings this deployment absorbs](#security-findings-this-deployment-absorbs)
-  - Cut the deployment over to the three least-privilege database roles —
-    the roles exist and are verified; nothing uses them yet.
   - The OAuth state cookie can be overwritten from a sibling subdomain.
-  - `upsert_user` has no conflict handling for a concurrent first sign-in.
 - [API surface](#api-surface)
   - Serve `/api/v1/openapi.json` from the committed file in
     `deploy/Caddyfile`, not from the running application.
@@ -36,19 +33,19 @@ that.
   - Rate limiting keyed on a trusted client address — fragile pending a
     shared store.
 - [Operations](#operations)
-  - An `OnFailure=` alert unit.
-  - Release hygiene: no Release against `v1.0.0`, and no versioned image tag
-    a self-hoster can pull.
-  - Frontend coverage for `src/api/client.ts`, and for the parts of
-    `usePagedResource` that need a DOM — its decision logic is covered now,
-    its effects are not.
+  - Release hygiene: the machinery is in place and has never been run. No
+    `v1.1.0` tag has been pushed, so no Release object and no versioned image
+    tag exist yet.
+  - Frontend coverage for the components and routes — `src/api/client.ts`
+    and `usePagedResource`'s effects are covered now; nothing under
+    `src/components/` or `src/routes/` is.
 - [Things that are true but unproven](#things-that-are-true-but-unproven)
   - The off-host copier against AWS proper rather than MinIO, and its ssh
     transport across a real network rather than a second sshd on one host.
   - The backup timer's `Persistent=true` catch-up, demonstrated rather than
     assumed.
   - The fetcher's accept-a-redirect branch, against a live server.
-  - Quadlet runtime under a real soak — still just two cold installs and a
+  - Quadlet runtime under a real soak — still just three cold installs and a
     handful of restarts.
   - The ~20s of deploy outage after `systemctl` returns — cause still
     unknown.
@@ -175,16 +172,30 @@ And the assumption each one rests on is invisible from the code: nothing in
 `app/` says "this is fine because there are three users". **This is the
 section to re-read before adding a fourth operator, a second instance, or a
 route that lets a user add a source** — most of what follows changes
-severity at that moment, and the first item does not depend on the operator
-count at all.
+severity at that moment.
 
-- **The application connects to PostgreSQL as a superuser.** The one item
-  here whose severity the operator count does not cap. `sre-tab-db.container`
-  sets `POSTGRES_USER=sretab`, which the official image creates as the
-  cluster superuser, and the application, the migration unit, and the backup
-  all share the single `DATABASE_URL` secret. An application-level SQL
-  injection therefore does not stop at reading the tables: `COPY … PROGRAM`
-  is available to a superuser, and it executes commands.
+That caveat used to carry a second half: one item here did not depend on the
+operator count at all, and so was not really absorbed by the deployment's
+shape so much as parked. It is the first bullet below, and it is now closed —
+which is why the sentence is shorter than it was. Everything that remains is
+genuinely held by the three-operator assumption.
+
+- **The application connected to PostgreSQL as a superuser** — **landed, and
+  it was the one item here whose severity the operator count did not cap.**
+  `sre-tab-db.container` sets `POSTGRES_USER=sretab`, which the official image
+  creates as the cluster superuser, and the application, the migration unit,
+  and the backup all shared that single `DATABASE_URL` secret. An
+  application-level SQL injection therefore did not stop at reading the
+  tables: `COPY … PROGRAM` is available to a superuser, and it executes
+  commands.
+
+  Every unit now connects as one of three non-superuser roles — the
+  application and the session sweep as `sretab_app`, the migration unit as
+  `sretab_migrate`, the backup as `sretab_readonly` — and only
+  `sre-tab-db.container` still carries a superuser credential, which it needs
+  to own the cluster. The rest of this entry is the reasoning, which is worth
+  keeping: it is what a future reviewer needs in order to tell whether a
+  change reopens this.
 
   **Where those commands run is the part worth stating precisely, because
   the first draft of this entry got it wrong and said "the database host".**
@@ -210,21 +221,22 @@ count at all.
   severity multiplier on a bug that does not exist yet rather than a live
   hole.
 
-  Closing it means at least three roles rather than one: DDL for
+  Closing it meant at least three roles rather than one: DDL for
   `alembic upgrade`, DML for the application, and read for the dump. That
-  touches the migration unit, `restore.sh`'s ownership handling, and
-  `smoke.sh`, which is why it is filed rather than fixed, and why it should
-  be done deliberately rather than squeezed into an unrelated change.
+  touched the migration unit, `restore.sh`'s ownership handling, and
+  `smoke.sh`, which is why it was filed rather than fixed, and why it was done
+  deliberately rather than squeezed into an unrelated change.
 
-  **The roles now exist; nothing uses them yet, deliberately.**
+  **The roles landed first, and nothing used them for a while, deliberately.**
   `deploy/roles.sql` defines `sretab_migrate` (DDL), `sretab_app` (DML),
   and `sretab_readonly` (the dump), all `NOSUPERUSER NOCREATEDB
   NOCREATEROLE NOREPLICATION NOBYPASSRLS`;
-  `deploy/scripts/create-roles.sh` installs them and is deliberately *not*
-  called by `install.sh`. No `.container` file and no `DATABASE_URL`
-  changed, so the running deployment is exactly as it was. The cutover is
-  its own iteration, and `deploy/ROLES.md` carries the procedure, the full
-  list of consumers, and the rollback.
+  `deploy/scripts/create-roles.sh` installs them and is still deliberately
+  *not* called by `install.sh`. Splitting "create the roles" from "use them"
+  is what makes the cutover a single commit touching only
+  `deploy/quadlet/`, and therefore what makes the rollback one `git revert`.
+  `deploy/ROLES.md` carries the reasoning, the full list of consumers, the
+  verification record, and that rollback.
 
   Verified against a real `postgres:18-trixie` rather than reasoned about,
   because the whole entry turns on one claim. `COPY … TO PROGRAM` is
@@ -241,15 +253,53 @@ count at all.
   `alembic upgrade` yields tables the application cannot read, with
   nothing to say why.
 
-  What the cutover still needs a decision on: `restore.sh` does
-  `DROP`/`CREATE DATABASE`, which is database-level admin that none of the
-  three roles holds, and `smoke.sh` exercises only the superuser today, so
-  it would keep passing through a broken or silently reverted cutover.
-  Both are named in ROLES.md rather than guessed at.
+  **Both sub-decisions the cutover was waiting on closed first.**
+  `restore.sh` does `DROP`/`CREATE DATABASE`, which is database-level admin
+  none of the three roles holds; it keeps the superuser credential for exactly
+  that step and runs `pg_restore` as `sretab_migrate`, rather than granting
+  the DDL role `CREATEDB` and widening what the migration unit carries
+  unattended on every deploy. And `smoke.sh`, which exercised only the
+  superuser, now installs the roles, runs migrate, app, session sweep, and
+  backup as them, and asserts the refusals by their error text —
+  `COPY … TO PROGRAM` for all three, `CREATE TABLE` for `sretab_app`,
+  `INSERT` for `sretab_readonly` — so widening a role by accident fails CI
+  instead of leaving ROLES.md quietly wrong.
+
+  **Then the units moved, and one claim about that preparation turned out to
+  be wrong.** `smoke.sh` running as the three roles was taken to mean a
+  reverted cutover would fail CI. It would not have: the harness invents its
+  own connection strings — it has no podman secrets, and under
+  `CONTAINER_ENGINE=docker` cannot have any — and never opened a file under
+  `deploy/quadlet`, so every assertion in it would have gone on passing with
+  all four units pointed back at the superuser. That is the same shape as the
+  six green checks this repository has already shipped. It now reads the unit
+  files first and refuses to run if they name anything other than the
+  credentials it is about to use, watched failing under four separate
+  mutations. `install.sh --start` had the mirror-image problem — it checked
+  for four secrets that predate the cutover and none of the three the units
+  now need — and now checks all seven.
+
+  The privilege boundary is demonstrated where it matters rather than only in
+  a harness: from inside the running application container on a real Podman
+  host, `current_user` is `sretab_app`, `is_superuser` is `off`, and
+  `CREATE TABLE`, `COPY … TO PROGRAM`, and `TRUNCATE` are all refused while
+  the `DELETE` the application genuinely needs succeeds. The backup produces a
+  restorable dump as `sretab_readonly` with sequences intact, the session
+  sweep still deletes, a migration still creates tables the application can
+  use with no manual `GRANT`, and the rollback has been executed rather than
+  described. `deploy/ROLES.md` records each.
 
   The production-readiness review of 1 September 2026 put the cutover first
-  among everything it found, on the ground this entry opens with: it is the
-  only item in this section whose severity three operators do not cap.
+  among everything it found, on the ground this entry opened with: it was the
+  only item in this section whose severity three operators did not cap.
+
+  **One consumer is outstanding, and it is outstanding by sequencing rather
+  than by decision.** `deploy/quadlet/sre-tab-status.container` — an hourly
+  `sre-tab status` check — arrives with the status-alerting branch and names
+  `sre-tab-database-url`. `sre-tab status` is read-only, so it belongs on
+  `sretab_readonly`; whichever of the two branches merges second owns the
+  change, and `deploy/ROLES.md`'s consumer table carries the row so it cannot
+  be discovered in production instead.
 - **The OAuth state cookie can be overwritten from a sibling subdomain.**
   `set_state_cookie` scopes to `/api/v1/auth` with `HttpOnly`, `SameSite=Lax`,
   and `Secure`, which is careful about everything except *which host* may
@@ -336,6 +386,45 @@ count at all.
   place to put the equivalent is already built. Negligible at three
   operators — tens of rows a year — which is the only reason it is not
   done.
+- **`upsert_user` is select-then-insert with no conflict handling** —
+  **landed.** The lookup, the insert, and the profile refresh are one
+  `ON CONFLICT (github_id) DO UPDATE ... RETURNING` in
+  [app/auth/users.py](app/auth/users.py), on a new `upsert_returning` that
+  sits beside `insert_ignore` in
+  [app/services/upsert.py](app/services/upsert.py) and keeps the same
+  two-dialect split. There is no window between reading and writing because
+  there is no second statement, and the create path and the update path
+  stopped being two branches.
+
+  **The entry below names the wrong fix, and why it is wrong is the part
+  worth keeping.** It proposed insert-ignore followed by a select on
+  `github_id`, reasoning that the loser would read the winner's row rather
+  than raise. Measured against PostgreSQL 18 — one connection holding an
+  uncommitted insert, another signing in — that shape *does* work: DO
+  NOTHING's speculative insertion waits on the conflicting transaction, and
+  the follow-up `SELECT` takes a fresh snapshot that sees the committed
+  row. So the objection is not the one that first suggests itself, which is
+  that DO NOTHING takes no row lock and leaves the loser holding `None`.
+  It is quieter than that: the pairing is correct only because the
+  connection is at READ COMMITTED, which `create_db_engine` does not set
+  and no test asserts, and under REPEATABLE READ the same two statements
+  raise a serialization failure. DO UPDATE returns the surviving row from
+  the statement that resolved the conflict, so nothing about it turns on a
+  second snapshot, and it carries no `None` branch that can never be
+  reached and therefore never be tested.
+
+  Two things the work turned up. `users.updated_at`'s `onupdate=func.now()`
+  is an ORM-flush hook and does not reach a hand-written DO UPDATE set
+  clause, so the timestamp had to be set by hand or it would have frozen at
+  its insert value with nothing to say so. And the race needed a real
+  server to test at all: `tests/postgres/test_signin_race.py` holds an
+  uncommitted insert open on one connection while a thread signs in on
+  another, asserts the block against `pg_stat_activity` rather than against
+  a sleep, and was made to fail against the restored old body —
+  `UniqueViolation` on `uq_users_github_id` — before it was believed.
+
+  The entry below stands as written except for the fix it proposes.
+
 - **`upsert_user` is select-then-insert with no conflict handling.** Two
   concurrent first sign-ins for the same GitHub ID both find no row and
   both insert. `users.github_id` is `unique=True`, so the loser gets an
@@ -468,32 +557,62 @@ prerequisite for going past it.
   equivalent is a subcommand of its own application, and sre-tab had no CLI
   at the time. It has one now, and `sre-tab status` already exits non-zero
   when an enabled source is failing, so the alert path has something to call.
+- **Off-host backups.** `/srv/sre-tab/backups` sits on the same host as the
+  database. That is a backup, not disaster recovery. The integrity half is
+  already built — `backup.sh` writes a `.sha256` sidecar beside every dump,
+  under the same mask — so what is missing is a copy to another host and a
+  verify at the far end, and not a backup format, a checksum scheme, or a
+  restore procedure. All three of those exist and `smoke.sh` runs them on
+  every push.
+- **`OnFailure=` alert unit** — **landed, and it needs one file from the
+  operator.** `sre-tab-status.timer` runs `sre-tab status --failures-over 3`
+  hourly at :48; `sre-tab-status.service` carries
+  `OnFailure=sre-tab-alert@%n.service`; that template gathers the failed
+  unit's journal and hands it to `/etc/sre-tab/alert.sh`, which this
+  repository deliberately does not ship. No new dependency: reaching a person
+  is a property of the host, so `alert.sh.example` carries two worked
+  transports — msmtp and a `curl` webhook — and the operator copies one.
 
-  The shape that needs no new dependency: a timer running `sre-tab status`,
-  and `OnFailure=` on that service pointing at whatever the host already
-  uses to reach a person. What it buys is the part worth stating, because it
-  is invisible from either piece on its own — a failing source is currently
-  visible only if somebody runs the CLI. The readiness probe knows and
-  deliberately does not say: `app/scheduler/service.py` returns `ok=True`
-  with the failure count in the detail string, because one broken feed must
-  not take the instance out of rotation. Readiness and alerting want
-  opposite answers to the same question, and only one of them is being
+  What it buys was invisible from either piece on its own. A failing source
+  was visible only if somebody ran the CLI: the readiness probe knows and
+  deliberately does not say, because `app/scheduler/service.py` returns
+  `ok=True` with the failure count in the detail string so that one broken
+  feed cannot take the instance out of rotation. Readiness and alerting want
+  opposite answers to the same question, and only one of them was being
   asked.
-- **Nothing here can be installed by version.** `v1.0.0` is a git tag and
-  nothing more: no Release object against it, so the tag carries no notes
-  and none of the artefacts the build already produces, the SBOM among them.
-  `CHANGELOG.md` has accumulated an `[Unreleased]` section
-  substantially larger than the release it sits above. And the registry
-  holds only `sha-<commit>` tags, because the publish job runs on pushes to
-  `main` and on nothing else, so the only path to a known-good deployment is
-  `promote.sh` run from a checkout of this repository. That is exactly right
-  for the reference host and useless to anyone else: there is no version to
-  ask for.
+- **Nothing here can be installed by version** — **the machinery has landed;
+  nothing has been released with it.** The original entry is worth keeping in
+  full, because half of it is still true.
 
-  What closes it is one iteration rather than one change — cut 1.1.0, create
-  the Release with notes and the SBOM attached, and add a tag-triggered
-  publish that pushes `:1.1.0` and `:1.1` alongside the digest. The
-  digest-pinned promotion stays exactly as it is, for the reason
+  As written: `v1.0.0` is a git tag and nothing more — no Release object
+  against it, so the tag carries no notes and none of the artefacts the build
+  already produces, the SBOM among them. `CHANGELOG.md` has accumulated an
+  `[Unreleased]` section substantially larger than the release it sits above.
+  And the registry holds only `sha-<commit>` tags, because the publish job
+  runs on pushes to `main` and on nothing else, so the only path to a
+  known-good deployment is `promote.sh` run from a checkout of this
+  repository. That is exactly right for the reference host and useless to
+  anyone else: there is no version to ask for.
+
+  What has changed is the last part. `ci.yml` now triggers on a `v*` tag
+  through the identical `needs:` chain, and a tag build publishes `:1.1.0`
+  and `:1.1` alongside `sha-<commit>`, creates the Release from that
+  version's `CHANGELOG.md` section, and attaches the SBOM. A tag whose shape
+  is wrong, or whose version the changelog does not describe, fails the job
+  before anything is pushed — `.github/scripts/release-metadata.py`, exercised
+  through its refusals by `tests/test_release_metadata.py`. A tag build does
+  not move `:latest`, and a pre-release does not move the floating `:1.1`.
+
+  **What has not changed is that none of it has run.** No `v1.1.0` tag has
+  been pushed, so there is still no Release object anywhere in this
+  repository, still no versioned image in the registry, and still nothing
+  a self-hoster can pull by version. The path is built and untravelled: the
+  first tag is the demonstration, and until it is pushed everything above is
+  a claim about code that has only ever been run on synthetic inputs. Cutting
+  1.1.0 is deliberately held until the rest of the production-readiness work
+  has landed, so that the first release is worth being the first release.
+
+  The digest-pinned promotion stays exactly as it is, for the reason
   [Supply-chain hygiene](#supply-chain-hygiene) gives: a moving tag decides
   the running version by whoever pushed last, which is the property that
   entry exists to have removed. A floating `:1.1` is a convenience for
@@ -541,10 +660,57 @@ prerequisite for going past it.
   is marked `it.fails` with the behaviour we want, so it records the gap
   without pinning the defect as correct and errors the day someone closes it.
 
-  `usePagedResource` and `src/api/client.ts` are the expensive half and are
-  still untested: hooks and `fetch` mean a DOM environment and request
-  mocking, which is real setup and probably a dependency or two. Still worth
-  doing, and still not the thing to pick up first.
+  `usePagedResource` and `src/api/client.ts` — the expensive half — have
+  since landed as well, at a cost of one devDependency rather than the two
+  or three this entry budgeted for. 65 tests, taking the suite to 458, and
+  mutation-tested on the same standard: 45 behavioural mutations, 39 caught.
+
+  What made it cheap was declining two of the three obvious dependencies.
+  `happy-dom` (seven packages, against jsdom's tree) is declared per-file
+  with a `// @vitest-environment happy-dom` docblock, so the austerity that
+  found the contrast and `filterKey` defects still holds everywhere else —
+  the rest of the suite runs with no DOM and fails loudly when it touches a
+  global it did not install. `msw` was not needed because `client.ts` goes
+  through openapi-fetch, whose seam is one injectable function: a `vi.fn()`
+  over `globalThis.fetch` reaches everything a service worker would.
+  `@testing-library/react` was not needed because React 19 exports `act`
+  itself, so mounting a hook on `createRoot` is thirty lines in the test
+  file. Trying that before asking for the dependency was the whole of the
+  saving.
+
+  One thing the tests found rather than confirmed: `readCookie` ends in
+  `decodeURIComponent`, which throws on a value containing a stray `%`, and
+  the throw escapes the request middleware. `guard` in `endpoints.ts` then
+  reports it as `ApiError(0, 'Could not reach the server.')` — so a
+  malformed CSRF cookie makes every write in the app fail as an offline
+  error, before any request is sent. The server never writes such a value,
+  but the cookie is not `HttpOnly` by design and has no `__Host-` prefix, so
+  the sibling-subdomain write recorded above for the OAuth state cookie
+  reaches this too. Held with two `it.fails` markers rather than fixed here,
+  on the same reasoning as the comma-in-a-slug case: the fix is a change to
+  `client.ts`, and this was a testing change.
+
+  A second thing worth knowing before someone reads the mutation score as a
+  gap. Six mutations survived and none is a missing test. Two are equivalent
+  mutants — merging rather than replacing on the initial page, and clearing
+  `error` on a success that can only follow a fresh generation, both
+  unobservable because the render-phase reset guarantees the state they act
+  on. The other four are individual halves of three guard *pairs*: each of
+  the hook's async continuations checks both `signal.aborted` and the cache
+  key, and every transition that supersedes a request does both — so
+  removing either alone changes nothing observable, while removing both is
+  caught. The one exception, and the reason the abort check is not merely
+  ornamental, is React StrictMode: it mounts every effect, tears it down,
+  and mounts it again against an *unchanged* key, so the first request's
+  answer arrives with the cache key matching perfectly and only the abort
+  tells the two apart. `main.tsx` wraps the app in StrictMode, so that is
+  the path every development page load takes, and there is a test for it.
+
+  **Components and routes remain uncovered, and that is the open half now.**
+  It was left out of this pass deliberately: `src/routes/` is where
+  `@testing-library/react` stops being avoidable, and that is a separate
+  dependency decision that should be argued on its own rather than carried
+  in behind a DOM environment.
 
 - **Nothing constrains a slug's format at any creation path** — **landed.**
   Resolved towards enforcement, on least-surprise grounds: the surprise here
@@ -692,7 +858,20 @@ during an incident.
   35.6s to 15.4s. See the deploy-window table in
   [deploy/README.md](deploy/README.md).
 
-  Still not a soak: this is two cold installs and a handful of restarts, not
+  A third cold install went further, because the least-privilege cutover
+  needed it to: a host with no `/etc/sre-tab`, no secrets, and no volumes,
+  taken through `install.sh`, `create-secrets.sh`, `create-roles.sh`, and
+  `install.sh --start` with every unit on its new credential, then a
+  `downgrade base` and a re-migration through the real migration unit, a
+  backup, a session sweep, a restore reading both credentials from podman
+  secrets, and a `git revert` rollback and re-application. `systemctl
+  --failed` stayed empty throughout. That is the Podman secret plumbing,
+  `Notify=healthy`, and the `After=`/`Requires=` ordering exercised a second
+  time on a third host, and it is the first time either oneshot timer unit has
+  been run against a live systemd install at all — by hand, which tests the
+  job and not the schedule.
+
+  Still not a soak: this is three cold installs and a handful of restarts, not
   weeks of uptime, and the backup timer's catch-up is still unproven above.
 
 - **~20s of the deploy outage happens after `systemctl` returns, and nothing
@@ -1011,6 +1190,9 @@ difference between the two.
 - **A `/metrics` endpoint.** Prometheus exposition is among the commoner
   self-hosting asks, and it costs this project nothing it has promised:
   a scrape is a local pull, so "nothing phones home" survives it intact.
-  It ranks below the `OnFailure=` alert unit in
-  [Operations](#operations), which closes the same loop for the reference
-  deployment without a new dependency, a new route, or a scraper to run.
+  It ranked below the `OnFailure=` alert unit in
+  [Operations](#operations), which has since landed and closes the same loop
+  for the reference deployment without a new dependency, a new route, or a
+  scraper to run. What a `/metrics` endpoint would add over it is history and
+  a graph rather than a page at the moment of failure — worth having, and
+  worth less than it was a change ago.

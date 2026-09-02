@@ -11,8 +11,9 @@
 #
 #   cosign verify           is there a signature over this digest, made by a
 #                           Fulcio certificate whose subject is this
-#                           repository's ci.yml on refs/heads/main, and is it
-#                           recorded in the Rekor transparency log?
+#                           repository's ci.yml on a ref it is allowed to
+#                           publish from, and is it recorded in the Rekor
+#                           transparency log?
 #   gh attestation verify   is there SLSA build provenance, and an SBOM,
 #                           issued by GitHub for this digest and this repo?
 #
@@ -30,10 +31,29 @@ set -eu
 
 IMAGE_REPO=ghcr.io/darkflib/sre-tab
 SOURCE_REPO=Darkflib/sre-tab
-# The signing identity. Anchored on both ends: the signature must come from
-# ci.yml on main in this repository, not from any workflow in any repository
-# that happens to have pushed to this registry namespace.
-CERT_IDENTITY="https://github.com/$SOURCE_REPO/.github/workflows/ci.yml@refs/heads/main"
+# The signing identity: the signature must come from ci.yml in *this*
+# repository, not from any workflow in any repository that happens to have
+# pushed to this registry namespace.
+#
+# A regexp rather than a literal, because there is now more than one ref this
+# workflow legitimately signs from. A keyless certificate's subject ends in
+# the ref that produced it — `…/ci.yml@refs/heads/main` for a merge,
+# `…/ci.yml@refs/tags/v1.1.0` for a release — so a verifier pinned to the
+# branch string rejects every tagged release. This is the whole set and
+# nothing else: main, or a vMAJOR.MINOR.PATCH tag with an optional
+# pre-release suffix. A published build can come from no other ref, because
+# the workflow's own `push:` filter and the version resolver in `publish`
+# together allow no other.
+#
+# Anchored at both ends on purpose, and that is not a precaution taken on
+# principle. cosign's CheckCertificatePolicy compiles the pattern with
+# regexp.Compile and applies it with regex.MatchString(san) — read in
+# pkg/cosign/verify.go, not assumed — and MatchString is unanchored, adding
+# no `^` or `$` of its own. Without them this would accept any subject merely
+# *containing* the string: `https://evil.example/https://github.com/…` and
+# `…/ci.yml@refs/heads/main-x` both pass an unanchored version of this
+# pattern and both fail the anchored one.
+CERT_IDENTITY_RE="^https://github\.com/$SOURCE_REPO/\.github/workflows/ci\.yml@refs/(heads/main|tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?)$"
 CERT_OIDC_ISSUER=https://token.actions.githubusercontent.com
 
 require_attestations=false
@@ -108,10 +128,10 @@ fi
 
 echo "==> cosign verify $by_digest"
 cosign verify \
-    --certificate-identity "$CERT_IDENTITY" \
+    --certificate-identity-regexp "$CERT_IDENTITY_RE" \
     --certificate-oidc-issuer "$CERT_OIDC_ISSUER" \
     "$by_digest" >/dev/null
-echo "    signature ok: $CERT_IDENTITY"
+echo "    signature ok: $SOURCE_REPO ci.yml, on refs/heads/main or a version tag"
 
 attest() {
     predicate=$1

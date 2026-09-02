@@ -39,6 +39,16 @@ podman info --format '{{.Host.CgroupsVersion}}'
 Everything sits on `sre-tab.network` (`10.89.61.0/24`). Only Caddy publishes a
 port, and only to `127.0.0.1`. The database is unreachable from the host.
 
+Four of those units talk to PostgreSQL, and each does so as a different,
+deliberately limited role: the application and the session sweep as
+`sretab_app` (DML only), the migration unit as `sretab_migrate` (DDL, and it
+owns every table), the backup as `sretab_readonly`. None of the three is a
+superuser, and none can `COPY … TO PROGRAM`. Only `sre-tab-db` itself holds a
+superuser credential, because it has to own the cluster.
+[deploy/ROLES.md](ROLES.md) is why, and the
+[runbook below](#cutting-a-running-deployment-over-to-the-roles) is how to get
+an existing deployment there.
+
 ### Why a proxy split rather than one process
 
 The PRD allows either a single origin serving both, or a reverse proxy routing
@@ -156,15 +166,44 @@ which is why the allow-list and the `users` table both key on it.
 
 ## Secrets
 
-Four values are genuinely secret and none of them appears in a unit file, in
-`podman inspect`, or on a command line:
+Seven values are secret to the running stack, and none of them appears in a
+unit file, in `podman inspect`, or on a command line. Two scripts write them,
+and which script writes which is worth knowing, because they are run at
+different moments and for different reasons.
+
+`deploy/scripts/create-secrets.sh` writes the superuser's four:
 
 | Podman secret | Consumed as | By |
 | --- | --- | --- |
-| `sre-tab-postgres-password` | `POSTGRES_PASSWORD`, `PGPASSWORD` | database, backup |
-| `sre-tab-database-url` | `DATABASE_URL` | app, migrations, session sweep |
+| `sre-tab-postgres-password` | `POSTGRES_PASSWORD` | database (and `restore.sh`, for `DROP`/`CREATE DATABASE`) |
+| `sre-tab-database-url` | — | **nothing, since the cutover.** Keep it: it is the rollback |
 | `sre-tab-session-secret` | `SESSION_SECRET` | app |
 | `sre-tab-github-client-secret` | `GITHUB_CLIENT_SECRET` | app |
+
+`deploy/scripts/create-roles.sh` writes the three least-privilege roles':
+
+| Podman secret | Consumed as | By |
+| --- | --- | --- |
+| `sre-tab-migrate-database-url` | `DATABASE_URL`; `SRE_TAB_RESTORE_URL` | `sre-tab-migrate.service`, and `restore.sh`'s `pg_restore` step |
+| `sre-tab-app-database-url` | `DATABASE_URL` | `sre-tab.service` and `sre-tab-prune-sessions.service` |
+| `sre-tab-readonly-password` | `PGPASSWORD` | `sre-tab-backup.service`, with `PGUSER=sretab_readonly` |
+
+**Two secrets stopped being read by any unit at the cutover, and neither
+should be deleted.** `sre-tab-database-url` carries the superuser's
+`DATABASE_URL` and is now read by nothing at all; `sre-tab-postgres-password`
+is still read by the database container as `POSTGRES_PASSWORD`, but no longer
+by the backup. Both are the rollback path: reverting the cutover commit
+points three units straight back at them, and a host that has quietly lost
+either cannot take it. `install.sh --start` checks for all seven for exactly
+this reason.
+
+The roles are no longer optional. Every unit but the database connects as one
+of them, so `create-roles.sh` is a required step on a first install — see the
+ordering under [First start](#first-start), which is counter-intuitive because
+the roles have to be created against a database that is already running.
+[deploy/ROLES.md](ROLES.md) has the whole picture, and
+[the runbook below](#cutting-a-running-deployment-over-to-the-roles) is how to
+do it to a deployment that is already up.
 
 The database password appears inside `sre-tab-database-url` as well as in
 `sre-tab-postgres-password`, and a mismatch between the two is a tedious way
@@ -191,27 +230,55 @@ outstanding CSRF token.
 
 `create-secrets.sh --rotate-db` writes a new password to both secrets, but
 PostgreSQL will not adopt it on its own — `POSTGRES_PASSWORD` only applies at
-`initdb`. Change it in the database first, then rotate the secrets, then
-restart:
+`initdb`. Change it in the database first, then rotate the secrets:
 
 ```bash
 podman exec -it sre-tab-db psql -U sretab -c "\password sretab"
 sudo deploy/scripts/create-secrets.sh --rotate-db < /path/to/github-client-secret
-sudo systemctl restart sre-tab.service sre-tab-migrate.service
 ```
 
+**No unit needs restarting for this one, since the cutover.** The superuser's
+password is read by `sre-tab-db.service` only at `initdb`, and by `restore.sh`
+at the moment it runs; the application and the migration unit stopped reading
+`sre-tab-database-url` when they moved to their own roles. That is the reverse
+of the situation for the three role passwords, where a rotation *must* be
+followed by a restart — a running container never picks up a changed podman
+secret. `deploy/ROLES.md` has that procedure.
+
+<a id="first-start"></a>
 ## First start
+
+**Start the database on its own first, and install the roles against it.**
+This step looks like it is in the wrong place and is not. Every unit but the
+database connects as one of the three least-privilege roles, and
+`create-roles.sh` creates those roles by talking to the *running* database —
+so the roles cannot exist before the database does, and the rest of the stack
+cannot start before the roles do. The database is the one unit that can be
+started on its own, because it depends on nothing but the network:
+
+<!-- docs:run -->
+```bash
+sudo systemctl start sre-tab-db.service
+sudo deploy/scripts/create-roles.sh
+```
+
+That is once per host. `create-roles.sh` is idempotent and safe to re-run; it
+leaves an existing role's password alone unless asked to rotate it.
+
+Then the rest:
 
 <!-- docs:run -->
 ```bash
 sudo deploy/install.sh --start
 ```
 
-`--start` refuses to proceed if any of the four secrets is missing. It enables
-every timer under `deploy/systemd` — the backup and the session sweep — and
-restarts all five long-running units in a single `systemctl` transaction,
-which is what makes systemd resolve the ordering between them rather than
-starting them in the order typed.
+`--start` refuses to proceed if any of the seven secrets is missing, and when
+one of the three role secrets is the missing one it prints the three commands
+above rather than only naming the secret. It enables every timer under
+`deploy/systemd` — the backup and the session sweep — and restarts all five
+long-running units in a single `systemctl` transaction, which is what makes
+systemd resolve the ordering between them rather than starting them in the
+order typed.
 
 The timers are enumerated from the directory rather than listed by name.
 A timer that the installer stages but never enables is installed, inert, and
@@ -254,6 +321,227 @@ Quadlet services are transient generated units and cannot be enabled with
 `systemctl enable`; their `[Install]` sections are applied by the generator at
 boot and on `daemon-reload`, so starting them explicitly is enough. The timers
 are native units and are enabled normally.
+
+<a id="cutting-a-running-deployment-over-to-the-roles"></a>
+## Cutting a running deployment over to the roles
+
+For a host that is already up and still connecting as the superuser. A fresh
+install does not need this section — [First start](#first-start) already has
+the roles in it.
+
+Read this much before starting, because it is the part that decides whether
+tonight is the night:
+
+- **It needs no new image.** The cutover changes which credential each unit is
+  handed and nothing else; no code in `app/` is involved, and the digest
+  currently pinned works exactly as it stands. Do **not** fold a `promote.sh`
+  into this. One change at a time is the whole reason the cutover is a single
+  commit with a one-command rollback, and a promotion in the same window
+  entangles the two — if something misbehaves you want to know which of them
+  did it.
+- **Budget one application restart, and it is a small one.** Measured on the
+  reference host across step 5, polling five times a second: the API answered
+  `502` for **6.4 seconds** and the SPA document never stopped answering `200`
+  at all. That is much shorter than a promotion's window, and for a reason
+  worth knowing rather than trusting — this restarts two units and neither is
+  Caddy, so the published port is never withdrawn and the netavark hostport
+  tail described under
+  [How long a deploy actually takes](#how-long-a-deploy-actually-takes) does
+  not happen. A user with the page open sees failing API calls, not a dead
+  site.
+
+  One thing from that section does still apply, in the opposite direction:
+  `systemctl` returned at **16.3s**, roughly ten seconds *after* the service
+  was answering again, because `Notify=healthy` waits for the image's
+  healthcheck. Do not read the prompt coming back as the moment service
+  resumed; it is later than that, not earlier.
+- **The reversible point is step 4.** Everything before it can be abandoned by
+  doing nothing at all.
+- Every step below has been executed end to end on a Debian 13 host with
+  podman 5.4.2, rollback included.
+
+### 1. Take a backup, and check it arrived
+
+`create-roles.sh` reassigns the owner of every table in `public`. That is a
+change to the database, not only to unit files, so this is the one step not to
+skip.
+
+```bash
+sudo systemctl start sre-tab-backup.service
+sudo journalctl -u sre-tab-backup.service -n 5 --no-pager
+sudo ls -l /srv/sre-tab/backups | tail -3
+```
+
+**Good:** a `backup complete: … (N bytes)` line, and a dump with today's
+timestamp beside a `.sha256` sidecar. This one still runs as the superuser;
+that is expected, it is the last such run.
+
+### 2. Pull the commit that carries the cutover
+
+```bash
+cd /path/to/sre-tab && git pull
+git log --oneline -1
+grep -h '^Secret=.*DATABASE_URL' deploy/quadlet/*.container
+```
+
+**Good:** three `Secret=` lines naming `sre-tab-app-database-url` twice and
+`sre-tab-migrate-database-url` once, and no `sre-tab-database-url` anywhere.
+If you see `sre-tab-database-url`, you are not on the right commit; stop.
+
+### 3. Install the roles
+
+The database is already running, so this is one command.
+
+```bash
+sudo deploy/scripts/create-roles.sh
+```
+
+**Good:** `sretab_migrate: role created` and the same for `sretab_app` and
+`sretab_readonly`, then a `NOTICE: reassigned public.<table> to
+sretab_migrate` line per existing table, then `Done.` Check:
+
+```bash
+sudo podman secret ls --format '{{.Name}}' | grep sre-tab- | sort
+sudo podman exec sre-tab-db psql -U sretab -d sretab -c \
+  "SELECT rolname, rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname LIKE 'sretab%' ORDER BY 1"
+```
+
+**Good:** seven secrets, and `f` in all three columns for the three
+`sretab_*` roles — only `sretab` itself is `t`.
+
+If it refuses because a role and its secret disagree about whether they exist,
+it will say which way round, and `--rotate` is the answer. `deploy/ROLES.md`
+has the reasoning; nothing is broken and nothing has changed yet.
+
+**Nothing that is running has changed.** The application is still connected as
+the superuser. Walking away here costs nothing.
+
+### 4. Stage the new units
+
+```bash
+sudo deploy/install.sh
+grep -h '^Secret=.*DATABASE_URL\|^Environment=PGUSER' \
+  /etc/containers/systemd/sre-tab*.container
+```
+
+**Good:** the same three `Secret=` lines as in step 2, plus
+`Environment=PGUSER=sretab_readonly`.
+
+Still nothing running has changed: a staged unit file has no effect on a
+container that is already up. This is the last cheap stopping point.
+
+### 5. Restart the two units that hold a credential
+
+```bash
+sudo systemctl restart sre-tab-migrate.service sre-tab.service
+```
+
+One invocation, not two, so systemd builds a single transaction and honours
+the ordering between them.
+
+**Why a restart is needed at all:** a running container reads a podman secret
+once, at start, and holds what it read. Changing the secret — or changing
+which secret the unit names — does nothing to the process that is running.
+`install.sh` stages; only a restart adopts.
+
+**Why these two and not four.** `sre-tab-prune-sessions.service` and
+`sre-tab-backup.service` also changed, but both are timer-driven oneshots that
+are not running, so there is nothing to restart: each picks up the new unit
+file and the new secret by itself at its next elapse. `sre-tab-web.service`
+and `sre-tab-assets.service` never touch the database. So the units that must
+move *together* are the migration unit and the application, because the
+application `Requires=` the migration unit and must not come up against a
+schema a failed migration left behind.
+
+### 6. Check it, and do not trust the prompt returning
+
+```bash
+systemctl --failed --no-pager
+
+for _ in $(seq 1 60); do
+    curl --fail --silent --max-time 5 http://127.0.0.1:8080/api/v1/healthz && break
+    sleep 2
+done
+echo
+```
+
+**Good:** no failed units, and `{"status":"ok","live":true,"ready":true,…}`
+with the database probe `"ok":true`.
+
+Then the question this whole exercise is about — *which role is actually
+connected?* Ask the database, not the unit file:
+
+```bash
+sudo podman exec sre-tab-db psql -U sretab -d sretab -c \
+  "SELECT usename, count(*) FROM pg_stat_activity
+    WHERE datname = 'sretab' AND pid <> pg_backend_pid()
+    GROUP BY usename ORDER BY 1"
+```
+
+**Good:** `sretab_app` and nothing else. Seeing `sretab` means a container is
+still running on the old credential — almost always because step 5 was run
+before step 4, so `install.sh` had not yet staged the new unit.
+
+`pid <> pg_backend_pid()` is not tidiness: this `psql` connects as the
+superuser, so without it the query counts itself and always reports one
+`sretab` connection. That is a false alarm on the one check the whole
+procedure turns on, and it is in here because the first draft of this runbook
+had it and the run caught it.
+
+And the migration unit, which has already run by now:
+
+```bash
+sudo journalctl -u sre-tab-migrate.service -n 20 --no-pager
+```
+
+**Good:** alembic reporting a context and either running upgrades or finding
+none to run, and the unit `active (exited)` with status 0.
+
+### 7. Exercise the two timer-driven units now, not at 03:22
+
+They are the units nobody watches, and a credential problem in either is
+silent until the backup directory has a fortnight-shaped hole in it.
+
+```bash
+sudo systemctl start sre-tab-backup.service
+sudo journalctl -u sre-tab-backup.service -n 5 --no-pager
+
+sudo systemctl start sre-tab-prune-sessions.service
+sudo journalctl -u sre-tab-prune-sessions.service -n 5 --no-pager
+```
+
+**Good:** another `backup complete: … (N bytes)` — this one taken as
+`sretab_readonly` — and either `deleted N dead session rows` or
+`no dead sessions`. A `permission denied` in either is the cutover having gone
+wrong for that unit specifically; roll back.
+
+Compare the byte count with the dump from step 1. They should be in the same
+ballpark. A dump that is suddenly tiny means `pg_dump` read less than it used
+to, which is what a missing grant looks like when it does not fail outright.
+
+### If it is not good: roll back
+
+Three commands, and they have been run:
+
+```bash
+git revert --no-edit <the cutover commit>
+sudo deploy/install.sh
+sudo systemctl restart sre-tab.service sre-tab-migrate.service \
+  sre-tab-prune-sessions.service sre-tab-backup.service
+```
+
+The last two are oneshots, so restarting them runs them — which is the point,
+because it re-proves them on the superuser credential rather than leaving them
+staged and unexercised until the small hours.
+
+This works because nothing above ever touched `sre-tab-database-url` or
+`sre-tab-postgres-password`. **Do not delete either**, then or later; leaving
+them in place *is* the rollback. Leave the three roles and their secrets in
+place too — nothing references them once the units are reverted, and the next
+attempt reuses them as they are.
+
+`deploy/ROLES.md` has the full reasoning, the verification record, and the
+rotation procedure for the three role passwords.
 
 ## Migrations on deploy
 
@@ -298,6 +586,14 @@ They used to track `:latest` with `Pull=newer`, which meant `systemctl
 restart` — a reboot, an OOM kill, a routine restart to clear a stuck
 connection — silently adopted whatever CI had last pushed to main. The
 running version was decided by whoever merged most recently.
+
+The registry now also carries version tags — `1.1.0` for an exact release,
+`1.1` for the newest patch on that line — and none of that changes anything
+here. They exist for people running this image outside these Quadlets, and
+[README.md](../README.md#installing-a-version) is written for them. `1.1` is
+a moving pointer with the same property `:latest` had, which is why it is not
+what these units name. A release is promoted by digest like any other build:
+`deploy/scripts/promote.sh sha-<commit>`, using the commit the tag points at.
 
 ### Promote a build
 
@@ -345,14 +641,14 @@ pulls the new digest; later restarts do not touch the network, because a
 digest names immutable content and the local copy is by definition the right
 one.
 
-Two units are deliberately absent from that list, for opposite reasons.
+Three units are deliberately absent from that list, for opposite reasons.
 `sre-tab-web.service` is Caddy and does not run the application image, so a
-promotion never changes it. `sre-tab-prune-sessions.service` does run it, but
-it is timer-driven and not running, so there is nothing to restart — it
-adopts the new digest by itself at its next elapse, once `install.sh` has
-staged the rewritten unit. So the four units a promotion rewrites and the
-four services this command restarts are different sets of four, overlapping
-in three.
+promotion never changes it. `sre-tab-prune-sessions.service` and
+`sre-tab-status.service` do run it, but both are timer-driven and neither is
+running, so there is nothing to restart — each adopts the new digest by
+itself at its next elapse, once `install.sh` has staged the rewritten unit.
+So the five units a promotion rewrites and the four services this command
+restarts overlap in three, and neither set contains the other.
 
 Take a backup before any upgrade that carries a migration; `alembic
 downgrade` is not a substitute for a restore.
@@ -442,7 +738,7 @@ container start":
 
 | Point | Runs | Catches |
 | --- | --- | --- |
-| Publish (CI) | every push to main | a signature or attestation that cannot be verified from outside the step that made it |
+| Publish (CI) | every push to main, and every version tag | a signature or attestation that cannot be verified from outside the step that made it |
 | Promotion (`promote.sh`) | when a digest is chosen | pinning a build that is not ours |
 | CI, every push and PR | always | a pin that was hand-edited, or that has stopped verifying |
 | Operator, before a restart | when run | the above, on the host, at the moment of deploying |
@@ -665,6 +961,13 @@ dumps older than `BACKUP_KEEP_DAYS` (14). Verifying at write time is the
 difference between a backup job that fails visibly and a backup that only
 reveals itself as useless during a restore.
 
+It runs as `sretab_readonly` — `PGUSER` in the unit, `PGPASSWORD` from
+`sre-tab-readonly-password` — so the job that reads every row in the database
+every night cannot write one. That role holds `SELECT` on sequences as well as
+on tables, which is not decoration: a custom-format dump emits a `setval()`
+per sequence, and a role without it makes `pg_dump` fail outright rather than
+produce a dump whose restore hands out ids that are already taken.
+
 ```bash
 systemctl list-timers 'sre-tab-*'
 systemctl start sre-tab-backup.service     # take one now
@@ -710,12 +1013,26 @@ This destroys the target database and rebuilds it from the dump. The script:
 2. prompts for the database name as confirmation (`--yes` skips it);
 3. stops `sre-tab.service` and `sre-tab-migrate.service` so nothing writes
    during the restore;
-4. `DROP DATABASE ... WITH (FORCE)` and recreates it;
-5. restores with `--single-transaction --exit-on-error`, so the database ends
-   up either fully restored or empty for a second attempt — never
-   half-restored with the application then migrating on top of it;
-6. reports the table count and the `alembic_version` row;
-7. restarts the application and waits for `/api/v1/healthz`.
+4. `DROP DATABASE ... WITH (FORCE)` and recreates it, as the superuser —
+   database-level administration that none of the three least-privilege roles
+   holds, and none of them should;
+5. re-applies `deploy/roles.sql` to the new database when those roles exist,
+   because grants and default privileges live *inside* a database and the
+   drop took them with it;
+6. restores as `sretab_migrate` — not as the superuser — with
+   `--single-transaction --exit-on-error`, so the database ends up either
+   fully restored or empty for a second attempt, never half-restored with the
+   application then migrating on top of it;
+7. re-applies `roles.sql` once more, which settles ownership and grants over
+   whatever the restore actually created;
+8. reports the table count and the `alembic_version` row;
+9. restarts the application and waits for `/api/v1/healthz`.
+
+Steps 4 and 6 are two different credentials on purpose, and
+[deploy/ROLES.md](ROLES.md) carries the reasoning. On a host where the roles
+were never installed, `--restore-user sretab` collapses them back into one;
+the script checks for the role and says so before it drops anything, rather
+than failing at authentication time with the database already gone.
 
 Point-in-time recovery is out of scope for v1: these are nightly logical
 dumps, so the recovery point is the last successful backup.
@@ -723,12 +1040,15 @@ dumps, so the recovery point is the last successful backup.
 ### The restore has been tested
 
 `deploy/scripts/smoke.sh` runs the same `restore.sh`, unmodified, against a
-throwaway database: it brings up PostgreSQL on an empty volume, migrates,
-starts the application and Caddy, checks the health endpoint and the front-door
-behaviour, writes a marker row, takes a backup with the real `backup.sh`, drops
-the marker, restores with the real `restore.sh`, and asserts that the marker
-and the Alembic revision both come back and the application goes healthy
-again.
+throwaway database: it brings up PostgreSQL on an empty volume, installs the
+three least-privilege roles, migrates as `sretab_migrate`, starts the
+application and Caddy as `sretab_app`, checks the health endpoint and the
+front-door behaviour, writes a marker row, takes a backup as
+`sretab_readonly` with the real `backup.sh`, drops the marker, restores with
+the real `restore.sh` and its split credential, and asserts that the marker
+and the Alembic revision both come back, that the restored tables are owned
+by `sretab_migrate` and readable by `sretab_app`, and that the application
+goes healthy again.
 
 ```bash
 CONTAINER_ENGINE=docker SRE_TAB_IMAGE=sre-tab:dev deploy/scripts/smoke.sh
@@ -737,12 +1057,24 @@ CONTAINER_ENGINE=docker SRE_TAB_IMAGE=sre-tab:dev deploy/scripts/smoke.sh
 CI runs it on every push under Podman. It has been run under Docker on macOS
 during development and passes end to end.
 
-What that does **not** cover, and what still needs one pass on a real Linux
-host before release: Quadlet generation into live systemd units, the `After=`
-and `Requires=` ordering actually holding at boot, `Notify=healthy`, the
-Podman secret plumbing, and the timer firing. CI validates unit *generation*
-with `podman-system-generator --dryrun`, which catches malformed keys but not
-runtime behaviour.
+Since the cutover it also opens the four unit files before it starts anything
+and refuses to run if they name credentials other than the ones it is about to
+use. Without that it was a test of the roles and not of the deployment: it
+invents its own connection strings — it has no podman secrets and under
+`CONTAINER_ENGINE=docker` cannot have any — so every assertion in it would
+have gone on passing with all four units reverted to the superuser.
+
+What the smoke test still does **not** cover, because systemd is not involved
+in it: Quadlet generation into live units, the `After=` and `Requires=`
+ordering holding at boot, `Notify=healthy`, and the Podman secret plumbing. CI
+validates unit *generation* with `podman-system-generator --dryrun`, which
+catches malformed keys and nothing else. Those have now been exercised by hand
+on three separate Debian 13 hosts, most recently on the cut-over units from a
+completely empty host — see the verification record in
+[deploy/ROLES.md](ROLES.md#the-cutover-itself-was-run). What remains genuinely
+unproven is the timers *firing on their own*, and `Persistent=true` catching
+up after downtime; starting the units by hand, which the runbook above does,
+tests the job and not the schedule.
 
 <a id="off-host-backups"></a>
 ## Off-host backups
@@ -1244,7 +1576,7 @@ It is safe at any time and takes no locks worth the name: a live session is
 never a candidate, so the sweep cannot sign anybody out.
 
 **Unlike the backup, this unit runs the application image**, so its digest is
-one of the four `deploy/scripts/promote.sh` moves together and CI checks for
+one of the five `deploy/scripts/promote.sh` moves together and CI checks for
 agreement. It is not in the restart list after a promotion, and does not need
 to be: it is timer-driven rather than running, so it picks up the new digest at
 its next elapse once `install.sh` has staged the unit.
@@ -1368,6 +1700,183 @@ operator-managed configuration and this is scheduler-written runtime state.
 Keeping them apart means `sources.updated_at` still means "the operator
 changed the configuration", and the two writers never contend.
 
+<a id="alerting-on-a-failing-source"></a>
+## Alerting on a failing source
+
+`sre-tab-status.timer` runs `sre-tab status --failures-over 3` in the
+application image every hour at :48 with up to five minutes of jitter. When it
+exits non-zero, `OnFailure=` on `sre-tab-status.service` starts
+`sre-tab-alert@sre-tab-status.service.service`, which gathers the failed
+unit's journal and hands it to a transport the operator writes.
+
+The reason it exists: **`/api/v1/healthz` knows a source is failing and
+deliberately will not say so.** `app/scheduler/service.py` reports `ok=true`
+with the failure count in its detail string, because one broken feed must not
+take the instance out of rotation. Readiness and alerting want opposite
+answers to the same question, and until this timer existed only one of them
+was being asked — a source could stop fetching indefinitely and the only
+symptom would be stale items nobody was looking for.
+
+### Wire up a transport, or the alert reaches nobody
+
+**This is the one step that is not automatic.** `install.sh` never writes
+`/etc/sre-tab/alert.sh`, because reaching a person is a property of the host
+— mail, a webhook, a pager, an agent that is already installed — and picking
+one here would put a transport dependency in a project that has deliberately
+few. It installs `alert.sh.example` beside it instead, with two worked
+implementations:
+
+```bash
+sudo cp /etc/sre-tab/alert.sh.example /etc/sre-tab/alert.sh
+sudo $EDITOR /etc/sre-tab/alert.sh     # msmtp, or curl to a webhook
+sudo chmod 0755 /etc/sre-tab/alert.sh
+```
+
+The mail example posts through `msmtp` with an explicit envelope sender; the
+webhook example reads its URL from a mode-0600 file — the URL is a credential
+— and builds the JSON with `jq`, because the report contains newlines, quotes,
+and whatever a feed's error detail happened to say.
+
+**Without that file the alert is not silent, and that is on purpose.**
+`install.sh` warns at the end of every run while it is missing, the whole
+report still reaches this host's journal under the alert unit, and
+`alert-dispatch.sh` exits 1 so the alert unit lands in `systemctl --failed`
+naming the file it wanted. An alerting path that fails quietly is the exact
+defect this pair of units was written to remove, so its own misconfiguration
+was not allowed to be the one thing that fails quietly.
+
+Your script's exit status is the alert's exit status. Exit non-zero when the
+message did not go out, and a dead relay shows up in `systemctl --failed`
+rather than being believed. Do not add `|| true`.
+
+### What the transport is handed
+
+| | |
+| --- | --- |
+| `$1` | the failed unit, `sre-tab-status.service` |
+| stdin | the whole report: unit, systemd's `Result`, exit status, timestamps, and the unit's last 50 journal lines — which for `sre-tab-status.service` is the status table and the per-source error lines |
+| `$SRE_TAB_ALERT_UNIT` | the same as `$1` |
+| `$SRE_TAB_ALERT_RESULT` | systemd's `Result`, e.g. `exit-code`, `timeout` |
+| `$SRE_TAB_ALERT_STATUS` | the exit status, e.g. `1` |
+| `$SRE_TAB_ALERT_HOST` | this host's name |
+
+The journal is the alert body rather than a pointer to it, which is why
+`sre-tab-status.container` sets `LogDriver=none`: systemd's own capture of the
+container's stdout is then the single copy, and `journalctl -u` finds it.
+
+### `--failures-over 3` means over three, not three
+
+`sre-tab status` on its own still exits 1 for **any** enabled source with any
+consecutive failure — that has not changed, and it is right for somebody
+typing it. On an hourly timer it would page a human for one transient 502
+from one feed, and an alert that fires on noise is an alert somebody mutes.
+
+So the timer passes a threshold, and the threshold is strict:
+
+| Consecutive failures | `--failures-over 3` |
+| --- | --- |
+| 1, 2, 3 | reported in the output, exit 0, no alert |
+| 4 or more | reported, exit 1, alert |
+
+At the default 30-minute refresh interval each failure is another half hour
+with no successful fetch, so the fourth is roughly two hours of a source being
+down. Pass `--failures-over 2` to page on the third instead. The failing
+source is printed at every threshold, so the report the alert carries is the
+same either way; only the exit code moves.
+
+### A malformed slug alerts every hour until it is fixed
+
+`sre-tab status` also exits 1 when a source or topic slug predates the format
+check, and **`--failures-over` does not gate that half.** This is deliberate
+and it is the one behaviour here worth knowing before 03:00.
+
+The threshold counts consecutive *fetch* failures. A malformed slug never
+increments that counter — the source fetches perfectly and simply cannot be
+filtered to — so gating it behind the threshold would mean any value above
+zero suppressed a permanent configuration defect for ever, which is strictly
+worse than the noise. And unlike a fetch failure it never self-heals, so the
+alert repeats hourly until somebody acts:
+
+```bash
+podman exec sre-tab-app sre-tab status      # names the offending slug
+```
+
+Fix it by re-adding the source or topic under a valid slug; the existing row
+cannot be renamed in place without breaking every saved selection that names
+it. If your transport pages rather than files a ticket, put deduplication in
+whatever receives the alert — that is the piece that knows what a duplicate
+means to you.
+
+### Testing the alert path by hand
+
+A green check is not a passed check, and an alert path that has never fired
+is not an alert path. Fire it:
+
+```bash
+# 1. The transport alone, with a synthetic report.
+sudo systemctl start sre-tab-alert@sre-tab-status.service
+sudo journalctl -u 'sre-tab-alert@sre-tab-status.service.service' -n 50
+
+# 2. The whole chain — a unit that fails, an OnFailure=, an alert:
+sudo systemd-run --unit alert-probe \
+    --property=OnFailure=sre-tab-alert@alert-probe.service.service /bin/false
+sudo journalctl -u 'sre-tab-alert@alert-probe.service.service' -n 50
+sudo systemctl reset-failed alert-probe.service
+```
+
+The first proves the transport and the report. The second proves the
+`OnFailure=` wiring end to end, including that the failed unit's name reaches
+the template — the alert's journal names `alert-probe.service` throughout and
+quotes its last 50 lines.
+
+The instance name is written out in full there rather than as `%n`, and that
+is not a style choice: `systemd-run` does **not** expand specifiers inside
+`--property=`, and refuses the unit outright with `Invalid unit name
+sre-tab-alert@%n.service`. In `sre-tab-status.container`'s `OnFailure=` line
+the specifier is expanded normally, which is why that one is `%n` — `%n` is
+the full unit name, so the instance becomes `sre-tab-status.service` and
+`journalctl -u %i` inside the template needs no suffix appended. `%N` would
+drop the `.service` and leave the template re-deriving it.
+
+To confirm the threshold rather than assume it, set a source's counter
+directly and watch the exit code move between 3 and 4:
+
+```bash
+seed() {
+  podman exec sre-tab-db psql -U sretab -d sretab -c \
+    "INSERT INTO source_status (source_id, last_fetched_at, consecutive_failures)
+     SELECT id, now(), $1 FROM sources WHERE slug = 'lwn'
+     ON CONFLICT (source_id) DO UPDATE
+        SET consecutive_failures = EXCLUDED.consecutive_failures;"
+}
+
+seed 3 && sudo systemctl start sre-tab-status.service   # succeeds, no alert
+seed 4 && sudo systemctl start sre-tab-status.service   # fails, and alerts
+```
+
+An `INSERT ... ON CONFLICT` rather than an `UPDATE` because a source that has
+never fetched has no `source_status` row at all, and an `UPDATE` against it
+reports `UPDATE 0` and changes nothing — which then reads exactly like a
+threshold that is not working. The scheduler overwrites `consecutive_failures`
+on the source's next refresh, so this leaves nothing behind.
+
+### What this alert does not cover
+
+`OnFailure=` fires when a unit enters a failed state. It does **not** fire
+when the start job is cancelled because `Requires=sre-tab-db.service` failed:
+that path leaves `sre-tab-status.service` inactive rather than failed. A
+database that is down is therefore reported by `sre-tab-db.service`'s own
+failure and by `systemctl --failed`, not by this alert. A database that is up
+but unreachable — a wrong `DATABASE_URL`, a removed network — does fire it,
+because the check runs and fails.
+
+The timer is also **not** `Persistent=true`, unlike the backup and the session
+sweep. Those catch up because a missed run is work that did not happen; this
+is a question whose answer is about now, and the next run is at most an hour
+away. A catch-up run would fire seconds after boot, against counters that are
+whatever they were before the host went down, at the moment an operator is
+already dealing with a host that has just come back.
+
 ## Operations
 
 ```bash
@@ -1394,14 +1903,15 @@ driver would write a second copy of every structured line. The long-running
 containers keep `LogDriver=journald` deliberately, because `podman logs` is
 worth having for them.
 
-There is no `OnFailure=` alert unit, unlike orbit-data — that project's alert
-path is a subcommand of its own application, and this one has no equivalent
-yet. Until it does, failures surface through `systemctl --failed` and the
-journal. Wiring an alert to the operator CLI is a reasonable Phase 2 follow-up.
+A failing source no longer waits for somebody to run the CLI: `sre-tab-status.timer`
+asks hourly and `OnFailure=` carries the answer to a person. See
+[Alerting on a failing source](#alerting-on-a-failing-source), and note that
+it needs one file written by hand before it can reach anybody.
 
 `systemctl --failed` is only worth watching if it is empty when nothing is
 wrong, so a clean `systemctl stop` has to leave it clean. That is what the
-`NoNewPrivileges` note below is protecting.
+`NoNewPrivileges` note below is protecting — and it matters more now that
+`systemctl --failed` is where an unconfigured alert path lands.
 
 ### Why two units do not set `NoNewPrivileges=true`
 

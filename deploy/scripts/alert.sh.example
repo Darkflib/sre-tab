@@ -1,0 +1,106 @@
+#!/bin/sh
+#
+# EXAMPLE. Copy this to /etc/sre-tab/alert.sh, pick one of the two
+# implementations below, fill in the addresses, and make it executable:
+#
+#   cp /etc/sre-tab/alert.sh.example /etc/sre-tab/alert.sh
+#   $EDITOR /etc/sre-tab/alert.sh
+#   chmod 0755 /etc/sre-tab/alert.sh
+#
+# deploy/install.sh installs THIS file and never /etc/sre-tab/alert.sh, the
+# same way it seeds app.env once and never overwrites it: the transport is
+# the operator's, and an installer that wrote it would replace a working one
+# on the next upgrade. install.sh does warn when the real file is absent.
+#
+# This is called by /etc/sre-tab/alert-dispatch.sh, which is run by
+# sre-tab-alert@.service, which sre-tab-status.container's OnFailure= points
+# at. Test the whole chain without waiting for a real failure:
+#
+#   systemctl start sre-tab-alert@sre-tab-status.service
+#
+# What you are given:
+#
+#   $1                        the failed unit, e.g. sre-tab-status.service
+#   stdin                     the whole report: unit, result, exit status,
+#                             timestamps, and that unit's last 50 journal
+#                             lines — which for sre-tab-status.service is
+#                             the status table and the per-source errors
+#   $SRE_TAB_ALERT_UNIT       the same as $1
+#   $SRE_TAB_ALERT_RESULT     systemd's Result, e.g. exit-code, timeout
+#   $SRE_TAB_ALERT_STATUS     the exit status, e.g. 1
+#   $SRE_TAB_ALERT_HOST       this host's name
+#
+# YOUR EXIT STATUS IS THE ALERT'S EXIT STATUS. Exit non-zero if the message
+# did not go out, and sre-tab-alert@<unit>.service lands in
+# `systemctl --failed` with the reason in its journal. Swallowing an error
+# here is how an alerting path ends up green and silent, which is the exact
+# failure this whole chain exists to remove — so do not add `|| true`.
+#
+# Note also that a source that stays broken alerts every hour, and a
+# malformed slug alerts every hour until it is fixed, because
+# `sre-tab status` reports a permanent configuration defect at any
+# --failures-over threshold. If your transport pages a human rather than
+# filing a ticket, put the deduplication in whatever receives this — that is
+# the piece that knows what a duplicate means to you.
+
+set -eu
+
+unit=${1:-unknown}
+host=${SRE_TAB_ALERT_HOST:-$(hostname)}
+report=$(cat)
+
+# ---------------------------------------------------------------------------
+# 1. Mail, via msmtp
+# ---------------------------------------------------------------------------
+#
+# apt install msmtp msmtp-mta, and configure /etc/msmtprc with a relay that
+# will accept mail from this host. msmtp exits non-zero when the relay
+# refuses, which is what makes a broken mail path visible rather than
+# theoretical — check that by pointing it at a wrong port once, on purpose,
+# and confirming the unit fails.
+#
+# The envelope sender is given explicitly rather than left to msmtp's
+# default of root@<hostname>, which most relays will not accept.
+
+ALERT_EMAIL_TO='ops@example.com'
+ALERT_EMAIL_FROM='sre-tab@example.com'
+
+printf '%s\n' \
+    "To: $ALERT_EMAIL_TO" \
+    "From: $ALERT_EMAIL_FROM" \
+    "Subject: [sre-tab] $unit failed on $host" \
+    "Content-Type: text/plain; charset=utf-8" \
+    "" \
+    "$report" \
+    | msmtp --from="$ALERT_EMAIL_FROM" -- "$ALERT_EMAIL_TO"
+
+# ---------------------------------------------------------------------------
+# 2. A webhook, via curl
+# ---------------------------------------------------------------------------
+#
+# Delete the msmtp block above and uncomment this one. The URL is a
+# credential — anyone holding it can post as you — so it is read from a file
+# mode 0600 rather than written here, where it would end up in a backup of
+# /etc and in whatever reads this file over your shoulder.
+#
+#   umask 077 && printf 'https://hooks.example.com/services/...' \
+#       > /etc/sre-tab/alert-webhook-url
+#
+# --fail-with-body so a 4xx or 5xx is a non-zero exit AND prints what the far
+# end said; --silent --show-error so a working post is quiet and a broken one
+# is not; --max-time so a black-holed endpoint cannot hold the alert unit
+# open until its own timeout.
+#
+# jq builds the payload rather than shell string concatenation, because the
+# report carries newlines, quotes, and whatever a feed's error detail
+# happened to contain — the one input a hand-rolled escape always gets
+# wrong. apt install jq.
+#
+# ALERT_WEBHOOK_URL=$(cat /etc/sre-tab/alert-webhook-url)
+#
+# text=$(printf '[sre-tab] %s failed on %s\n\n%s' "$unit" "$host" "$report")
+#
+# jq --null-input --compact-output --arg text "$text" '{text: $text}' \
+#     | curl --fail-with-body --silent --show-error --max-time 20 \
+#         --header 'Content-Type: application/json' \
+#         --data-binary @- -- "$ALERT_WEBHOOK_URL"
