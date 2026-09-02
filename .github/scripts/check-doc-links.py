@@ -68,9 +68,10 @@ HEADING_RE = re.compile(r"^#{1,6} \S")
 
 # A fence delimiter, per CommonMark: up to three spaces of indent (four makes
 # it an indented code block instead), then three or more backticks or tildes.
-# The marker and its length are captured because a fence closes only on the
-# same character at the same length or longer — which is what lets a
-# ````-delimited block contain ``` examples, as CONTRIBUTING.md's does.
+# The marker, its length, and its info string are all captured because a
+# fence closes only on the same character, at the same length or longer, and
+# carrying no info string — which is what lets a ````-delimited block contain
+# ``` examples, as CONTRIBUTING.md's does.
 FENCE_RE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 
 SKIP_PREFIXES = ("http://", "https://", "mailto:")
@@ -125,9 +126,22 @@ def prose_lines(path: Path) -> list[tuple[int, str]]:
                     continue
                 open_marker = marker
                 continue
-            # A closing fence must use the same character and be at least as
-            # long as the one that opened the block. Anything else is content.
-            if marker[0] == open_marker[0] and len(marker) >= len(open_marker):
+            # A closing fence must use the same character, be at least as
+            # long as the one that opened the block, and carry no info
+            # string. Anything else is content.
+            #
+            # That last clause is not pedantry, and it was missing here until
+            # a review of PR #28 found the same omission in the sibling
+            # mermaid checker. Without it a line like ```markdown *inside* a
+            # ```-opened block reads as a close, and every fence after it is
+            # paired one out of step — so prose is read as code and a broken
+            # link in it is never reported. Probed on a document holding a
+            # link to a file that does not exist, which this script passed.
+            if (
+                marker[0] == open_marker[0]
+                and len(marker) >= len(open_marker)
+                and not fence.group("info").strip()
+            ):
                 open_marker = None
             continue
         if open_marker is None:

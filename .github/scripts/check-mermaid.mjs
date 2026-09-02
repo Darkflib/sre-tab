@@ -28,6 +28,14 @@
 // Needs `mermaid` and `happy-dom` resolvable — see the Docs workflow, which
 // installs both at pinned versions. Exits non-zero listing every bad block
 // rather than stopping at the first.
+//
+// **The pinned version is not GitHub's.** GitHub does not publish the Mermaid
+// version it renders with and updates it on its own schedule, so this agrees
+// with GitHub's grammar only approximately: a diagram using syntax newer than
+// whatever GitHub is running would pass here and still render as that red
+// box. To find out what GitHub is actually running, put a fenced block
+// containing the single word `info` in any Markdown on github.com and look at
+// what it renders — that is the only published way to ask.
 
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -35,11 +43,12 @@ import fs from 'node:fs'
 // The fence rules are CommonMark's, and they are the same ones
 // check-doc-links.py implements for the same corpus: up to three spaces of
 // indent (four makes it an indented code block instead), three or more
-// backticks or tildes, and a close only on the same character at the same
-// length or longer. That last rule is what lets a ````-delimited block hold
-// ``` examples, as CONTRIBUTING.md's does — and it is why a ```mermaid found
-// *inside* another fence is content rather than a diagram. A document
-// explaining this convention by example must not have its example checked.
+// backticks or tildes, and a close only on the same character, at the same
+// length or longer, and carrying no info string. Those rules are what let a
+// ````-delimited block hold ``` examples, as CONTRIBUTING.md's does — and
+// they are why a ```mermaid found *inside* another fence is content rather
+// than a diagram. A document explaining this convention by example must not
+// have its example checked.
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
 
 function trackedMarkdown() {
@@ -72,7 +81,14 @@ function mermaidBlocks(file, text) {
         collecting = info.trim().split(/\s+/)[0] === 'mermaid'
         continue
       }
-      if (fence[0] === marker[0] && fence.length >= marker.length) {
+      // A closing fence carries no info string — CommonMark is explicit, and
+      // the difference is a silent pass rather than a nicety. Without the
+      // first condition a line like ```markdown inside a ```-opened block
+      // reads as a close, which desynchronises every fence after it: a real
+      // ```mermaid further down then pairs as a *closing* delimiter and its
+      // contents are never checked. Probed on a document holding a plainly
+      // invalid diagram, which this gate reported as green.
+      if (info.trim() === '' && fence[0] === marker[0] && fence.length >= marker.length) {
         if (collecting) found.push({ file, line: start, source: body.join('\n') })
         marker = null
         collecting = false

@@ -554,7 +554,7 @@ enforced only in prose is not enforced.
 | Sign-in is allow-list only | Numeric-id check at the callback, before any user row is created |
 | No route opens a database session | The `get_db` dependency; routes commit, nothing below them does |
 | No implicit lazy load in a request path | `lazy="raise"` on every relationship in `app/db/models.py` |
-| Nothing outside the catalogue is ever fetched | The allow-list is the source's own `feed_url`, read from the database each refresh |
+| No URL outside the catalogue is fetched as an entry point | The allow-list is the source's own `feed_url`, read from the database each refresh. A redirect destination is not in the catalogue and is reached — see the next row, which is what covers it |
 | Every redirect hop is re-validated | `follow_redirects=False`; each hop goes back through `UrlGuard` |
 | The connection lands on the address that was judged | The guard pins one resolved address; `Host` and SNI keep the real name |
 | An environment proxy cannot be interposed | `trust_env=False` on the fetch client |

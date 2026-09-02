@@ -3,6 +3,42 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-09-02 — The review found the fence bug, and it was in both scripts
+
+**A closing fence carries no info string, and neither checker knew it.**
+CodeRabbit flagged it on the new `check-mermaid.mjs`; verifying the finding
+turned up the identical omission in `check-doc-links.py`, which has been in
+the tree since that script was written and is a **false pass in a required
+status check**.
+
+The mechanism is the same in both. A line like ```` ```markdown ```` inside a
+```` ``` ````-opened block reads as a close, so every fence after it pairs one
+out of step: content becomes prose and prose becomes content. For the mermaid
+gate that meant a plainly invalid diagram was skipped and the run reported
+green. For the link checker it meant a link to a file that does not exist was
+never reported. Both were probed, both did the wrong thing, both now do the
+right one.
+
+**Reachability is low and that is not the point.** Producing the state needs a
+```` ``` ````-opened block containing a ```` ```lang ```` line, which is
+malformed markdown for what the author meant — they would have written
+```` ```` ````. Nobody has done it. But the failure is silent in the direction
+this repository keeps getting hurt in, the fix is one condition, and two
+scripts implementing the same rule differently is worse than either.
+
+`tests/test_doc_links.py` covers it now, and the test was made to fail against
+the unfixed script before it was believed. The mermaid side has no test file
+of its own; its probe was run by hand and is described in the pull request.
+
+**Also from the review, and also correct:** the changelog claimed Mermaid 11
+is "the renderer GitHub uses". GitHub does not publish the version it renders
+with. The claim is gone, and what replaces it is the fact that matters — the
+pin is *approximately* GitHub's grammar, the gap can only be seen by putting a
+fenced `info` block on github.com and reading what it renders, and a diagram
+newer than whatever GitHub runs would pass here and still render as a red box.
+An unsupported claim, in a file arguing that unsupported claims are the
+problem.
+
 ## 2026-09-02 — A gate for the diagrams, and what it deliberately does not check
 
 **`check-mermaid.mjs`, run by the `Docs` workflow.** Nine diagrams landed with
@@ -83,8 +119,8 @@ one that makes "the checks are ordered cheapest and most decisive first"
 legible at a glance.
 
 **A diagram that parses is not a diagram that reads, and the difference cost
-four rewrites.** All nine were checked against Mermaid 11, the renderer GitHub
-uses, and then rendered to PNG and looked at. Parsing caught nothing; looking
+four rewrites.** All nine were checked against a pinned Mermaid 11.17.2 and
+then rendered to PNG and looked at. Parsing caught nothing; looking
 caught four:
 
 - the topology diagram put the two external services side by side and routed

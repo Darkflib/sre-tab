@@ -27,9 +27,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   table: the backup timer's overnight catch-up and the fetcher's
   accept-a-redirect branch, neither of which anything verifies.
 
-  Every diagram was parsed against Mermaid 11 — the renderer GitHub uses — and
-  rendered to check it is legible rather than merely valid, which caught four
-  that were not: a topology whose layout drew an edge that did not exist
+  Every diagram was parsed against a pinned Mermaid 11.17.2 and rendered to
+  check it is legible rather than merely valid, which caught four that were
+  not: a topology whose layout drew an edge that did not exist
   between two external services, a state diagram whose labels overlapped into
   illegibility, and two others too tall to read.
 
@@ -60,6 +60,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   **This adds a ninth required check, and branch protection is not in this
   diff.** `CONTRIBUTING.md` carries the updated context list and the ordering
   to follow; until that write is run the job reports without being required.
+
+### Fixed
+
+- **`check-doc-links.py` treated a fence with an info string as a closing
+  fence, and that was a false pass in a required check.** CommonMark is
+  explicit that a closing fence carries none. Without the rule, a line like
+  ```` ```markdown ```` *inside* a ```` ``` ````-opened block reads as a
+  close, and every fence after it pairs one out of step — so prose is read as
+  code and a broken link in it is never reported. Probed on a document holding
+  a link to a file that does not exist, which the script passed green.
+
+  Found while verifying the same omission in the new Mermaid checker, which a
+  review of this pull request flagged. Both are fixed, and
+  `tests/test_doc_links.py` now covers the case — it was made to fail against
+  the unfixed script first, which is the only reason to believe it.
 
 ## [1.1.0] - 2026-09-02
 

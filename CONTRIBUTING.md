@@ -173,6 +173,14 @@ it and look:
 npx --yes @mermaid-js/mermaid-cli -i diagram.mmd -o diagram.png
 ```
 
+**The pinned parser is not GitHub's, and cannot be.** GitHub does not publish
+the Mermaid version it renders with, and moves it on its own schedule, so this
+gate agrees with the real renderer only approximately — syntax newer than
+whatever GitHub is running would pass here and still render as that red box.
+The only published way to ask is to put a fenced block containing the single
+word `info` in any Markdown on github.com and read what it renders. Worth
+doing if a diagram is rejected there and accepted here.
+
 Two things the script does that are not obvious, both from the rule in
 [AGENTS.md](AGENTS.md) about what a green check is worth. **Zero blocks is a
 failure**, because a repository with no diagrams and an extractor that has
@@ -321,8 +329,10 @@ parts have been run and which have not.
 <a id="branch-protection"></a>
 ## Branch protection
 
-`main` is protected. Nine checks are required. They are listed here by the
-name GitHub reports — the job's `name:`, which is what a required check
+`main` is protected. **Eight checks are enforced today; the table below lists
+nine.** The ninth, `Mermaid diagrams parse`, reports on every pull request but
+is not yet in the required set — see below the table. They are listed here by
+the name GitHub reports — the job's `name:`, which is what a required check
 actually matches on, not the job key in the workflow:
 
 | Required check | Workflow / job | What it is |
@@ -335,14 +345,17 @@ actually matches on, not the job key in the workflow:
 | `Container build and deployment smoke` | `ci.yml` / `container` | image build, Caddyfile validation, Quadlet generation, the deployment smoke test |
 | `README quickstart runs on a clean checkout` | `docs.yml` / `quickstart` | the README's own commands, executed |
 | `Relative links resolve` | `docs.yml` / `links` | every relative link and image in the docs |
-| `Mermaid diagrams parse` | `docs.yml` / `diagrams` | every ```` ```mermaid ```` block in the docs, against the renderer's own grammar |
+| `Mermaid diagrams parse` **(not yet required)** | `docs.yml` / `diagrams` | every ```` ```mermaid ```` block in the docs, against a pinned Mermaid parser |
 
-`Mermaid diagrams parse` is the newest of the nine, and the one to check
-first if this table and GitHub disagree: a job reports from the moment it
-lands, but it is required only once the write below has been run. The command
-is the intended set; the ordering to follow when adding to it is in
-[Renaming a job](#renaming-a-job) — land it, let it report on the pull
-request, *then* rewrite the required set, *then* verify against that head.
+**`Mermaid diagrams parse` is listed because the table is the intended set,
+and marked because it is not the enforced one.** A job reports from the moment
+it lands and becomes required only when the write below is run, and that write
+is a GitHub setting rather than a file, so nothing in a diff can make the two
+agree. Until it runs, a pull request can go red on that job and still merge.
+The ordering is in [Renaming a job](#renaming-a-job) — land it, let it report
+on the pull request, *then* rewrite the required set, *then* verify against
+that head. **Delete the marker in the same change**, or this paragraph becomes
+the thing it exists to prevent.
 
 `Publish, sign, and attest image` is **not** required — see below.
 
@@ -378,10 +391,11 @@ nothing would ever have surfaced it: every commit on `main` is a direct push,
 there has never been a pull request here, and required checks are not
 consulted on that path.
 
-The required set is now the eight reported names, and it was verified by
-set-differencing the required contexts against the check-runs the repository
-actually reports — empty in the direction that matters — rather than by
-reading the rule back and trusting it looked right.
+The required set was rewritten to the reported names — eight of them at the
+time, and eight still until `Mermaid diagrams parse` is added — and it was
+verified by set-differencing the required contexts against the check-runs the
+repository actually reports, empty in the direction that matters, rather than
+by reading the rule back and trusting it looked right.
 
 `Publish, sign, and attest image` is deliberately excluded. Its `if:` admits
 a push to `main` and a push of a `v*` tag and nothing else, so it never runs

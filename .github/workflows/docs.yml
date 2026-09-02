@@ -129,7 +129,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # persist-credentials: false for the same reason the quickstart job sets
+      # it, and the reason applies harder here: this job installs 122 packages
+      # this repository did not write and then imports them. The default
+      # leaves the checkout token in .git/config, where any of that code could
+      # read it. `contents: read` already caps what it would be worth and the
+      # repository is public, so this is depth rather than a fix — but not
+      # handing it over is cheaper than reasoning about who could take it.
+      #
+      # The `links` job above deliberately does not set it: it runs one
+      # first-party Python script and installs nothing. The distinction is
+      # whether a job executes code that arrived with the job.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
@@ -148,10 +161,18 @@ jobs:
       # throws without a window — though only for some diagram types, so an
       # absent DOM fails partially rather than cleanly. That is what the
       # script's self-test is for.
+      #
+      # --ignore-scripts because neither package needs a lifecycle script to
+      # work — verified by installing with it and running the gate green — so
+      # nothing is gained by letting 122 packages run arbitrary code at
+      # install time. What this does not remove is that the parser itself is
+      # third-party code that gets imported and executed; only a committed
+      # lockfile would pin the tree that reaches it, and this deliberately
+      # follows `uvx semgrep==`'s trade instead. See CONTRIBUTING.md.
       - name: Install the parser
         run: >
           npm install --prefix .github/scripts --no-save --no-audit --no-fund
-          mermaid@11.17.2 happy-dom@20.12.2
+          --ignore-scripts mermaid@11.17.2 happy-dom@20.12.2
 
       # Parses every ```mermaid block in the tracked Markdown. GitHub renders
       # one it cannot parse as a red "Unable to render rich display" box in
