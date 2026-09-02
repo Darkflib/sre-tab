@@ -68,12 +68,24 @@ def changelog(tmp_path: Path) -> Path:
 
 
 def resolve(
-    tag: str, changelog: Path, *, notes_out: Path | None = None
+    tag: str,
+    changelog: Path,
+    *,
+    notes_out: Path | None = None,
+    git_tags: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     argv = [sys.executable, str(SCRIPT), "--tag", tag, "--changelog", str(changelog)]
     if notes_out is not None:
         argv += ["--notes-out", str(notes_out)]
+    if git_tags is not None:
+        argv += ["--git-tags-file", str(git_tags)]
     return subprocess.run(argv, capture_output=True, text=True, check=False)
+
+
+def tag_list(tmp_path: Path, *tags: str) -> Path:
+    path = tmp_path / "git-tags.txt"
+    path.write_text("\n".join(tags) + ("\n" if tags else ""))
+    return path
 
 
 # --- Refusals -----------------------------------------------------------
@@ -91,6 +103,15 @@ def resolve(
         ("v1.1.0+build.5", "build metadata"),
         ("release-1.1.0", "must start with 'v'"),
         ("v1.1.0 ", "not vMAJOR.MINOR.PATCH"),
+        # Semver orders numeric pre-release identifiers as numbers, so a
+        # leading zero makes one version answer to two names. An identifier
+        # carrying a letter is text and is not subject to the rule, which is
+        # why -rc01 is accepted below and these are not.
+        ("v1.1.0-01", "not vMAJOR.MINOR.PATCH"),
+        ("v1.1.0-alpha.01", "not vMAJOR.MINOR.PATCH"),
+        ("v1.1.0-1.007", "not vMAJOR.MINOR.PATCH"),
+        ("v1.1.0-", "not vMAJOR.MINOR.PATCH"),
+        ("v1.1.0-alpha..1", "not vMAJOR.MINOR.PATCH"),
     ],
 )
 def test_a_tag_that_is_not_a_version_is_refused(tag: str, expected: str, changelog: Path) -> None:
@@ -199,3 +220,125 @@ def test_step_outputs_are_written_for_the_workflow(
         "prerelease": "false",
         "notes-file": str(notes),
     }
+
+
+# --- Pre-release identifiers that are legal and look as though they are not --
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "v1.1.0-rc01",  # alphanumeric: compared as text, may lead with zero
+        "v1.1.0-0alpha",
+        "v1.1.0-0",  # the one numeric identifier a zero may spell
+        "v1.1.0-alpha.1",
+        "v1.1.0-x-y-z.1",
+    ],
+)
+def test_a_legal_pre_release_identifier_is_accepted(tag: str, tmp_path: Path) -> None:
+    """The mirror of the refusals above, and the reason they are narrow.
+
+    Semver's rule is about *numeric* identifiers only, so tightening the
+    pattern far enough to catch `-01` is very easy to overshoot into
+    rejecting `-rc01`, which is legal and is the spelling a person is most
+    likely to reach for.
+    """
+    version = tag[1:]
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(f"# Changelog\n\n## [{version}]\n\n- Something.\n")
+
+    result = resolve(tag, changelog)
+
+    assert result.returncode == 0, result.stderr
+    assert f"{version}\n" in result.stdout or version in result.stdout
+
+
+# --- The floating tag never moves backwards -----------------------------
+
+
+def test_the_floating_tag_is_withheld_when_a_higher_patch_is_released(
+    changelog: Path, tmp_path: Path
+) -> None:
+    """A re-run of v1.1.0's job after v1.1.1 shipped must not drag :1.1 back.
+
+    The concurrency group is keyed on the full ref, so two patch builds of
+    one minor line are not serialised against each other, and re-running a
+    completed job is a button in the Actions UI. Neither is exotic.
+    """
+    tags = tag_list(tmp_path, "v1.0.0", "v1.1.0", "v1.1.1")
+
+    result = resolve("v1.1.0", changelog, git_tags=tags)
+
+    assert result.returncode == 0, result.stderr
+    assert "1.1.0" in result.stdout
+    assert "withholding the floating :1.1 tag" in result.stderr
+    # The exact version tag is unaffected: it names one build and always did.
+    assert " 1.1\n" not in result.stdout and result.stdout.rstrip().split()[-1] != "1.1"
+
+
+def test_the_floating_tag_moves_for_the_highest_patch_on_the_line(
+    tmp_path: Path,
+) -> None:
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text("# Changelog\n\n## [1.1.2]\n\n- Newest.\n")
+    tags = tag_list(tmp_path, "v1.1.0", "v1.1.1", "v1.1.2")
+
+    result = resolve("v1.1.2", changelog, git_tags=tags)
+
+    assert result.returncode == 0, result.stderr
+    assert "withholding" not in result.stderr
+
+
+def test_a_higher_patch_on_another_minor_line_does_not_withhold(
+    changelog: Path, tmp_path: Path
+) -> None:
+    """`:1.1` and `:1.2` are different tags. v1.2.9 existing says nothing
+    about whether v1.1.0 should own the 1.1 line."""
+    tags = tag_list(tmp_path, "v1.1.0", "v1.2.9")
+
+    result = resolve("v1.1.0", changelog, git_tags=tags)
+
+    assert result.returncode == 0, result.stderr
+    assert "withholding" not in result.stderr
+
+
+def test_a_higher_pre_release_does_not_withhold_the_floating_tag(
+    changelog: Path, tmp_path: Path
+) -> None:
+    """v1.1.1-rc1 is not a release. It never moved :1.1 and cannot block it."""
+    tags = tag_list(tmp_path, "v1.1.0", "v1.1.1-rc1")
+
+    result = resolve("v1.1.0", changelog, git_tags=tags)
+
+    assert result.returncode == 0, result.stderr
+    assert "withholding" not in result.stderr
+
+
+def test_a_tag_list_missing_the_tag_being_built_is_refused(changelog: Path, tmp_path: Path) -> None:
+    """The failure mode this guard exists for is not a wrong answer, it is an
+    empty file: a checkout that fetched no tags answers "nothing is newer"
+    for every version, which is indistinguishable from a correct pass."""
+    tags = tag_list(tmp_path, "v1.0.0")
+
+    result = resolve("v1.1.0", changelog, git_tags=tags)
+
+    assert result.returncode != 0
+    assert "not a complete tag list" in result.stderr
+
+
+def test_an_empty_tag_list_is_refused(changelog: Path, tmp_path: Path) -> None:
+    result = resolve("v1.1.0", changelog, git_tags=tag_list(tmp_path))
+
+    assert result.returncode != 0
+    assert "not a complete tag list" in result.stderr
+
+
+def test_tags_this_project_did_not_mint_are_ignored_not_fatal(
+    changelog: Path, tmp_path: Path
+) -> None:
+    """A repository may carry tags of any shape. Only release tags are read."""
+    tags = tag_list(tmp_path, "v1.1.0", "nightly", "v-broken", "2026-01-01", "")
+
+    result = resolve("v1.1.0", changelog, git_tags=tags)
+
+    assert result.returncode == 0, result.stderr

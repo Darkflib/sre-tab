@@ -40,6 +40,7 @@ import argparse
 import os
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 # Semantic versioning, anchored, with the leading `v` this project's tags
@@ -48,13 +49,24 @@ from pathlib import Path
 #
 # Leading zeros are refused because semver refuses them, and because
 # `v01.1.0` and `v1.1.0` would otherwise be two tags naming one version.
+#
+# The pre-release suffix is the same rule applied one level down, and it is
+# not the obvious `[0-9A-Za-z-]+`. Semver splits a pre-release into
+# dot-separated identifiers and treats them differently: a *numeric*
+# identifier — all digits — must not carry a leading zero, because
+# pre-releases are ordered and numeric identifiers are compared as numbers,
+# so `01` and `1` would be one version wearing two names. An *alphanumeric*
+# identifier — one containing at least one letter or hyphen — is compared as
+# text and may begin with a zero quite legally. So `-rc01` and `-0alpha` are
+# accepted and `-01` and `-alpha.01` are refused, which looks inconsistent
+# until you notice which of them are numbers.
 SEMVER_RE = re.compile(
     r"""
     ^v
     (?P<major>0|[1-9][0-9]*)\.
     (?P<minor>0|[1-9][0-9]*)\.
     (?P<patch>0|[1-9][0-9]*)
-    (?:-(?P<prerelease>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?
+    (?:-(?P<prerelease>(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?
     $
     """,
     re.VERBOSE,
@@ -110,7 +122,25 @@ def parse_tag(tag: str) -> tuple[str, bool]:
     return version, match.group("prerelease") is not None
 
 
-def image_tags(version: str, is_prerelease: bool) -> list[str]:
+def _final_release_versions(tags: Sequence[str]) -> list[tuple[int, int, int]]:
+    """Every tag in ``tags`` that names a final release, as a sortable
+    triple. Pre-releases and anything that is not a release tag at all are
+    dropped rather than raising: the list is whatever `git tag` printed, and
+    a repository is entitled to carry tags this project did not mint."""
+    out = []
+    for tag in tags:
+        match = SEMVER_RE.match(tag.strip())
+        if match is None or match.group("prerelease") is not None:
+            continue
+        out.append(
+            (int(match.group("major")), int(match.group("minor")), int(match.group("patch")))
+        )
+    return out
+
+
+def image_tags(
+    version: str, is_prerelease: bool, known_tags: Sequence[str] | None = None
+) -> list[str]:
     """The registry tags a build of ``version`` should be published under.
 
     The exact version always. The floating ``MAJOR.MINOR`` **only for a final
@@ -120,14 +150,40 @@ def image_tags(version: str, is_prerelease: bool) -> list[str]:
     for the stable minor line — the one population that explicitly did not
     ask for it. A pre-release is therefore pullable only by its exact name.
 
+    The floating tag is also withheld when ``known_tags`` shows a *higher*
+    patch already released on this minor line. A floating tag is the only
+    thing here that moves, so it is the only thing that can move backwards,
+    and the case is not hypothetical: the concurrency group is keyed on the
+    full ref, so two patch releases of one minor line are not serialised
+    against each other, and re-running an older tag's job is a button in the
+    Actions UI. Either lets ``v1.1.1`` finish after ``v1.1.2`` and quietly
+    downgrade everyone following ``:1.1``. The exact version tag is
+    unaffected — it names one build and always did.
+
     There is no floating ``:1``. A tag spanning every minor of a major is a
     larger promise than this project is in a position to keep, and the
     reference deployment pins a digest regardless.
     """
     tags = [version]
-    if not is_prerelease:
-        major, minor, _ = version.split(".", 2)
-        tags.append(f"{major}.{minor}")
+    if is_prerelease:
+        return tags
+
+    major, minor, patch = (int(part) for part in version.split(".", 2))
+    if known_tags is not None:
+        superseding = [
+            release
+            for release in _final_release_versions(known_tags)
+            if release[:2] == (major, minor) and release[2] > patch
+        ]
+        if superseding:
+            highest = ".".join(str(part) for part in max(superseding))
+            sys.stderr.write(
+                f"note: withholding the floating :{major}.{minor} tag — {highest} is already "
+                f"released on this line, and moving it to {version} would be a downgrade "
+                "for anyone following it\n"
+            )
+            return tags
+    tags.append(f"{major}.{minor}")
     return tags
 
 
@@ -174,6 +230,35 @@ def changelog_notes(changelog: Path, version: str) -> str:
     return body + "\n"
 
 
+def _read_git_tags(path: Path | None, current: str) -> list[str] | None:
+    """The tag list to judge the floating tag against, or ``None`` for "no
+    list was offered, so do not judge".
+
+    The one assertion here earns its place. A caller that passes a tag file
+    is relying on it to withhold a backwards-moving floating tag, and the
+    likeliest way for that to fail is not a wrong answer but an empty file —
+    a checkout that fetched no tags answers "nothing is newer" for every
+    version, which is indistinguishable from a correct pass and silently
+    restores the behaviour the file was added to prevent. The tag being
+    built is necessarily in its own repository's tag list, so its absence
+    means the list is not one, and that is worth failing on.
+    """
+    if path is None:
+        return None
+    try:
+        tags = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
+    except OSError as exc:
+        raise ReleaseError(f"cannot read {path}: {exc}") from exc
+    tags = [tag for tag in tags if tag]
+    if current not in tags:
+        raise ReleaseError(
+            f"{path} does not list {current!r}, the tag being built, so it is not a complete "
+            "tag list — most likely a checkout without fetch-tags. Refusing to decide the "
+            "floating tag from it, because an empty list silently answers 'nothing is newer'."
+        )
+    return tags
+
+
 def _write_github_output(pairs: dict[str, str]) -> None:
     """Append step outputs, if this is running inside a job that wants them."""
     path = os.environ.get("GITHUB_OUTPUT")
@@ -206,11 +291,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also write the extracted notes to stdout",
     )
+    parser.add_argument(
+        "--git-tags-file",
+        type=Path,
+        default=None,
+        help=(
+            "a file of newline-separated git tags, as `git tag --list` prints them. "
+            "Used only to decide whether the floating MAJOR.MINOR tag would move "
+            "backwards; omitted, the floating tag is always offered."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
         version, is_prerelease = parse_tag(args.tag)
-        tags = image_tags(version, is_prerelease)
+        known = _read_git_tags(args.git_tags_file, args.tag)
+        tags = image_tags(version, is_prerelease, known)
         notes = changelog_notes(args.changelog, version)
     except ReleaseError as exc:
         sys.stderr.write(f"error: {exc}\n")

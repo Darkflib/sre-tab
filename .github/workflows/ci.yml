@@ -589,7 +589,16 @@ jobs:
       id-token: write # keyless signing: the OIDC token IS the identity
       attestations: write # provenance and SBOM, recorded against this repo
     steps:
+      # fetch-tags, uniquely among this workflow's checkouts, because the
+      # resolver below decides whether the floating MAJOR.MINOR tag would
+      # move backwards and it can only answer that from the other tags on
+      # this minor line. A checkout without them answers "nothing is newer"
+      # for every version, which is why release-metadata.py refuses a tag
+      # list that does not contain the tag being built rather than trusting
+      # a quiet empty answer.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-tags: true
 
       - name: Install Podman
         run: sudo apt-get update && sudo apt-get install --yes podman
@@ -617,9 +626,39 @@ jobs:
         id: release
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
+          set -euo pipefail
+          git tag --list > "$RUNNER_TEMP/git-tags.txt"
           python3 .github/scripts/release-metadata.py \
             --tag "$GITHUB_REF_NAME" \
+            --git-tags-file "$RUNNER_TEMP/git-tags.txt" \
             --notes-out "$RUNNER_TEMP/release-notes.md"
+
+      # A version is published once. `gh release create` at the bottom of
+      # this job already refuses to overwrite an existing Release, but it
+      # runs *after* the push, and a registry tag cannot be taken back: a
+      # re-run of a completed tag build — one button in the Actions UI —
+      # would move `:1.1.0` onto freshly built bytes and only then fail,
+      # leaving the exact version tag pointing somewhere the Release body
+      # and its attached SBOM do not describe. So the question is asked
+      # here, before anything is downloaded, tagged, or pushed.
+      #
+      # This guards the realistic case, which is a re-run or a force-moved
+      # tag, and not the case where somebody has deliberately deleted the
+      # Release and left the registry tag behind. That one is a considered
+      # human act and gets the behaviour it asked for.
+      - name: Refuse to republish a version that already has a Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error::$GITHUB_REF_NAME already has a Release. A published version is" \
+                 "immutable: its registry tag, signature, and SBOM describe one set of bytes." \
+                 "To ship a change, tag a new version."
+            exit 1
+          fi
+          echo "no existing Release for $GITHUB_REF_NAME"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
