@@ -576,6 +576,14 @@ restart` — a reboot, an OOM kill, a routine restart to clear a stuck
 connection — silently adopted whatever CI had last pushed to main. The
 running version was decided by whoever merged most recently.
 
+The registry now also carries version tags — `1.1.0` for an exact release,
+`1.1` for the newest patch on that line — and none of that changes anything
+here. They exist for people running this image outside these Quadlets, and
+[README.md](../README.md#installing-a-version) is written for them. `1.1` is
+a moving pointer with the same property `:latest` had, which is why it is not
+what these units name. A release is promoted by digest like any other build:
+`deploy/scripts/promote.sh sha-<commit>`, using the commit the tag points at.
+
 ### Promote a build
 
 From a checkout, on any machine with `curl`, `cosign`, and `git`:
@@ -719,7 +727,7 @@ container start":
 
 | Point | Runs | Catches |
 | --- | --- | --- |
-| Publish (CI) | every push to main | a signature or attestation that cannot be verified from outside the step that made it |
+| Publish (CI) | every push to main, and every version tag | a signature or attestation that cannot be verified from outside the step that made it |
 | Promotion (`promote.sh`) | when a digest is chosen | pinning a build that is not ours |
 | CI, every push and PR | always | a pin that was hand-edited, or that has stopped verifying |
 | Operator, before a restart | when run | the above, on the host, at the moment of deploying |
