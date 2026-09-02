@@ -245,8 +245,23 @@ step "Starting PostgreSQL on a fresh volume"
     --pids-limit 256 \
     "$PG_IMAGE" >/dev/null
 
+# --host=127.0.0.1 is load-bearing, and its absence was a real race rather
+# than a tidiness point. The official image's entrypoint bootstraps a cluster
+# by starting a *temporary* server for initdb and the init scripts, and it
+# starts that one with `listen_addresses=''` — reachable on the unix socket
+# and on nothing else. A pg_isready with no host talks to that socket, so it
+# answers "ready" during the bootstrap, and the entrypoint then shuts the
+# temporary server down to start the real one. Whatever connected next got
+# `FATAL: the database system is shutting down`.
+#
+# The race has been here all along and only started biting when a step was
+# added that connects immediately: applying roles.sql. Migrations, which used
+# to be next, run in a container that takes long enough to start that the
+# restart had always finished first. Asking over TCP is what distinguishes
+# the two servers, because only the real one is listening there.
 attempt=0
-until "$ENGINE" exec sre-tab-db pg_isready --quiet --username=sretab --dbname=sretab; do
+until "$ENGINE" exec sre-tab-db \
+    pg_isready --quiet --host=127.0.0.1 --username=sretab --dbname=sretab; do
     attempt=$((attempt + 1))
     [ "$attempt" -ge 60 ] && fail "PostgreSQL never accepted connections"
     sleep 1
