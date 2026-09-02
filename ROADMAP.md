@@ -24,6 +24,7 @@ that.
     actions, or replace `download-syft` with a registry pull.
 - [Security findings this deployment absorbs](#security-findings-this-deployment-absorbs)
   - The OAuth state cookie can be overwritten from a sibling subdomain.
+  - PostgreSQL traffic inside the deployment is cleartext.
 - [API surface](#api-surface)
   - Serve `/api/v1/openapi.json` from the committed file in
     `deploy/Caddyfile`, not from the running application.
@@ -300,6 +301,33 @@ genuinely held by the three-operator assumption.
   `sretab_readonly`; whichever of the two branches merges second owns the
   change, and `deploy/ROLES.md`'s consumer table carries the row so it cannot
   be discovered in production instead.
+- **PostgreSQL traffic inside the deployment is cleartext.** Raised by review
+  of the role cutover, and it is correct: the generated `DATABASE_URL`s and the
+  backup's `PGPASSWORD` path use libpq's default `sslmode=prefer`, and
+  `sre-tab-db.container` enables no TLS, so `prefer` degrades to a plaintext
+  connection every time. Passwords are SCRAM-authenticated and so are not on
+  the wire in the clear, but every row is — which for this schema means every
+  session token hash, every bookmark, and every user record.
+
+  Held, on the shape of the deployment rather than on a judgement that
+  cleartext is fine. The database publishes no port, is reachable only from
+  `sre-tab.network`, and every peer on that network is a container this
+  repository defines on the same host. An attacker positioned to read that
+  traffic is already inside the network namespace, at which point the podman
+  secrets holding the credentials are readable too and TLS buys nothing
+  against them. **This changes the day the database moves off the host, or a
+  second host joins that network**, and it is the first thing to revisit at
+  that point rather than after it.
+
+  Closing it is not a configuration line, which is the honest reason it is not
+  done here: `sslmode=verify-full` is only meaningful with a CA the client
+  trusts and a server certificate naming `sre-tab-db`, so it wants a decision
+  about who issues that certificate, where the key lives, how a read-only
+  container gets it, and what rotates it. That is a piece of work with its own
+  design, not a flag on a connection string, and it does not belong in a
+  change about *roles* — `sslmode=require` without verification would look
+  like progress while authenticating nothing.
+
 - **The OAuth state cookie can be overwritten from a sibling subdomain.**
   `set_state_cookie` scopes to `/api/v1/auth` with `HttpOnly`, `SameSite=Lax`,
   and `Secure`, which is careful about everything except *which host* may
