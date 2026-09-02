@@ -34,25 +34,28 @@ could not have caught this before, having never installed podman either. And
 only helps the reader who reads it, and this deployment's other first-deploy
 trap is documented at length and *also* fails closed.
 
-The check asks `podman info --format '{{.Host.NetworkBackendInfo.DNS.Path}}'`
-rather than looking for the binary: Debian installs it under
+Neither check looks for the binary: Debian installs it under
 `/usr/lib/podman`, other distributions under `/usr/libexec/podman`,
-`containers.conf` can move it, and it is on `PATH` nowhere. A podman that
-cannot answer that query warns instead of refusing — refusing would be the
-guard deciding on evidence it does not have — and warns rather than passing
-quietly, which is the shape of the six green checks this repository has
-already had to go back and fix. Resolved path, empty path, and unanswerable
-query were each run against a stubbed `podman` before the branch was
-believed.
+`containers.conf` can move it, and it is on `PATH` nowhere. Both ask podman.
 
-**Unverified here, and settled by the next CI run:** the field name in that
-template was not run against a real podman — there is none on the development
-host — so if it is wrong the warning branch fires and the refusal never does.
-The `smoke.sh` preflight is what closes this cheaply: CI runs that script
-under podman on a runner where container DNS demonstrably works, so the line
-it prints says which. `aardvark-dns: /usr/...` means the template is right;
-`WARNING: could not ask podman ...` means the field moved and both copies
-need the real name.
+**The first version asked with a `--format` template naming the field that
+holds the path, and the review of PR #25 was right that it had a hole.** A
+template naming a field the local podman does not carry exits non-zero having
+reported nothing, which is not distinguishable from aardvark-dns being
+absent. That version warned and continued in that case, reasoning that
+refusing would be deciding on evidence it did not have — true, and beside the
+point, because continuing is the green check that checks nothing, and this
+repository has six of those in its history for a reason. Both horns are real,
+which is the signal that the state itself was the mistake. `--format json`
+and a substring has no third state: either the string is in the document or
+it is not, and no podman at all is the empty document, which refuses like any
+other host that cannot resolve a container name. It also settled a question
+this development host could not answer, having no podman to run the template
+against.
+
+Present, absent, and a podman that will not answer were each run against a
+stubbed engine, in both scripts, before either was believed — as was
+`smoke.sh`'s Docker path, which has no aardvark-dns to be missing.
 
 ## 2026-09-01 — The review's remaining findings, filed
 

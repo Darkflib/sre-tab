@@ -100,13 +100,18 @@ installed host is caught at install time rather than at the first request.
 To ask a host directly:
 
 ```bash
-podman info --format '{{.Host.NetworkBackendInfo.DNS.Path}}'
+podman info --format json | grep aardvark-dns
 ```
 
-Empty means missing. The path itself varies — Debian installs the binary
-under `/usr/lib/podman`, other distributions under `/usr/libexec/podman`, and
-`containers.conf` can move it — which is why both that command and the
-installer ask podman rather than looking on `PATH`, where it never is.
+Three lines means it is there; nothing means it is not. Both scripts run
+that same question, and neither looks for the binary on `PATH`, where it
+never is — Debian installs it under `/usr/lib/podman`, other distributions
+under `/usr/libexec/podman`, and `containers.conf` can move it. Asking for
+the whole document and reading it, rather than for the one field that holds
+the path, is deliberate: a `--format` template naming a field this podman
+does not carry fails in exactly the way a missing binary does, and a check
+that cannot tell those apart has to either refuse without evidence or
+continue without checking. The document has no such state.
 
 Then install:
 

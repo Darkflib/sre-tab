@@ -270,15 +270,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already runs there for the same reason — a two-second question whose
   answer, unasked, arrives three minutes in as a connection traceback.
   Under `CONTAINER_ENGINE=docker` the harness says the engine resolves
-  names itself rather than skipping quietly. The check asks
-  `podman info` for the path it resolved rather than looking on `PATH`,
-  where the binary never is, since Debian puts it under `/usr/lib/podman`
-  and other distributions under `/usr/libexec/podman`. A podman that
-  cannot answer that query at all warns rather than refuses: a guard
-  deciding on evidence it does not have is the wrong failure, and one that
-  says nothing is the green check that checks nothing. Every branch of both
-  checks, the harness's Docker path included, was exercised against a
-  stubbed engine before being believed.
+  names itself rather than skipping quietly.
+
+  Both checks read `podman info --format json` for the string, rather than
+  a `--format` template naming the field that holds the path, and that is
+  the second version. The template has a third state — one naming a field
+  this podman does not carry exits non-zero having reported nothing, which
+  is not distinguishable from the binary being absent — and every way of
+  handling it is wrong: refusing decides on evidence it does not have, and
+  warning through is the green check that checks nothing. Removing the
+  state was the fix. The whole document cannot fail that way, and no podman
+  at all is the empty document, which refuses like any other host that
+  cannot resolve a container name. Neither looks for the binary on `PATH`,
+  where it never is: Debian installs it under `/usr/lib/podman`, other
+  distributions under `/usr/libexec/podman`, and `containers.conf` can move
+  it. Every branch of both checks, the harness's Docker path and a podman
+  that will not answer at all included, was exercised against a stubbed
+  engine before being believed.
 
 ### Changed
 

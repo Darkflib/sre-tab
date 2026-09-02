@@ -206,39 +206,36 @@ if [ "$start_services" = true ]; then
     # Asked of podman rather than looked for on PATH, where it never is:
     # Debian installs the binary under /usr/lib/podman, other distributions
     # under /usr/libexec/podman, and containers.conf's helper_binaries_dir can
-    # move it anywhere. podman reports the path it actually resolved, and
-    # reports it empty when it resolved none.
-    if dns_helper=$(podman info --format '{{.Host.NetworkBackendInfo.DNS.Path}}' 2>/dev/null); then
-        if [ -z "$dns_helper" ]; then
-            cat >&2 <<'EOF'
-error: podman cannot find aardvark-dns, so containers on sre-tab.network
-       will not resolve each other by name — and every hop in this stack is
-       by name: five units reach the database as `sre-tab-db`, and Caddy
-       reaches the application as `sre-tab-app`.
+    # move it anywhere. podman reports what it actually resolved.
+    #
+    # The whole document and a substring, rather than a Go template naming
+    # the field that holds the path. This started as the template, and the
+    # template has a third state: one that names a field this podman does not
+    # carry exits non-zero having reported nothing, which is not
+    # distinguishable from the binary being absent. Every way of handling
+    # that state is wrong — refusing decides on evidence it does not have,
+    # warning and continuing is the green check that checks nothing — so the
+    # right move was to stop producing it. `--format json` cannot fail that
+    # way: either aardvark-dns is in the document or it is not, and no podman
+    # at all is the empty document, which refuses like any other host that
+    # cannot resolve a container name.
+    if ! podman info --format json 2>/dev/null | grep -q aardvark-dns; then
+        cat >&2 <<'EOF'
+error: podman reports no aardvark-dns, so containers on sre-tab.network will
+       not resolve each other by name — and every hop in this stack is by
+       name: five units reach the database as `sre-tab-db`, and Caddy reaches
+       the application as `sre-tab-app`.
 
            sudo apt-get install aardvark-dns
 
        It is a Recommends of Debian's podman package, so a host installed
-       with --no-install-recommends does not have it. Nothing else about
-       such a host is wrong: podman starts every container, and they simply
-       cannot see one another.
-EOF
-            exit 1
-        fi
-    else
-        # Two things reach here: a podman whose `info` does not carry that
-        # field, and no podman at all. Neither is grounds to refuse — the
-        # check would be deciding on evidence it does not have — and neither
-        # is grounds to say nothing, which is how a guard becomes a green
-        # check that checked nothing.
-        cat >&2 <<'EOF'
-warning: could not ask podman where aardvark-dns is, so this installer has
-         not checked for it. Without it containers do not resolve each other
-         by name and nothing here reaches the database. Check by hand before
-         concluding the stack is healthy:
+       with --no-install-recommends does not have it. Nothing else about such
+       a host is wrong: podman starts every container, and they simply cannot
+       see one another. What podman says about it:
 
-             podman info --format '{{.Host.NetworkBackendInfo.DNS.Path}}'
+           podman info --format json | grep aardvark-dns
 EOF
+        exit 1
     fi
 
     for secret in sre-tab-postgres-password sre-tab-database-url \

@@ -250,21 +250,17 @@ step "The host can resolve one container from another"
 # Asked of podman rather than looked for on PATH, where it never is: Debian
 # installs the binary under /usr/lib/podman, other distributions under
 # /usr/libexec/podman, and containers.conf's helper_binaries_dir can move it
-# anywhere. podman reports the path it actually resolved, and reports it
-# empty when it resolved none.
+# anywhere. `--format json` and a substring rather than a Go template naming
+# the field, because a template that names a field this podman does not carry
+# fails exactly as a missing binary does, and a check with a state it cannot
+# resolve has to either refuse without evidence or pass without checking. The
+# document has no such state, and no podman at all is the empty document.
+# deploy/install.sh carries the same check and the same reasoning at length.
 case "${ENGINE##*/}" in
     podman*)
-        if dns_helper=$("$ENGINE" info --format '{{.Host.NetworkBackendInfo.DNS.Path}}' 2>/dev/null); then
-            [ -n "$dns_helper" ] || fail "podman cannot find aardvark-dns, so containers on $NET will not resolve each other by name and every step below would fail at its first cross-container call — install it (on Debian, sudo apt-get install aardvark-dns) and run this again"
-            echo "  aardvark-dns: $dns_helper"
-        else
-            # Not a refusal. A podman whose `info` does not carry that field
-            # is not the same thing as a podman without container DNS, and a
-            # check that cannot tell them apart should not pick one. Saying
-            # nothing is the option that is actually wrong — that is the
-            # green check that checks nothing.
-            echo "  WARNING: could not ask $ENGINE where aardvark-dns is; container DNS is unverified" >&2
-        fi
+        "$ENGINE" info --format json 2>/dev/null | grep -q aardvark-dns || fail \
+            "podman reports no aardvark-dns, so containers on $NET will not resolve each other by name and every step below would fail at its first cross-container call — install it (on Debian, sudo apt-get install aardvark-dns) and run this again"
+        echo "  aardvark-dns: present"
         ;;
     *)
         # Docker runs its own resolver on a user-defined network and has no
