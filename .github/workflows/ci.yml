@@ -807,13 +807,31 @@ jobs:
       # around it, which is also why the inputs are unchanged — `sbom-path`
       # is a first-class input here and still produces an SBOM attestation.
       #
-      # The migration checks itself, which is the only reason it is safe to
-      # make without a way to rehearse it. `deploy/scripts/verify-image.sh
-      # --require-attestations` runs later in *this* job and asserts an
-      # attestation with predicate type https://spdx.dev/Document against the
-      # image just pushed. If this action emitted a different predicate type,
-      # that step fails the job rather than leaving a release whose SBOM
-      # attestation nothing can find.
+      # The migration is checked by this job rather than rehearsed, because a
+      # publish-only step cannot be rehearsed: `verify-image.sh
+      # --require-attestations` runs later here and asserts an SBOM
+      # attestation against the image just pushed.
+      #
+      # Two limits on that, both measured against the published 1.1.0 image
+      # rather than assumed, because the first draft of this comment claimed
+      # more than the check delivers.
+      #
+      # `gh attestation verify` matches by *digest*, and will accept any
+      # attestation the API holds for that digest — not specifically the one
+      # this run just made. What makes the check meaningful is that every
+      # build produces a new digest, so on the path that matters the only
+      # attestations in existence are this run's. A re-run against an
+      # already-published digest would be satisfied by the older attestation,
+      # and the "Refuse to republish" step above is what stops that arising.
+      #
+      # And the predicate assertion is a *prefix* match, not equality. The
+      # recorded type is `https://spdx.dev/Document/v2.3`; the verifier asks
+      # for `https://spdx.dev/Document` and `gh` matches it. That is
+      # deliberate rather than a mistake to tidy — pinning the SPDX version
+      # would make an SBOM-format bump look like a supply-chain failure — but
+      # it does mean the check answers "an SPDX document is attested", not
+      # "exactly this version is". A bogus predicate type is still refused;
+      # that was tested, and is what makes it an assertion at all.
       #
       # actions/attest-build-provenance above is NOT deprecated and stays as
       # it is; only the SBOM action was.

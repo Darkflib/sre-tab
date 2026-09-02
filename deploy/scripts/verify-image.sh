@@ -145,6 +145,11 @@ attest() {
 
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     attest https://slsa.dev/provenance/v1 "SLSA build provenance"
+    # Unversioned on purpose. The attestation records
+    # https://spdx.dev/Document/v2.3 and gh matches this prefix against it
+    # (checked against a published image, not assumed), so an SPDX version
+    # bump does not read as a supply-chain failure. The cost is that this
+    # asserts "an SPDX document is attested" rather than a specific version.
     attest https://spdx.dev/Document "SPDX SBOM"
 elif [ "$require_attestations" = true ]; then
     echo "error: --require-attestations, but gh(1) is missing or not logged in." >&2
