@@ -183,9 +183,10 @@ out and re-running returns the host byte for byte to a host that never had it.
 
 **Only the host side moves.** The container still listens on 8080, and three
 things depend on that: the `:8080` site block in `deploy/Caddyfile`, the
-image's own healthcheck, and the container port in `PublishPort=`. They have
-to agree with each other and none of the three is an operator's business.
-`SRE_TAB_WEB_PORT` names the left-hand number only.
+image's own healthcheck, and the right-hand number in `PublishPort=`. They
+have to agree with each other and none of the three is an operator's
+business. `SRE_TAB_WEB_PORT` sets the middle field of
+`PublishPort=127.0.0.1:<host>:8080` and nothing else.
 
 **It is not application configuration and does not belong in `app.env`.**
 That file is handed to the running containers as an `EnvironmentFile=`, so
