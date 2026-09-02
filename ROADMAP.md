@@ -27,7 +27,6 @@ that.
     `restore.sh` and the smoke test use them now, and every Quadlet unit
     still connects as the superuser.
   - The OAuth state cookie can be overwritten from a sibling subdomain.
-  - `upsert_user` has no conflict handling for a concurrent first sign-in.
 - [API surface](#api-surface)
   - Serve `/api/v1/openapi.json` from the committed file in
     `deploy/Caddyfile`, not from the running application.
@@ -39,11 +38,12 @@ that.
 - [Operations](#operations)
   - Off-host backups.
   - An `OnFailure=` alert unit.
-  - Release hygiene: no Release against `v1.0.0`, and no versioned image tag
-    a self-hoster can pull.
-  - Frontend coverage for `src/api/client.ts`, and for the parts of
-    `usePagedResource` that need a DOM — its decision logic is covered now,
-    its effects are not.
+  - Release hygiene: the machinery is in place and has never been run. No
+    `v1.1.0` tag has been pushed, so no Release object and no versioned image
+    tag exist yet.
+  - Frontend coverage for the components and routes — `src/api/client.ts`
+    and `usePagedResource`'s effects are covered now; nothing under
+    `src/components/` or `src/routes/` is.
 - [Things that are true but unproven](#things-that-are-true-but-unproven)
   - The backup timer's `Persistent=true` catch-up, demonstrated rather than
     assumed.
@@ -347,6 +347,45 @@ count at all.
   place to put the equivalent is already built. Negligible at three
   operators — tens of rows a year — which is the only reason it is not
   done.
+- **`upsert_user` is select-then-insert with no conflict handling** —
+  **landed.** The lookup, the insert, and the profile refresh are one
+  `ON CONFLICT (github_id) DO UPDATE ... RETURNING` in
+  [app/auth/users.py](app/auth/users.py), on a new `upsert_returning` that
+  sits beside `insert_ignore` in
+  [app/services/upsert.py](app/services/upsert.py) and keeps the same
+  two-dialect split. There is no window between reading and writing because
+  there is no second statement, and the create path and the update path
+  stopped being two branches.
+
+  **The entry below names the wrong fix, and why it is wrong is the part
+  worth keeping.** It proposed insert-ignore followed by a select on
+  `github_id`, reasoning that the loser would read the winner's row rather
+  than raise. Measured against PostgreSQL 18 — one connection holding an
+  uncommitted insert, another signing in — that shape *does* work: DO
+  NOTHING's speculative insertion waits on the conflicting transaction, and
+  the follow-up `SELECT` takes a fresh snapshot that sees the committed
+  row. So the objection is not the one that first suggests itself, which is
+  that DO NOTHING takes no row lock and leaves the loser holding `None`.
+  It is quieter than that: the pairing is correct only because the
+  connection is at READ COMMITTED, which `create_db_engine` does not set
+  and no test asserts, and under REPEATABLE READ the same two statements
+  raise a serialization failure. DO UPDATE returns the surviving row from
+  the statement that resolved the conflict, so nothing about it turns on a
+  second snapshot, and it carries no `None` branch that can never be
+  reached and therefore never be tested.
+
+  Two things the work turned up. `users.updated_at`'s `onupdate=func.now()`
+  is an ORM-flush hook and does not reach a hand-written DO UPDATE set
+  clause, so the timestamp had to be set by hand or it would have frozen at
+  its insert value with nothing to say so. And the race needed a real
+  server to test at all: `tests/postgres/test_signin_race.py` holds an
+  uncommitted insert open on one connection while a thread signs in on
+  another, asserts the block against `pg_stat_activity` rather than against
+  a sleep, and was made to fail against the restored old body —
+  `UniqueViolation` on `uq_users_github_id` — before it was believed.
+
+  The entry below stands as written except for the fix it proposes.
+
 - **`upsert_user` is select-then-insert with no conflict handling.** Two
   concurrent first sign-ins for the same GitHub ID both find no row and
   both insert. `users.github_id` is `unique=True`, so the loser gets an
@@ -461,21 +500,39 @@ prerequisite for going past it.
   not take the instance out of rotation. Readiness and alerting want
   opposite answers to the same question, and only one of them is being
   asked.
-- **Nothing here can be installed by version.** `v1.0.0` is a git tag and
-  nothing more: no Release object against it, so the tag carries no notes
-  and none of the artefacts the build already produces, the SBOM among them.
-  `CHANGELOG.md` has accumulated an `[Unreleased]` section
-  substantially larger than the release it sits above. And the registry
-  holds only `sha-<commit>` tags, because the publish job runs on pushes to
-  `main` and on nothing else, so the only path to a known-good deployment is
-  `promote.sh` run from a checkout of this repository. That is exactly right
-  for the reference host and useless to anyone else: there is no version to
-  ask for.
+- **Nothing here can be installed by version** — **the machinery has landed;
+  nothing has been released with it.** The original entry is worth keeping in
+  full, because half of it is still true.
 
-  What closes it is one iteration rather than one change — cut 1.1.0, create
-  the Release with notes and the SBOM attached, and add a tag-triggered
-  publish that pushes `:1.1.0` and `:1.1` alongside the digest. The
-  digest-pinned promotion stays exactly as it is, for the reason
+  As written: `v1.0.0` is a git tag and nothing more — no Release object
+  against it, so the tag carries no notes and none of the artefacts the build
+  already produces, the SBOM among them. `CHANGELOG.md` has accumulated an
+  `[Unreleased]` section substantially larger than the release it sits above.
+  And the registry holds only `sha-<commit>` tags, because the publish job
+  runs on pushes to `main` and on nothing else, so the only path to a
+  known-good deployment is `promote.sh` run from a checkout of this
+  repository. That is exactly right for the reference host and useless to
+  anyone else: there is no version to ask for.
+
+  What has changed is the last part. `ci.yml` now triggers on a `v*` tag
+  through the identical `needs:` chain, and a tag build publishes `:1.1.0`
+  and `:1.1` alongside `sha-<commit>`, creates the Release from that
+  version's `CHANGELOG.md` section, and attaches the SBOM. A tag whose shape
+  is wrong, or whose version the changelog does not describe, fails the job
+  before anything is pushed — `.github/scripts/release-metadata.py`, exercised
+  through its refusals by `tests/test_release_metadata.py`. A tag build does
+  not move `:latest`, and a pre-release does not move the floating `:1.1`.
+
+  **What has not changed is that none of it has run.** No `v1.1.0` tag has
+  been pushed, so there is still no Release object anywhere in this
+  repository, still no versioned image in the registry, and still nothing
+  a self-hoster can pull by version. The path is built and untravelled: the
+  first tag is the demonstration, and until it is pushed everything above is
+  a claim about code that has only ever been run on synthetic inputs. Cutting
+  1.1.0 is deliberately held until the rest of the production-readiness work
+  has landed, so that the first release is worth being the first release.
+
+  The digest-pinned promotion stays exactly as it is, for the reason
   [Supply-chain hygiene](#supply-chain-hygiene) gives: a moving tag decides
   the running version by whoever pushed last, which is the property that
   entry exists to have removed. A floating `:1.1` is a convenience for
@@ -523,10 +580,57 @@ prerequisite for going past it.
   is marked `it.fails` with the behaviour we want, so it records the gap
   without pinning the defect as correct and errors the day someone closes it.
 
-  `usePagedResource` and `src/api/client.ts` are the expensive half and are
-  still untested: hooks and `fetch` mean a DOM environment and request
-  mocking, which is real setup and probably a dependency or two. Still worth
-  doing, and still not the thing to pick up first.
+  `usePagedResource` and `src/api/client.ts` — the expensive half — have
+  since landed as well, at a cost of one devDependency rather than the two
+  or three this entry budgeted for. 65 tests, taking the suite to 458, and
+  mutation-tested on the same standard: 45 behavioural mutations, 39 caught.
+
+  What made it cheap was declining two of the three obvious dependencies.
+  `happy-dom` (seven packages, against jsdom's tree) is declared per-file
+  with a `// @vitest-environment happy-dom` docblock, so the austerity that
+  found the contrast and `filterKey` defects still holds everywhere else —
+  the rest of the suite runs with no DOM and fails loudly when it touches a
+  global it did not install. `msw` was not needed because `client.ts` goes
+  through openapi-fetch, whose seam is one injectable function: a `vi.fn()`
+  over `globalThis.fetch` reaches everything a service worker would.
+  `@testing-library/react` was not needed because React 19 exports `act`
+  itself, so mounting a hook on `createRoot` is thirty lines in the test
+  file. Trying that before asking for the dependency was the whole of the
+  saving.
+
+  One thing the tests found rather than confirmed: `readCookie` ends in
+  `decodeURIComponent`, which throws on a value containing a stray `%`, and
+  the throw escapes the request middleware. `guard` in `endpoints.ts` then
+  reports it as `ApiError(0, 'Could not reach the server.')` — so a
+  malformed CSRF cookie makes every write in the app fail as an offline
+  error, before any request is sent. The server never writes such a value,
+  but the cookie is not `HttpOnly` by design and has no `__Host-` prefix, so
+  the sibling-subdomain write recorded above for the OAuth state cookie
+  reaches this too. Held with two `it.fails` markers rather than fixed here,
+  on the same reasoning as the comma-in-a-slug case: the fix is a change to
+  `client.ts`, and this was a testing change.
+
+  A second thing worth knowing before someone reads the mutation score as a
+  gap. Six mutations survived and none is a missing test. Two are equivalent
+  mutants — merging rather than replacing on the initial page, and clearing
+  `error` on a success that can only follow a fresh generation, both
+  unobservable because the render-phase reset guarantees the state they act
+  on. The other four are individual halves of three guard *pairs*: each of
+  the hook's async continuations checks both `signal.aborted` and the cache
+  key, and every transition that supersedes a request does both — so
+  removing either alone changes nothing observable, while removing both is
+  caught. The one exception, and the reason the abort check is not merely
+  ornamental, is React StrictMode: it mounts every effect, tears it down,
+  and mounts it again against an *unchanged* key, so the first request's
+  answer arrives with the cache key matching perfectly and only the abort
+  tells the two apart. `main.tsx` wraps the app in StrictMode, so that is
+  the path every development page load takes, and there is a test for it.
+
+  **Components and routes remain uncovered, and that is the open half now.**
+  It was left out of this pass deliberately: `src/routes/` is where
+  `@testing-library/react` stops being avoidable, and that is a separate
+  dependency decision that should be argued on its own rather than carried
+  in behind a DOM environment.
 
 - **Nothing constrains a slug's format at any creation path** — **landed.**
   Resolved towards enforcement, on least-surprise grounds: the surprise here

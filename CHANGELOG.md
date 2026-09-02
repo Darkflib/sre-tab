@@ -8,6 +8,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A tag-triggered publish path, so there is a version to ask for.** Until
+  now the registry only ever received `sha-<commit>` and `latest`, because
+  `publish` ran on pushes to `main` and nothing else — which is exactly right
+  for the reference host and useless to anybody else. `ci.yml` now also runs
+  on a `v*` tag, through the identical `needs:` chain, and a tag build
+  publishes `:1.1.0` and `:1.1` alongside the commit tag and creates the
+  GitHub Release with that version's changelog section and the SBOM the job
+  already generates.
+
+  Three decisions are worth stating because each could plausibly have gone
+  the other way. **A tag build does not move `:latest`**, which stays the tip
+  of `main`: a moving tag decides the running version by whoever pushed last,
+  and that is the property the digest pins exist to have removed — a release
+  moving `latest` would hand it back, and in the least expected direction.
+  **A pre-release does not move the floating `:1.1`**, because `1.1.0-rc1`
+  sorts below `1.1.0` and somebody asking for the stable minor line has not
+  asked for a release candidate; `v1.1.0-rc1` publishes its exact version and
+  nothing else. And **a tag with no `CHANGELOG.md` section fails the job**
+  rather than producing a Release with an empty body, which would be a green
+  check that verified nothing.
+
+  The tag parsing, the version-tag rule, and the changelog extraction live in
+  `.github/scripts/release-metadata.py` rather than in YAML, and
+  `tests/test_release_metadata.py` drives them through the refusals —
+  `v1.1`, `1.1.0`, `vfoo`, `v01.1.0`, `v1.1.0+build`, and a version the
+  changelog does not mention — as well as the acceptances. Each guard was
+  broken on purpose and seen to go red before being believed.
 - `SECURITY.md`: a private reporting channel (GitHub security advisories),
   the supported-version table, and a pointer to the accepted findings in
   ROADMAP.md so a reporter can tell a new finding from a held one.
@@ -70,9 +97,63 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - An open-work index at the top of `ROADMAP.md`. The file keeps landed
   items on purpose, which left no way to see what was still open without
   reading all 39KB of it.
+- 65 Vitest tests over `src/api/client.ts` and the effects half of
+  `src/data/usePagedResource.ts`, taking the client suite to 458. These are
+  the two modules the roadmap called the expensive half: the fetch layer,
+  and the part of the pagination hook that only exists once a component is
+  mounted. The client tests pin the same-origin request the module builds,
+  the CSRF header on mutating methods and its absence on safe ones, the
+  401 broadcast that drops the session, and — the distinction every caller
+  branches on — an HTTP error carrying its status against a network failure
+  flattened to `status: 0`. The hook tests pin the initial load, cursor
+  pagination, that a filter change discards the previous filter's pages
+  rather than appending to them, and that a response from a superseded
+  request cannot overwrite newer state.
+
+  One new devDependency, `happy-dom`, and nothing else: seven packages
+  against jsdom's tree, declared per-file with a
+  `// @vitest-environment happy-dom` docblock so the rest of the suite keeps
+  running with no DOM and keeps failing loudly when it reaches for a global
+  it did not install. No request-mocking library — `globalThis.fetch` is a
+  `vi.fn()` — and no renderer library: React 19 exports `act` itself, so
+  mounting a hook on `createRoot` is thirty lines.
+
+  Mutation-tested rather than merely run, on the precedent set by
+  `filters.ts`: 45 behavioural mutations, 39 caught. The six survivors are
+  written up in the pull request and are not coverage gaps — two are
+  equivalent mutants, and four are one half of a pair of staleness guards
+  where removing *both* is caught and removing *either* is not, which is
+  the hook's defence-in-depth working as documented.
+- **A malformed CSRF cookie breaks every write in the app, and reports it
+  as a network outage.** `readCookie` ends in `decodeURIComponent`, which
+  throws `URIError` on a stray `%`; the throw escapes the request
+  middleware before `fetch` is reached, and `guard` in `endpoints.ts`
+  normalises anything thrown into `ApiError(0, 'Could not reach the
+  server.')`. The user sees an offline message, no request is sent, and
+  retrying cannot help. The server never writes such a value — the token is
+  base64url — but the cookie is deliberately not `HttpOnly` (that is the
+  double-submit mechanism) and carries no `__Host-` prefix, so a sibling
+  subdomain can set one, the same exposure already recorded for the OAuth
+  state cookie. Recorded rather than fixed, with two `it.fails` tests
+  asserting the behaviour we want, so that whoever hardens `readCookie`
+  gets an "expected to fail but passed" and deletes the markers.
 
 ### Changed
 
+- **`verify-image.sh` now accepts the set of refs this workflow signs from,
+  not one member of it.** A keyless certificate's subject ends in the ref
+  that produced it, so a release signed on `refs/tags/v1.1.0` fails a check
+  pinned to `…/ci.yml@refs/heads/main` — which is what the script did, and
+  would have failed the publish job's own verification step on the first
+  tagged build. `--certificate-identity` becomes
+  `--certificate-identity-regexp` over exactly `refs/heads/main` or a
+  `vMAJOR.MINOR.PATCH` tag. It is anchored at both ends because cosign
+  applies the pattern with an unanchored `MatchString` — read in
+  `pkg/cosign/verify.go` rather than assumed — so without `^` and `$` a
+  subject merely *containing* the string would pass, including
+  `https://evil.example/https://github.com/Darkflib/…`.
+  `tests/test_verify_image_identity.py` pins thirteen rejections against five
+  acceptances, and the leading anchor was removed once to watch it go red.
 - **`restore.sh` restores with a split credential.** `DROP DATABASE` and
   `CREATE DATABASE` keep the superuser (`--user`/`--password-secret`,
   unchanged defaults), because database-level administration is not
@@ -102,6 +183,50 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A concurrent first sign-in no longer 500s one of the two callbacks.**
+  `upsert_user` was select-then-insert on `github_id`. Two sign-ins for one
+  GitHub account racing on that account's *first* sign-in both found no
+  row, both inserted, and the unique constraint handed the loser an
+  `IntegrityError`. The table was never at risk — the constraint did
+  exactly its job — but one of the two users got an error page. It is now a
+  single `ON CONFLICT (github_id) DO UPDATE ... RETURNING`, which folds the
+  profile refresh into the same statement, so the create path and the
+  update path stopped being two branches that have to be kept in step.
+
+  **The distinction worth remembering is DO NOTHING against DO UPDATE, and
+  the obvious argument for it turned out to be wrong.** ROADMAP.md proposed
+  reusing `insert_ignore` — `ON CONFLICT DO NOTHING` followed by a `SELECT`
+  — and the objection raised to that was that DO NOTHING takes no lock on
+  the conflicting row, so the loser would affect zero rows, still not see
+  the winner's uncommitted row, and fall out holding `None`. Measured
+  against PostgreSQL 18, that is not what happens: speculative insertion
+  waits on the conflicting transaction, and the follow-up `SELECT` is a
+  separate statement with a fresh snapshot, so it reads the committed row.
+  The pairing works. What is actually wrong with it is narrower and much
+  quieter — it works *because* the connection is at READ COMMITTED, which
+  nothing in `create_db_engine` sets and no test asserts, and under
+  REPEATABLE READ the same pair raises a serialization failure instead.
+  `DO UPDATE ... RETURNING` hands back the surviving row from the statement
+  that resolved the conflict, so there is no second snapshot for its
+  correctness to rest on, and no unreachable `None` branch whose only
+  correct handling would be a retry loop.
+
+  One finding fell out of this that would otherwise have shipped silently.
+  `users.updated_at` carries `onupdate=func.now()`, and that is an
+  ORM-flush hook: SQLAlchemy does not fold it into a hand-written
+  `on_conflict_do_update` set clause. Left out, the column freezes at its
+  insert value on every later sign-in and nothing complains. It is set
+  explicitly now, and the test guarding it back-dates the row first rather
+  than comparing two timestamps taken moments apart — SQLite's
+  `CURRENT_TIMESTAMP` has one-second resolution, so the naive version of
+  that test passes against the broken code.
+
+  The race test is in `tests/postgres/`, because two connections holding
+  write transactions open at once is precisely what SQLite cannot do. Both
+  guards were made to fail on purpose before being believed: the race test
+  against the restored select-then-insert body (`UniqueViolation` on
+  `uq_users_github_id`), and the timestamp test against an update mapping
+  with `updated_at` removed.
 - **The reason logged for a refused IPv4-mapped literal came from the
   interpreter rather than from the guard.** `classify_address` returned the
   first `ipaddress` predicate that matched, and which of those consult

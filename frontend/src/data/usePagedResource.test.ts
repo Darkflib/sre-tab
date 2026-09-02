@@ -3,18 +3,17 @@ import { describe, expect, it } from 'vitest';
 import { canStartLoadMore } from './usePagedResource';
 
 /**
- * `usePagedResource` needs a renderer to test properly — `loadMore` closes
- * over `useState`/`useRef`/`useCallback`, and exercising its actual
- * lifecycle (an effect's cleanup firing on unmount, a re-render replacing a
- * stale closure) means mounting a component. This project's suite runs
- * without jsdom or a testing-library renderer by deliberate choice, and
- * neither is being added for one hook.
+ * The hook's decision logic, with no renderer and no DOM. Its lifecycle —
+ * effects, cleanups, and which of two open requests is allowed to write —
+ * lives in `usePagedResource.effects.test.ts`, which mounts the hook under
+ * `happy-dom`. This file stays in vitest's default `node` environment on
+ * purpose: it needs nothing, so it should be given nothing.
  *
- * What *is* pure, and what the lifecycle fix actually depends on, is the
+ * What is pure, and what the lifecycle fix actually depends on, is the
  * re-entrancy guard `loadMore` checks before it is allowed to start a
  * second request. `canStartLoadMore` is that guard extracted to a plain
- * function, so the one piece of new decision logic in the fix is checked
- * here directly rather than asserted only by inspection.
+ * function, so the one piece of decision logic in the fix is checked here
+ * directly rather than only through a mounted component.
  *
  * The guard exists because `loadingMore` alone cannot stop a same-tick
  * double call: it is React state, so it only reflects the first call once
