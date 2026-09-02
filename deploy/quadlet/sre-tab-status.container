@@ -51,8 +51,16 @@ Network=sre-tab.network
 # The same two sources of configuration as the other application units: the
 # operator's non-secret file, and DATABASE_URL as a podman secret because it
 # carries the database password in the URL.
+#
+# The read-only role, and the only application unit that takes it. `sre-tab
+# status` is two SELECTs and never commits, so this hourly unattended job
+# holds no write access at all — see the note on User= below and
+# deploy/ROLES.md. sre-tab-readonly-database-url is the whole URL rather than
+# the bare password sre-tab-backup.container uses; create-roles.sh writes both
+# from one password, because pg_dump and the CLI want the same credential in
+# different shapes.
 EnvironmentFile=/etc/sre-tab/app.env
-Secret=sre-tab-database-url,type=env,target=DATABASE_URL
+Secret=sre-tab-readonly-database-url,type=env,target=DATABASE_URL
 
 # --failures-over 3 is strictly over three, so this fails on a source's
 # FOURTH consecutive failure and not its third. At the default 30-minute
@@ -81,8 +89,10 @@ DropCapability=all
 # uid 10001 is `sre-tab` in this image, the same unprivileged identity the
 # application, migration, and sweep units run as. This one needs less than
 # any of them: `sre-tab status` is two SELECTs and writes nothing, which is
-# why deploy/ROLES.md moves it to sretab_readonly at cutover rather than to
-# sretab_app.
+# why it connects as sretab_readonly rather than sretab_app. It runs from the
+# same image as sre-tab-prune-sessions, whose whole job is a DELETE; the two
+# are not interchangeable, and smoke.sh asserts that sretab_readonly cannot
+# DELETE so that swapping them fails CI rather than production.
 User=10001
 Group=10001
 # systemd already captures the container's stdout under this unit, and here

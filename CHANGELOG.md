@@ -213,8 +213,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `sre-tab-db.container` still bootstraps the superuser. Watched failing under
   four mutations: the whole cutover reverted, the session sweep left behind,
   the backup half-cut, and the migration unit handed the application's role.
-- **`install.sh --start` checks all seven secrets, not the pre-cutover four.**
-  A guard naming the old set would have passed and then watched three units
+- **`create-roles.sh` writes four secrets for three roles.**
+  `sretab_readonly` has two consumers that want one password in two shapes —
+  `pg_dump` takes `PGPASSWORD`, `sre-tab status` takes a `DATABASE_URL` —
+  so `sre-tab-readonly-database-url` is written beside
+  `sre-tab-readonly-password` from the same generated password. They are one
+  credential and are treated as one throughout: `--rotate` moves both, and a
+  role whose secrets are only partly present is refused as drift exactly as a
+  role with no secret is, naming the one that is missing. A rotation that
+  moved one and not the other would leave the nightly backup and the hourly
+  health check on different passwords, with only whichever ran next failing.
+- **The smoke test covers the status check the way it covers the sweep.** It
+  runs `sre-tab status --failures-over 3` — the unit's own command — as
+  `sretab_readonly`, and asserts both halves: the seeded catalogue reads back
+  on a role with no write privilege, and a planted `source_status` row four
+  failures deep makes the command exit non-zero and name the source, which is
+  the half a check that always exited zero would have passed. The unit-file
+  step gained the status unit, and `sretab_readonly` is now asserted unable to
+  `DELETE` as well as unable to `INSERT`: the sweep and the status check run
+  the same image on the same kind of timer and differ only in credential, so
+  swapping them fails CI rather than silently stopping the sweep deleting.
+  Watched failing first — the status unit pointed back at
+  `sre-tab-database-url` and then at `sre-tab-app-database-url`, and
+  `sretab_readonly` given `DELETE` in `roles.sql`'s default privileges.
+- **`install.sh --start` checks all eight secrets, not the pre-cutover four.**
+  A guard naming the old set would have passed and then watched four units
   fail to resolve a `Secret=` reference. When a role secret is the missing
   one it prints the first-install ordering, which is genuinely
   counter-intuitive: `create-roles.sh` installs the roles against the
@@ -296,9 +319,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   really deletes. `deploy/README.md` carries the ordered rollout runbook for
   an existing deployment and `deploy/ROLES.md` the reasoning.
 
-  One consumer is outstanding: `sre-tab-status.container`, which arrives on
-  another branch and should move to `sretab_readonly`. It is named in
-  `deploy/ROLES.md`'s consumer table rather than left to be found.
+  The last consumer to move was `sre-tab-status.container`, the hourly source
+  health check, which arrived on another branch still naming the superuser's
+  `DATABASE_URL` — the two could not edit each other's files, and the unit
+  file check in `smoke.sh` is what caught the gap once they met. It now
+  connects as `sretab_readonly`, because `sre-tab status` is two `SELECT`s
+  and never commits. It needed a fourth secret rather than a fourth role:
+  `sre-tab-readonly-password` holds a bare password for `pg_dump`'s
+  `PGPASSWORD`, and the CLI wants a whole URL, so `create-roles.sh` now also
+  writes `sre-tab-readonly-database-url` from the same generated password.
+  Putting the check on `sretab_app` would have been one line and would have
+  given an unattended hourly job write access to every table because a
+  credential was in the wrong shape.
 
 ### Fixed
 

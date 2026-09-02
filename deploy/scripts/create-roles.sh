@@ -2,12 +2,15 @@
 #
 # Install the three non-superuser PostgreSQL roles deploy/roles.sql defines
 # (sretab_migrate, sretab_app, sretab_readonly) against the running database
-# container, and mint the podman secrets the Quadlet units consume:
-# DATABASE_URL for the migration and application roles, and PGPASSWORD for the
-# read-only one (deploy/README.md, "Secrets").
+# container, and mint the four podman secrets the Quadlet units consume:
+# DATABASE_URL for the migration and application roles, and for the read-only
+# one both a bare PGPASSWORD (pg_dump takes its credential that way) and a
+# DATABASE_URL (`sre-tab status` takes one, like every other application
+# unit) — see deploy/README.md, "Secrets".
 #
 #   deploy/scripts/create-roles.sh              # first install, or a re-run
-#   deploy/scripts/create-roles.sh --rotate      # regenerate all three
+#   deploy/scripts/create-roles.sh --rotate      # all three passwords, all
+#                                                # four secrets, together
 #
 # THIS DOES NOT CHANGE WHAT ANYTHING CURRENTLY CONNECTS AS, even though every
 # unit but the database now names one of these roles. It writes secrets and
@@ -51,13 +54,22 @@ Quadlet units take DATABASE_URL and PGPASSWORD from:
   sre-tab-migrate-database-url   DATABASE_URL for sretab_migrate
   sre-tab-app-database-url       DATABASE_URL for sretab_app
   sre-tab-readonly-password      PGPASSWORD for sretab_readonly
+  sre-tab-readonly-database-url  DATABASE_URL for sretab_readonly
+
+Four secrets for three roles: sretab_readonly's two hold the same password
+in the two shapes its consumers want -- bare for pg_dump's PGPASSWORD, and a
+whole URL for `sre-tab status`, which takes a DATABASE_URL like every other
+application unit. They are written together and rotated together, because a
+rotation that moved one and not the other would leave the backup and the
+status check on different passwords with only one of them failing.
 
 Options:
-  --rotate          generate NEW passwords for all three roles and secrets.
-                     Three units read these secrets, and a running container
-                     does not pick up a changed one -- follow this with a
-                     restart of sre-tab-migrate.service and sre-tab.service.
-                     See the rotation note in deploy/ROLES.md.
+  --rotate          generate NEW passwords for all three roles, and rewrite
+                     all four secrets. Four units read these secrets, and a
+                     running container does not pick up a changed one --
+                     follow this with a restart of sre-tab-migrate.service
+                     and sre-tab.service. See the rotation note in
+                     deploy/ROLES.md.
   --user NAME        superuser to connect as while installing (default: sretab)
   --database NAME     database to install into (default: sretab)
   --container NAME    the database container to run psql inside
@@ -145,31 +157,51 @@ query_role_exists() {
 
 echo "Checking current state..."
 role_names=(migrate app readonly)
-declare -A role_exists secret_exists set_password new_password secret_name
+declare -A role_exists set_password new_password
 
 role_secret_migrate=sre-tab-migrate-database-url
 role_secret_app=sre-tab-app-database-url
 role_secret_readonly=sre-tab-readonly-password
+role_secret_readonly_url=sre-tab-readonly-database-url
 
+# One password per role, but not one secret per role: sretab_readonly has two,
+# holding that single password in the two shapes its consumers want. pg_dump
+# takes a bare password through PGPASSWORD; `sre-tab status` takes a whole
+# DATABASE_URL, like every other application unit. They are two spellings of
+# one credential, so everything below treats them as a set -- a role whose
+# secrets are only partly present has drifted exactly as much as one with no
+# secret at all, and a rotation writes both or neither. Splitting them would
+# leave the backup and the status check on different passwords, with only one
+# of them failing and nothing saying why.
 for r in "${role_names[@]}"; do
     case "$r" in
-        migrate) secret_name[$r]=$role_secret_migrate ;;
-        app)     secret_name[$r]=$role_secret_app ;;
-        readonly) secret_name[$r]=$role_secret_readonly ;;
+        migrate)  role_secrets=("$role_secret_migrate") ;;
+        app)      role_secrets=("$role_secret_app") ;;
+        readonly) role_secrets=("$role_secret_readonly" "$role_secret_readonly_url") ;;
     esac
 
     role_row=$(query_role_exists "sretab_$r")
     [ "$role_row" = "t" ] && role_exists[$r]=true || role_exists[$r]=false
 
-    if podman secret exists "${secret_name[$r]}" 2>/dev/null; then
-        secret_exists[$r]=true
-    else
-        secret_exists[$r]=false
-    fi
+    present=()
+    missing=()
+    for s in "${role_secrets[@]}"; do
+        if podman secret exists "$s" 2>/dev/null; then
+            present+=("$s")
+        else
+            missing+=("$s")
+        fi
+    done
+    # So that a drift message reads as a sentence whether the role has one
+    # secret or two.
+    present_names=$(printf '%s and ' "${present[@]}"); present_names=${present_names% and }
+    missing_names=$(printf '%s and ' "${missing[@]}"); missing_names=${missing_names% and }
+    [ "${#present[@]}" -gt 1 ] && present_verb=exist || present_verb=exists
+    [ "${#missing[@]}" -gt 1 ] && missing_verb="do not" || missing_verb="does not"
 
-    if [ "${role_exists[$r]}" = false ] && [ "${secret_exists[$r]}" = true ] && [ "$rotate" = false ]; then
+    if [ "${role_exists[$r]}" = false ] && [ "${#present[@]}" -gt 0 ] && [ "$rotate" = false ]; then
         cat >&2 <<EOF
-error: ${secret_name[$r]} already exists, but role sretab_$r does not.
+error: $present_names already $present_verb, but role sretab_$r does not.
        The secret and the database have drifted apart -- generating a new
        password for one without the other would leave them disagreeing
        again. Re-run with --rotate to regenerate the secret and (re)create
@@ -178,9 +210,9 @@ EOF
         exit 1
     fi
 
-    if [ "${role_exists[$r]}" = true ] && [ "${secret_exists[$r]}" = false ] && [ "$rotate" = false ]; then
+    if [ "${role_exists[$r]}" = true ] && [ "${#missing[@]}" -gt 0 ] && [ "$rotate" = false ]; then
         cat >&2 <<EOF
-error: role sretab_$r already exists, but ${secret_name[$r]} does not.
+error: role sretab_$r already exists, but $missing_names $missing_verb.
        The role and the secret have drifted apart -- writing a new secret
        without also rotating the role's password would leave them
        disagreeing again. Re-run with --rotate to regenerate the role's
@@ -220,6 +252,15 @@ if [ "${set_password[readonly]}" = true ]; then
     printf '%s' "${new_password[readonly]}" \
         | podman secret create --replace "$role_secret_readonly" - >/dev/null
     echo "  wrote secret $role_secret_readonly"
+    # The same password again, in the shape an application unit takes it.
+    # From the same variable rather than a second call to random_urlsafe:
+    # these are two spellings of one credential, and a second generation here
+    # would produce two, of which the database would accept only the last one
+    # written -- silently, until the backup or the status check next ran.
+    printf 'postgresql+psycopg://sretab_readonly:%s@%s:5432/%s' \
+        "${new_password[readonly]}" "$db_host" "$db_name" \
+        | podman secret create --replace "$role_secret_readonly_url" - >/dev/null
+    echo "  wrote secret $role_secret_readonly_url"
 fi
 
 echo "Applying deploy/roles.sql..."

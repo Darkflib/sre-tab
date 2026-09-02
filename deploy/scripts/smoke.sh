@@ -19,15 +19,16 @@
 # It also installs the three least-privilege roles from deploy/roles.sql and
 # runs everything below as one of them: the migration container as
 # sretab_migrate, the application and the session sweep as sretab_app, the
-# backup as sretab_readonly. Nothing but the throwaway psql helper and
-# restore.sh's DROP/CREATE DATABASE step connects as the superuser. That is
-# what makes the negative assertions further down meaningful.
+# backup and the hourly source health check as sretab_readonly. Nothing but
+# the throwaway psql helper and restore.sh's DROP/CREATE DATABASE step
+# connects as the superuser. That is what makes the negative assertions
+# further down meaningful.
 #
 # It is not, on its own, what stops a reverted cutover from passing CI — and
 # that claim was made before it was true. The credentials below are this
 # file's own; it has no podman secrets, and under CONTAINER_ENGINE=docker it
-# cannot have any. So every assertion here would go on passing with all four
-# units pointed back at the superuser, because nothing in this script opened
+# cannot have any. So every assertion here would go on passing with every
+# unit pointed back at the superuser, because nothing in this script opened
 # them. The first step of the run now does exactly that: it reads
 # deploy/quadlet and asserts each unit names the credential the corresponding
 # container below is about to be handed. Without it, "smoke.sh proves the
@@ -71,10 +72,18 @@ READONLY_PASSWORD=smoke-only-not-a-secret-readonly
 
 # Post-cutover connection strings: the migration unit is the only thing that
 # gets DDL rights, the application and the session sweep share the DML role,
-# and the backup runs read-only. The superuser has no DATABASE_URL here at
-# all, which is the point — deploy/ROLES.md's cutover section.
+# and the backup and the source health check run read-only. The superuser has
+# no DATABASE_URL here at all, which is the point — deploy/ROLES.md's cutover
+# section.
+#
+# The read-only role appears twice below, once as a URL and once as a bare
+# password, which is not two credentials: pg_dump takes PGPASSWORD and
+# `sre-tab status` takes a DATABASE_URL. On a deployed host those are the two
+# podman secrets create-roles.sh writes from one generated password, and the
+# single $READONLY_PASSWORD here is what stands in for that.
 MIGRATE_DATABASE_URL="postgresql+psycopg://sretab_migrate:$MIGRATE_PASSWORD@sre-tab-db:5432/sretab"
 APP_DATABASE_URL="postgresql+psycopg://sretab_app:$APP_PASSWORD@sre-tab-db:5432/sretab"
+READONLY_DATABASE_URL="postgresql+psycopg://sretab_readonly:$READONLY_PASSWORD@sre-tab-db:5432/sretab"
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 workdir=$(mktemp -d)
@@ -196,6 +205,13 @@ unit_names_credential sre-tab-backup.container \
     'Environment=PGUSER=sretab_readonly'
 unit_names_credential sre-tab-backup.container \
     'Secret=sre-tab-readonly-password,type=env,target=PGPASSWORD'
+# The hourly health check: the read-only role in the other shape, and the
+# reason there are two secrets for one role. It runs the same application
+# image as the session sweep two lines up and must not share its credential —
+# `sre-tab status` is two SELECTs, the sweep is a DELETE — so this line is
+# what makes swapping them fail here rather than in production.
+unit_names_credential sre-tab-status.container \
+    'Secret=sre-tab-readonly-database-url,type=env,target=DATABASE_URL'
 
 # The superuser's DATABASE_URL secret still exists on a deployed host, and
 # deploy/ROLES.md says to leave it there — it is the rollback. What must not
@@ -329,6 +345,17 @@ assert_refused "sretab_readonly INSERT" 'permission denied for table sources' \
     psql_as sretab_readonly "$READONLY_PASSWORD" \
     --command "INSERT INTO sources (slug, name, feed_url, website_url) \
                VALUES ('smoke', 'smoke', 'https://example.com/feed', 'https://example.com/')"
+# DELETE specifically, and not only because it completes the set. Two units
+# run the application image on a timer with nobody watching: the session
+# sweep, whose entire job is a DELETE on `sessions`, and the hourly status
+# check, which is two SELECTs. Which of them gets which credential is the
+# unit-file check's business, above; this is the other half — that the two
+# roles are genuinely different, so that check has something to protect.
+# Widen sretab_readonly to make the swap survivable and this goes red.
+# Asserted on `sessions` because that is the table the confusion is about.
+assert_refused "sretab_readonly DELETE" 'permission denied for table sessions' \
+    psql_as sretab_readonly "$READONLY_PASSWORD" \
+    --command "DELETE FROM sessions"
 
 # The other half: a table sretab_migrate creates is usable by the other two
 # immediately, with no GRANT anywhere in this block. That is
@@ -498,6 +525,47 @@ printf '%s\n' "$prune_output"
 printf '%s' "$prune_output" | grep -q 'no dead sessions' \
     || fail "the session sweep did not report an empty sweep: $prune_output"
 echo "  sre-tab sessions prune ran as sretab_app and swept nothing"
+
+step "Source health check, as the read-only role"
+# deploy/quadlet/sre-tab-status.container, run the way it runs: the same
+# application image as the sweep above, the unit's own command, and the
+# read-only role — the one application unit that needs no write access at all,
+# because `sre-tab status` is two SELECTs and never commits. The unit-file
+# check at the top of this run says which secret the unit names; this says the
+# role behind that secret is actually sufficient, which is the half a missing
+# SELECT grant would break.
+run_status() {
+    "$ENGINE" run --rm --name sre-tab-status --network "$NET" \
+        --env "DATABASE_URL=$READONLY_DATABASE_URL" \
+        --read-only --tmpfs /tmp:rw,nosuid,nodev,size=16M \
+        --security-opt=no-new-privileges --cap-drop all \
+        --user 10001:10001 --pids-limit 64 \
+        "$IMAGE" sre-tab status --failures-over 3 2>&1
+}
+status_output=$(run_status) \
+    || fail "sre-tab status exited non-zero on a healthy catalogue: $status_output"
+printf '%s\n' "$status_output"
+printf '%s' "$status_output" | grep -q 'hacker-news' \
+    || fail "the status check read no catalogue at all: $status_output"
+
+# ...and the exit code the timer turns into an alert, which is the half that
+# would otherwise never be exercised: a `sre-tab status` that always exited
+# zero would pass everything above. The row is planted as sretab_app, the role
+# the scheduler writes it as, and takes one source four consecutive failures
+# deep — over the unit's `--failures-over 3`, which is strictly over.
+psql_as sretab_app "$APP_PASSWORD" --command \
+    "INSERT INTO source_status (source_id, last_fetched_at, last_success_at, \
+         last_error_class, last_error_detail, consecutive_failures) \
+     SELECT id, now(), NULL, 'HTTPError', 'smoke-planted-failure', 4 \
+     FROM sources WHERE slug = 'hacker-news'" >/dev/null
+if failing_output=$(run_status); then
+    fail "sre-tab status exited zero with a source four failures deep: $failing_output"
+fi
+printf '%s\n' "$failing_output"
+printf '%s' "$failing_output" | grep -q 'smoke-planted-failure' \
+    || fail "the status check did not name the failing source: $failing_output"
+psql_as sretab_app "$APP_PASSWORD" --command "DELETE FROM source_status" >/dev/null
+echo "  sre-tab status ran as sretab_readonly, and exits non-zero on a failing source"
 
 step "Operator CLI refuses a target the fetcher would refuse"
 # Acceptance criterion 5 at configuration time: no DNS, no socket, and the
