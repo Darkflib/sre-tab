@@ -82,7 +82,7 @@ a real backup, and a real restore through the same scripts an operator would
 run — is engine-agnostic. On a developer machine with Docker:
 
 ```sh
-docker build --tag sre-tab:dev .
+docker build --file Containerfile --tag sre-tab:dev .
 CONTAINER_ENGINE=docker SRE_TAB_IMAGE=sre-tab:dev deploy/scripts/smoke.sh
 ```
 

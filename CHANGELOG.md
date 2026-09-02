@@ -35,6 +35,43 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `v1.1`, `1.1.0`, `vfoo`, `v01.1.0`, `v1.1.0+build`, and a version the
   changelog does not mention — as well as the acceptances. Each guard was
   broken on purpose and seen to go red before being believed.
+- **Off-host backups, verified at the far end.**
+  `deploy/scripts/backup-offsite.sh` copies the newest dump and its `.sha256`
+  sidecar to an `ssh://` target, an `s3://` target, or both — one
+  space-separated list of URLs, where the scheme picks the transport, so an
+  ssh mode configured with an S3 address cannot be written down. The copy is
+  not the point: an upload exiting zero says nothing about the bytes at the
+  far end, so ssh re-derives the checksum there and S3 is asked what SHA-256
+  it recorded against the stored object (`x-amz-checksum-sha256`, never the
+  ETag, which is an MD5 of part MD5s for a multipart upload and would quietly
+  stop meaning anything once the dump got big). Proven by corrupting things:
+  one flipped byte at the ssh far end and a truncated object in the store are
+  each rejected non-zero.
+
+  Caused by a successful backup rather than scheduled beside one — a drop-in
+  adds `OnSuccess=` to `sre-tab-backup.service`, so it runs when a backup has
+  just succeeded and does not run when one has just failed. `Requisite=` is
+  the obvious spelling and is wrong: a oneshot without `RemainAfterExit` is
+  inactive the instant it succeeds, so that gate never fires at all. Off
+  unless `/etc/sre-tab/backup-offsite.env` exists, and loud once it does,
+  including `OnFailure=sre-tab-alert@%n.service`.
+
+  Neither transport gets a credential that can destroy what it has already
+  sent. The ssh far end runs a forced command with four verbs and no delete,
+  refuses to overwrite a published name, and does its own retention only
+  after verifying the new dump; the documented IAM policy grants `PutObject`
+  and `GetObject` on one prefix, with bucket versioning and Object Lock in
+  compliance mode as the recommendation and a lifecycle rule as the retention
+  mechanism. Requests are signed with `curl` and `openssl` rather than the
+  AWS CLI, which on Debian 13 is 23 packages and 144MB and spools to a `/tmp`
+  that `PrivateTmp=true` discards.
+
+  The one uncontainerised unit in the deployment, and it pays for that:
+  a dedicated `sre-tab-offsite` user, `ProtectSystem=strict`, an empty
+  `CapabilityBoundingSet=`, and `systemd-analyze security` at 1.5. It reads
+  the `0700` backup directory through a POSIX ACL the installer grants —
+  rather than `CAP_DAC_READ_SEARCH`, which would have given it every file on
+  the host in order to read two.
 - `SECURITY.md`: a private reporting channel (GitHub security advisories),
   the supported-version table, and a pointer to the accepted findings in
   ROADMAP.md so a reporter can tell a new finding from a held one.

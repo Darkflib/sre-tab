@@ -85,6 +85,17 @@ the file mode should be the only thing protecting it. Nothing legitimate needs
 group access — the backup container writes as uid 999 and `restore.sh` runs as
 root.
 
+One thing that will look like a contradiction if you meet it before you have
+read the rest of this document: with off-host backups configured, the
+installer adds a POSIX ACL granting one named user read access, and `ls` then
+shows the directory as `drwxr-x---+` and the dumps as `-rw-r-----+` rather
+than the `0700`/`0600` described above. **That is not group access.** The group
+bits of a file carrying an ACL are the ACL *mask*, not `group::`, which stays
+`---`; a member of gid 999 is still refused. `getfacl` is the only reading of
+those permissions that means anything, and
+[How an unprivileged unit reads a 0700 directory](#reading-the-dumps) has the
+measurement.
+
 It seeds `/etc/sre-tab/app.env` from `deploy/app.env.example` **once** and
 never overwrites it afterwards. Everything else it installs is replaced on
 every run: keep intentional changes in the repository, not in `/etc`.
@@ -1006,9 +1017,9 @@ window on purpose, so a session row deleted at 04:17 is still present in the
 dump taken at 03:22.
 
 **`/srv/sre-tab/backups` is on the same host as the database.** That is a
-backup, not disaster recovery. Copy the directory off-host on whatever
-schedule the operator's risk tolerance justifies; the `.sha256` sidecars exist
-so a copy can be verified at the far end.
+backup, not disaster recovery. [Off-host backups](#off-host-backups) below
+copies each night's dump to another host, an object store, or both, and
+verifies it where it landed.
 
 **The `Persistent=true` catch-up has not been demonstrated.** What is tested
 is the script: `deploy/scripts/smoke.sh` runs the real `backup.sh` and the
@@ -1025,6 +1036,7 @@ satisfy themselves before relying on it. `systemctl list-timers 'sre-tab-*'`
 shows the next and last elapse, which is where a missed catch-up would first
 be visible.
 
+<a id="restore"></a>
 ## Restore
 
 ```bash
@@ -1100,6 +1112,442 @@ completely empty host — see the verification record in
 unproven is the timers *firing on their own*, and `Persistent=true` catching
 up after downtime; starting the units by hand, which the runbook above does,
 tests the job and not the schedule.
+
+<a id="off-host-backups"></a>
+## Off-host backups
+
+Everything above keeps the dumps on the machine that holds the database. This
+copies the newest one somewhere else and then asks that somewhere else what it
+is holding.
+
+That second half is the point. An upload command exiting zero is a statement
+about the transfer, not about the bytes at the far end, and an off-host copy
+nobody has ever verified is worse than none — it is the belief that you have
+disaster recovery. Both transports below end by re-deriving the checksum where
+the file landed and comparing it against the one computed here.
+
+It is **off by default**, and the switch is the existence of one file. Without
+`/etc/sre-tab/backup-offsite.env` the unit's `ConditionPathExists=` skips it
+entirely; with it and no targets, it fails loudly rather than reporting
+success having done nothing.
+
+```bash
+sudo install -m 0600 -o root -g root \
+    /etc/sre-tab/backup-offsite.env.example /etc/sre-tab/backup-offsite.env
+sudo "$EDITOR" /etc/sre-tab/backup-offsite.env
+sudo systemctl start sre-tab-backup-offsite.service    # run it now
+journalctl -u sre-tab-backup-offsite.service -n 40
+```
+
+### One list of URLs, and the scheme picks the transport
+
+```ini
+BACKUP_OFFSITE_TARGETS="ssh://sre-tab-offsite@backup.example.net:22/srv/offsite s3://my-bucket/sre-tab"
+```
+
+A separate mode setting beside a separate address would let you configure an
+ssh mode with an S3 address; this way that configuration cannot be written
+down. Both at once needs no extra syntax, and a belt-and-braces operator
+wanting a copy in each place is exactly who this is for. Every target is
+attempted even after one fails, so an unreachable ssh host does not silently
+cancel tonight's upload to the object store — the exit status is the summary.
+
+Multiple targets of the same scheme share one set of credentials.
+
+### It is caused by a successful backup, not scheduled beside one
+
+`deploy/systemd/sre-tab-backup.service.d/50-offsite.conf` adds
+`OnSuccess=sre-tab-backup-offsite.service` to the backup unit. So the copy runs
+when a backup has just succeeded and does not run when one has just failed —
+no second `OnCalendar=` to keep in step with the backup's 03:22 start and its
+20 minutes of jitter, and no night on which a failed backup is followed by
+cheerfully re-copying yesterday's dump and exiting zero.
+
+`Requisite=sre-tab-backup.service` is the obvious way to write this and does
+not work. `sre-tab-backup.service` is a oneshot without `RemainAfterExit`, so
+it is `inactive (dead)` the instant it succeeds, and `Requisite=` refuses to
+start against an inactive unit. Measured on Debian 13 with systemd 257: with
+the backup having *just* completed with `Result=success`, a `Requisite=`
+dependant fails with "Dependency failed" and never runs. That gate would have
+reported nothing wrong while copying nothing, indefinitely.
+
+**The trade-off, because you will meet it:** the copy has no timer of its own,
+so `systemctl list-timers` will never show it. Its evidence is the unit:
+
+```bash
+systemctl status sre-tab-backup-offsite.service
+journalctl -u sre-tab-backup-offsite.service --since -7d
+```
+
+A `.env` naming targets it cannot reach fails the unit, and the unit carries
+`OnFailure=sre-tab-alert@%n.service` so that failure reaches whatever the host
+uses to reach a person. A silently failing off-host copy is precisely the
+failure this feature must not have.
+
+The script also refuses a dump older than `OFFSITE_MAX_DUMP_AGE_HOURS` (48).
+A stale dump means the pipeline has stopped somewhere the copier cannot see —
+the timer disabled, the database container gone, the host's clock wrong — and
+copying it while exiting zero would report a healthy pipeline.
+
+### The one uncontainerised unit in the deployment
+
+It runs on the host, as `sre-tab-offsite`, because the backup itself runs
+inside the pinned postgres image with `ReadOnly=true` and `DropCapability=all`
+and that image has no ssh client and no S3 client. Putting one in it would
+mean maintaining a derived image of the database server in order to move a
+file; a second image would mean a second registry dependency. `curl`, `openssl`,
+`ssh`, and coreutils are already on any host that can run this deployment.
+
+It pays for being outside a container with the sandbox in the unit file:
+`ProtectSystem=strict`, an empty `CapabilityBoundingSet=`, `NoNewPrivileges`,
+`PrivateTmp`, `MemoryDenyWriteExecute`, `SystemCallFilter=@system-service`,
+`RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `ReadOnlyPaths=` over the
+backup directory and one writable state directory. Check rather than believe:
+
+```bash
+systemd-analyze security sre-tab-backup-offsite.service
+```
+
+which reports **1.5 OK** on the reference host. (The containerised units score
+9.6–9.8 there; that number describes the `podman` client process systemd can
+see, not the sandbox inside the container, and it is not a comparison worth
+drawing.)
+
+`PrivateTmp=true` is set deliberately and is not free elsewhere: it gives a
+private `/tmp` **and** `/var/tmp`, both discarded when the unit exits, so a
+tool that spools uploads there loses them with a zero exit status. Nothing on
+this path spools — `curl` streams the dump straight from the file — which is
+one of the reasons the AWS CLI is not what the script calls. See
+[Why not the AWS CLI](#why-not-the-aws-cli).
+
+<a id="reading-the-dumps"></a>
+### How an unprivileged unit reads a 0700 directory
+
+`/srv/sre-tab/backups` is `0700` owned by uid 999, and that mode is
+load-bearing: gid 999 is `systemd-journal` on Debian 13, a group operators do
+add people to. So `sre-tab-offsite` cannot read a thing in there by default.
+
+`install.sh` grants exactly one extra reader with a POSIX ACL:
+
+```bash
+setfacl    -m u:sre-tab-offsite:rx /srv/sre-tab/backups
+setfacl -d -m u:sre-tab-offsite:r  /srv/sre-tab/backups
+```
+
+The default ACL is the half that is easy to miss. New dumps are created by the
+backup container under `umask 077`; when a directory carries a default ACL the
+umask is ignored and the default supplies the mode instead, so each night's
+dump comes out with `user::rw-`, `group::---`, `other::---`, and one named
+entry. Measured on Debian 13 and ext4: a member of gid 999 still gets `EACCES`
+on both the directory and the files.
+
+`ls -ld` then shows `drwxr-x---+`, which *looks* like group access and is not —
+the group bits of a file carrying an ACL are the mask, not `group::`. Read the
+ACL, not the mode:
+
+```bash
+getfacl /srv/sre-tab/backups
+```
+
+The alternative was `AmbientCapabilities=CAP_DAC_READ_SEARCH`, which would
+have granted this unit read access to every file on the host — `/etc/shadow`
+and the podman secrets included — in order to read two.
+
+**Any `chmod` of that directory silently breaks it.** `chmod` rewrites the ACL
+mask from the group bits, so `install -d -m 0700` sets the mask to `---` and
+masks the grant out while leaving the named entry visible in `getfacl` with
+`#effective:---` beside it. This happened during development, on a host where
+a second checkout re-ran an older `install.sh`. Re-running the installer is
+both how it breaks and how it is fixed, and the script says so rather than
+reporting "no dump in this directory", which is what it would otherwise look
+like from the inside.
+
+Needs `acl` installed (`apt-get install acl`); the installer warns rather than
+failing if it is not.
+
+<a id="ssh-transport"></a>
+### ssh
+
+The far end runs `deploy/scripts/backup-offsite-receive.sh` as a **forced
+command**, so the sending key has no shell there and four verbs are its entire
+vocabulary. Copy that script to the receiving account and paste one line into
+its `authorized_keys`:
+
+```bash
+# on the receiving host, as the receiving account
+mkdir -p ~/bin ~/sre-tab-offsite
+install -m 0500 backup-offsite-receive.sh ~/bin/backup-offsite-receive.sh
+```
+
+```
+command="/home/sre-tab-offsite/bin/backup-offsite-receive.sh",restrict ssh-ed25519 AAAA... sre-tab off-host backup
+```
+
+`restrict` removes port, agent and X11 forwarding, the pty, and `~/.ssh/rc`;
+the forced command means whatever the client asks for lands in
+`SSH_ORIGINAL_COMMAND` and this script runs instead. On the sending host:
+
+```bash
+sudo ssh-keygen -t ed25519 -N '' -C 'sre-tab off-host backup' \
+    -f /etc/sre-tab/backup-offsite.key
+sudo chown sre-tab-offsite:sre-tab-offsite /etc/sre-tab/backup-offsite.key
+sudo chmod 0400 /etc/sre-tab/backup-offsite.key
+sudo cat /etc/sre-tab/backup-offsite.key.pub          # paste this into authorized_keys
+
+# Pin the far end's host key. Trust-on-first-use would hand the dumps to
+# whoever answered on the night the file was empty, so compare the fingerprint
+# against the far host itself before relying on it.
+ssh-keyscan -p 22 backup.example.net \
+    | sudo tee /etc/sre-tab/backup-offsite.known_hosts
+```
+
+**The sending host has no verb that deletes, and that is the design.** A
+machine running a live database is the machine an attacker reaches first, and
+a backup target it can erase is not disaster recovery, it is a second thing to
+lose in the same incident. So retention at the far end is the far end's own
+decision, taken by the receiving script after it has verified the new dump on
+its own disk — never before, so a night on which the transfer failed is not
+also the night the oldest good copy was dropped. Set the window there:
+
+```sh
+# /etc/sre-tab-offsite-receive.conf on the receiving host, if the defaults
+# ($HOME/sre-tab-offsite and 14 days) are not what you want
+RECEIVE_DIR=/srv/offsite
+RECEIVE_KEEP_DAYS=14
+```
+
+`put` also refuses to overwrite a name that already exists, which is the ssh
+analogue of the Object Lock recommendation below: yesterday's good dump cannot
+be replaced by anything holding this key. The sidecar is sent first so the
+receiver can check the dump against it *before* publishing it, which means an
+interrupted transfer leaves only a `.partial` for the receiver to sweep and
+the next run repairs itself rather than being locked out by its own
+append-only rule.
+
+The directory in the target URL travels with every verb and the far end
+compares it against its own configuration, refusing anything else. It is an
+assertion that gets checked, not a destination the far end obeys — a mistyped
+URL fails on the first run instead of quietly filling somewhere unexpected.
+
+A forced `rsync --server` or `scp -t` was the other option. Those move bytes
+and nothing else, and this feature is not about moving bytes: verifying means
+executing something at the far end, and bolting a second unrestricted key onto
+the account for "just run `sha256sum`" hands back the arbitrary-command
+surface the forced command exists to remove.
+
+One trap worth knowing if the receiving account is created with `useradd` and
+the far end's sshd runs `UsePAM no`: a locked password (`!`) is refused even
+for public-key authentication, with "account is locked" in the log. `usermod -p
+'*' <account>` is the key-only state you want.
+
+<a id="s3-transport"></a>
+### S3, and S3-compatible
+
+`OFFSITE_S3_ENDPOINT` is a first-class setting rather than an escape hatch:
+self-hosters reach for MinIO, Garage, Backblaze B2, Wasabi, and Hetzner far
+more often than for AWS proper. Setting it also selects path-style addressing,
+because those implementations need a wildcard DNS record and a matching
+certificate before they will answer to `bucket.host`. Leave it empty for AWS
+and the request is virtual-hosted.
+
+```ini
+OFFSITE_S3_ENDPOINT=https://s3.eu-central-003.backblazeb2.com
+OFFSITE_S3_REGION=eu-central-003
+OFFSITE_S3_ACCESS_KEY_ID=...
+OFFSITE_S3_SECRET_ACCESS_KEY=...
+```
+
+**What is compared, and why it is sound.** The upload carries
+`x-amz-checksum-sha256`, so the store recomputes SHA-256 over the bytes it
+received and rejects the `PUT` outright if they disagree — a truncated body
+never becomes an object. Then a separate `HEAD` with
+`x-amz-checksum-mode: ENABLED` asks the store for the SHA-256 it has recorded
+against the stored object, which is a different question from "did the PUT
+return 200", and that value is compared against the digest computed locally.
+Two independent checks, and the second one still catches bit-rot in the store
+after the write.
+
+**Not the ETag.** For a single-part upload the ETag happens to be the MD5 of
+the body, but for a multipart upload it is an MD5 of concatenated part MD5s
+with a part count appended — so an ETag comparison works until the dump gets
+big and then quietly stops meaning anything. For the same reason the script
+refuses a dump over the 5 GiB single-`PUT` limit rather than switching to
+multipart, whose `x-amz-checksum-sha256` is a checksum *of the part checksums*
+and not of the object. Use an `ssh://` target for a database that large.
+
+If a store returns no `x-amz-checksum-sha256` at all, the run fails. A missing
+answer is not a passing one.
+
+<a id="an-iam-policy-that-cannot-delete"></a>
+### An IAM policy that cannot delete, and Object Lock
+
+A backup target reachable with full credentials from the machine being backed
+up is a ransomware target, not disaster recovery. Scope the credential to
+writing new objects under one prefix and reading them back to verify — nothing
+else, and in particular not `s3:DeleteObject`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WriteBackupsAndReadThemBackToVerify",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject"],
+      "Resource": ["arn:aws:s3:::my-bucket/sre-tab/*"]
+    },
+    {
+      "Sid": "ListOnlyThatPrefix",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::my-bucket"],
+      "Condition": { "StringLike": { "s3:prefix": ["sre-tab/*"] } }
+    }
+  ]
+}
+```
+
+`s3:GetObject` is what `HEAD` needs; without it the verification cannot happen
+and the whole exercise is pointless. `s3:ListBucket` is only needed for
+client-side retention, which is off by default — drop that statement if you
+leave it off.
+
+**Turn on versioning and Object Lock in compliance mode.** Then a compromised
+host cannot destroy what it has already sent, whatever it manages to do to the
+credential: in compliance mode the retention cannot be shortened or removed by
+anyone, including the root account, for its duration.
+
+```bash
+aws s3api create-bucket --bucket my-bucket --object-lock-enabled-for-bucket
+aws s3api put-object-lock-configuration --bucket my-bucket \
+    --object-lock-configuration \
+    'ObjectLockEnabled=Enabled,Rule={DefaultRetention={Mode=COMPLIANCE,Days=30}}'
+```
+
+Object Lock requires versioning and can only be enabled **at bucket creation**
+on AWS, so this is a decision to take before the first upload rather than
+after the first incident. Support elsewhere varies and is worth checking
+rather than assuming: MinIO implements it (bucket must be created with it
+enabled), Backblaze B2 and Wasabi both offer object lock through their S3
+APIs, and several smaller S3-compatible services implement versioning without
+it. Where it is genuinely unavailable, versioning alone still means an
+overwrite does not destroy the previous version.
+
+**Retention, and why the default is to leave it to the bucket.** A lifecycle
+rule expiring objects under the prefix after `BACKUP_KEEP_DAYS` needs no
+delete permission on the host holding the database, which is the entire point
+of the paragraph above. So `OFFSITE_S3_PRUNE` defaults to `false`. Turn it on
+only for a store with neither lifecycle rules nor Object Lock, and add
+`s3:DeleteObject` on the same prefix when you do; the pass only ever considers
+objects whose names match the published `<database>-<stamp>.dump[.sha256]`
+scheme, so nothing else parked under that prefix is at risk.
+
+<a id="why-not-the-aws-cli"></a>
+### Why not the AWS CLI
+
+`deploy/scripts/backup-offsite.sh` signs its own requests with `curl` and
+`openssl` rather than calling `aws`. Debian 13 does package AWS CLI v2 and it
+works — it was used during development as a reference implementation to check
+that the objects this script writes are ones a real client agrees about — but
+`apt-get install awscli` pulls **23 packages and 144MB**, including a second
+Python and a cryptography stack, onto a host whose entire design is that
+everything runs in a container with all capabilities dropped. It also spools,
+which is a trap next to `PrivateTmp=true`. `curl` and `openssl` are already
+here.
+
+The failure mode of a signing mistake is the safe one: a wrong signature is
+refused by the store, so the run fails loudly and non-zero. There is no path
+by which a signing bug produces a copy that is *believed* verified.
+
+The honest limitation: the signer has been exercised against MinIO, not
+against AWS proper. Path-style and virtual-hosted addressing are both
+implemented; only path-style has been run.
+
+One weakness, stated because the policy above is what contains it: `openssl`
+accepts an HMAC key only on its command line, so the *derived* per-day signing
+key is briefly visible in `/proc/<pid>/cmdline`. The secret itself never is. A
+local unprivileged reader who catches the derived key gets, at worst, the
+ability to write objects under one prefix of one bucket for the rest of the
+UTC day — and with Object Lock on, nothing it can do to what is already there.
+
+### Restoring from the off-host copy
+
+A backup you cannot restore from is not a backup, and the off-host copy is no
+exception. Bring the dump *and its sidecar* back to the host, then use the
+same [`restore.sh`](#restore) as always — it verifies the sidecar before it
+drops anything, which is exactly the check that matters after a file has
+crossed a network.
+
+From an ssh target, pulling with your own account rather than the restricted
+backup key (which cannot read):
+
+```bash
+scp 'backup.example.net:/srv/offsite/sretab-20260817T032200Z.dump*' /srv/sre-tab/backups/
+sudo chown 999:999 /srv/sre-tab/backups/sretab-20260817T032200Z.dump*
+sudo chmod 0600   /srv/sre-tab/backups/sretab-20260817T032200Z.dump*
+sudo deploy/scripts/restore.sh /srv/sre-tab/backups/sretab-20260817T032200Z.dump
+```
+
+From S3:
+
+```bash
+aws s3 cp s3://my-bucket/sre-tab/sretab-20260817T032200Z.dump        /srv/sre-tab/backups/
+aws s3 cp s3://my-bucket/sre-tab/sretab-20260817T032200Z.dump.sha256 /srv/sre-tab/backups/
+sudo chown 999:999 /srv/sre-tab/backups/sretab-20260817T032200Z.dump*
+sudo chmod 0600   /srv/sre-tab/backups/sretab-20260817T032200Z.dump*
+sudo deploy/scripts/restore.sh /srv/sre-tab/backups/sretab-20260817T032200Z.dump
+```
+
+The `chown` is not incidental. `restore.sh` checks the checksum inside a
+container as uid 999 precisely because the dumps are 0600 and owned by that
+uid; a file you have just downloaded as yourself is unreadable to it, and the
+resulting `EACCES` used to be reported as a checksum mismatch — which points
+at data corruption when the real problem is the reader.
+
+### Testing the path by hand
+
+```bash
+# Take a backup and let OnSuccess= pull the copy behind it.
+sudo systemctl start sre-tab-backup.service
+journalctl -u sre-tab-backup-offsite.service -n 40
+
+# Or just the copy, against whatever dump is newest.
+sudo systemctl start sre-tab-backup-offsite.service
+
+# Prove the verification rejects something. Corrupt one byte at the far end
+# and run it again: it must fail, and name the file.
+ssh backup.example.net \
+  'dd if=/dev/zero of=/srv/offsite/sretab-*.dump bs=1 seek=1000000 count=1 conv=notrunc'
+sudo systemctl start sre-tab-backup-offsite.service   # must exit non-zero
+
+# What the far end is actually holding, from the sending host, using the
+# restricted key and nothing else.
+sudo -u sre-tab-offsite ssh -F none -i /etc/sre-tab/backup-offsite.key \
+    -o IdentitiesOnly=yes -o UserKnownHostsFile=/etc/sre-tab/backup-offsite.known_hosts \
+    sre-tab-offsite@backup.example.net 'list /srv/offsite'
+```
+
+Do that corruption test once on a host you care about. A checksum comparison
+that has never rejected anything is not a checksum comparison, and this
+project has shipped six gates that reported success while verifying nothing.
+
+### What has been exercised, and where
+
+On a Debian 13 host with podman 5.4.2 and systemd 257: both transports end to
+end, including a real `pg_dump` from a running stack copied to both targets in
+one run and verified at each; a single flipped byte at the ssh far end and a
+truncated object in the store, each rejected; the restricted key refused a
+shell, an unknown verb, a directory it was not configured for, a filename
+outside the published scheme, and an overwrite of an existing dump; far-end
+retention removing only matching names and leaving an operator's own files and
+another database's dumps alone; `OnSuccess=` firing on a successful backup and
+not firing on a failed one; and `OnFailure=` starting the alert template.
+
+Not exercised: AWS proper (MinIO stood in), virtual-hosted addressing, Object
+Lock on any implementation other than MinIO, and a far end that is genuinely a
+different machine — the ssh tests ran against a second sshd and a separate
+account on the same host, which is a real ssh connection and not a real
+network.
 
 <a id="session-retention"></a>
 ## Session retention
