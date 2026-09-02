@@ -5,6 +5,15 @@ and deviations, not just activity.
 
 ## 2026-09-02 — Locking the mermaid parser, and changing my mind about it
 
+**Branch protection caught up in the same branch.** `Mermaid diagrams parse`
+is now the ninth required context on `main`. Verified the way that section
+says to — set-differencing the required contexts against the check-runs the
+repository actually reports, empty in the direction that matters — rather than
+by reading the rule back. The `(not yet required)` marker the table carried in
+the interval is gone, which is what the note next to it asked for; a marker
+that outlives its condition is the same class of stale as the claim it was
+guarding against.
+
 **`.github/scripts/package.json` and a committed lockfile; the gate runs
 `npm ci`.** The first version installed `mermaid` and `happy-dom` ephemerally
 at exact versions, on the `uvx semgrep==` precedent in `ci.yml`. Review said

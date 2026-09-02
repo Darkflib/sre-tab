@@ -117,7 +117,7 @@ jobs:
       # says why at length, and the short version is that reimplementing
       # GitHub's slug rule fails towards a false pass.
       #
-      # The job name is deliberately unchanged. It is one of the eight
+      # The job name is deliberately unchanged. It is one of the nine
       # required status checks, and GitHub keys those on the check-run
       # context — renaming this silently empties the requirement, which is
       # the trap CONTRIBUTING.md documents.

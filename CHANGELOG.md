@@ -125,9 +125,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   vets, so no second DOM implementation enters the repository; the two
   manifests pin it independently and are not required to agree.
 
-  **This adds a ninth required check, and branch protection is not in this
-  diff.** `CONTRIBUTING.md` carries the updated context list and the ordering
-  to follow; until that write is run the job reports without being required.
+  **`Mermaid diagrams parse` is now the ninth required check on `main`.**
+  Branch protection is a GitHub setting rather than a file, so it could not
+  land in the same diff; it was written afterwards and verified by
+  set-differencing the required contexts against the check-runs the repository
+  actually reports, which came back empty.
 
 ### Fixed
 
