@@ -40,9 +40,9 @@ that.
   - An `OnFailure=` alert unit.
   - Release hygiene: no Release against `v1.0.0`, and no versioned image tag
     a self-hoster can pull.
-  - Frontend coverage for `src/api/client.ts`, and for the parts of
-    `usePagedResource` that need a DOM — its decision logic is covered now,
-    its effects are not.
+  - Frontend coverage for the components and routes — `src/api/client.ts`
+    and `usePagedResource`'s effects are covered now; nothing under
+    `src/components/` or `src/routes/` is.
 - [Things that are true but unproven](#things-that-are-true-but-unproven)
   - The backup timer's `Persistent=true` catch-up, demonstrated rather than
     assumed.
@@ -511,10 +511,57 @@ prerequisite for going past it.
   is marked `it.fails` with the behaviour we want, so it records the gap
   without pinning the defect as correct and errors the day someone closes it.
 
-  `usePagedResource` and `src/api/client.ts` are the expensive half and are
-  still untested: hooks and `fetch` mean a DOM environment and request
-  mocking, which is real setup and probably a dependency or two. Still worth
-  doing, and still not the thing to pick up first.
+  `usePagedResource` and `src/api/client.ts` — the expensive half — have
+  since landed as well, at a cost of one devDependency rather than the two
+  or three this entry budgeted for. 65 tests, taking the suite to 458, and
+  mutation-tested on the same standard: 45 behavioural mutations, 39 caught.
+
+  What made it cheap was declining two of the three obvious dependencies.
+  `happy-dom` (seven packages, against jsdom's tree) is declared per-file
+  with a `// @vitest-environment happy-dom` docblock, so the austerity that
+  found the contrast and `filterKey` defects still holds everywhere else —
+  the rest of the suite runs with no DOM and fails loudly when it touches a
+  global it did not install. `msw` was not needed because `client.ts` goes
+  through openapi-fetch, whose seam is one injectable function: a `vi.fn()`
+  over `globalThis.fetch` reaches everything a service worker would.
+  `@testing-library/react` was not needed because React 19 exports `act`
+  itself, so mounting a hook on `createRoot` is thirty lines in the test
+  file. Trying that before asking for the dependency was the whole of the
+  saving.
+
+  One thing the tests found rather than confirmed: `readCookie` ends in
+  `decodeURIComponent`, which throws on a value containing a stray `%`, and
+  the throw escapes the request middleware. `guard` in `endpoints.ts` then
+  reports it as `ApiError(0, 'Could not reach the server.')` — so a
+  malformed CSRF cookie makes every write in the app fail as an offline
+  error, before any request is sent. The server never writes such a value,
+  but the cookie is not `HttpOnly` by design and has no `__Host-` prefix, so
+  the sibling-subdomain write recorded above for the OAuth state cookie
+  reaches this too. Held with two `it.fails` markers rather than fixed here,
+  on the same reasoning as the comma-in-a-slug case: the fix is a change to
+  `client.ts`, and this was a testing change.
+
+  A second thing worth knowing before someone reads the mutation score as a
+  gap. Six mutations survived and none is a missing test. Two are equivalent
+  mutants — merging rather than replacing on the initial page, and clearing
+  `error` on a success that can only follow a fresh generation, both
+  unobservable because the render-phase reset guarantees the state they act
+  on. The other four are individual halves of three guard *pairs*: each of
+  the hook's async continuations checks both `signal.aborted` and the cache
+  key, and every transition that supersedes a request does both — so
+  removing either alone changes nothing observable, while removing both is
+  caught. The one exception, and the reason the abort check is not merely
+  ornamental, is React StrictMode: it mounts every effect, tears it down,
+  and mounts it again against an *unchanged* key, so the first request's
+  answer arrives with the cache key matching perfectly and only the abort
+  tells the two apart. `main.tsx` wraps the app in StrictMode, so that is
+  the path every development page load takes, and there is a test for it.
+
+  **Components and routes remain uncovered, and that is the open half now.**
+  It was left out of this pass deliberately: `src/routes/` is where
+  `@testing-library/react` stops being avoidable, and that is a separate
+  dependency decision that should be argued on its own rather than carried
+  in behind a DOM environment.
 
 - **Nothing constrains a slug's format at any creation path** — **landed.**
   Resolved towards enforcement, on least-surprise grounds: the surprise here
