@@ -113,17 +113,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   time and needs a `window`, and without one it does not fail cleanly, it
   fails *partially*, with seven of the nine erroring and two parsing anyway.
 
-  The parser is installed ephemerally at pinned versions, on the same
-  reasoning as `uvx semgrep==` — a documentation linter belongs in neither
-  `uv.lock` nor the client's lockfile — with a Renovate custom manager
-  tracking both pins, since Renovate finds npm dependencies through
-  `package.json` files and there deliberately is not one. The DOM is
-  `happy-dom` at the version `frontend/package.json` already pins, so no
-  second DOM implementation enters the repository.
+  The parser has its own manifest and committed lockfile under
+  `.github/scripts`, and the job runs `npm ci`, so the 122 packages this gate
+  imports and executes are the same on every run rather than whatever resolved
+  that morning. That is a change of position from the first version of this
+  work, which installed them ephemerally on the `uvx semgrep==` precedent;
+  review pushed back, and the argument that settled it was not the security
+  one — it is that a lockfile lets Renovate manage these through its ordinary
+  npm manager, which deleted a custom regex manager whose failure mode was to
+  silently stop matching. The DOM is `happy-dom`, which the frontend already
+  vets, so no second DOM implementation enters the repository; the two
+  manifests pin it independently and are not required to agree.
 
-  **This adds a ninth required check, and branch protection is not in this
-  diff.** `CONTRIBUTING.md` carries the updated context list and the ordering
-  to follow; until that write is run the job reports without being required.
+  **`Mermaid diagrams parse` is now the ninth required check on `main`.**
+  Branch protection is a GitHub setting rather than a file, so it could not
+  land in the same diff; it was written afterwards and verified by
+  set-differencing the required contexts against the check-runs the repository
+  actually reports, which came back empty.
 
 ### Fixed
 

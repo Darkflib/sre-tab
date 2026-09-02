@@ -1,0 +1,11 @@
+{
+  "name": "sre-tab-doc-checks",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Dependencies for the documentation checks in .github/scripts. Not part of the application, the client, or the image — see .github/workflows/docs.yml.",
+  "license": "MIT",
+  "dependencies": {
+    "happy-dom": "20.12.2",
+    "mermaid": "11.17.2"
+  }
+}

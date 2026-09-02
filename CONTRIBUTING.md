@@ -181,6 +181,24 @@ The only published way to ask is to put a fenced block containing the single
 word `info` in any Markdown on github.com and read what it renders. Worth
 doing if a diagram is rejected there and accepted here.
 
+**The parser is a second npm project, and that is deliberate.**
+`.github/scripts/package.json` and its committed lockfile exist so the gate
+runs `npm ci` against the same 122 packages every time rather than whatever
+resolved that morning — the script imports and executes that code, so an
+unpinned transitive graph is a real gap and not a theoretical one. To change
+the parser version, edit the manifest and run `npm install` in that directory;
+`npm ci` refuses a manifest and lockfile that disagree, which is what makes
+forgetting the second step loud. It is kept out of `frontend/package-lock.json`
+and out of `uv.lock` on purpose: a documentation linter has no business in the
+client's dependency tree or in the image, and Renovate manages it through its
+ordinary npm manager with no custom rule needed.
+
+happy-dom appears in two manifests — here and in the frontend, which vets it
+for the two Vitest files that need a document. They pin it independently,
+Renovate moves both in the same weekly group, and they are not required to
+agree; reusing it is about not vetting a second DOM implementation, not about
+the versions matching.
+
 Two things the script does that are not obvious, both from the rule in
 [AGENTS.md](AGENTS.md) about what a green check is worth. **Zero blocks is a
 failure**, because a repository with no diagrams and an extractor that has
@@ -329,10 +347,8 @@ parts have been run and which have not.
 <a id="branch-protection"></a>
 ## Branch protection
 
-`main` is protected. **Eight checks are enforced today; the table below lists
-nine.** The ninth, `Mermaid diagrams parse`, reports on every pull request but
-is not yet in the required set — see below the table. They are listed here by
-the name GitHub reports — the job's `name:`, which is what a required check
+`main` is protected. Nine checks are required. They are listed here by the
+name GitHub reports — the job's `name:`, which is what a required check
 actually matches on, not the job key in the workflow:
 
 | Required check | Workflow / job | What it is |
@@ -345,17 +361,15 @@ actually matches on, not the job key in the workflow:
 | `Container build and deployment smoke` | `ci.yml` / `container` | image build, Caddyfile validation, Quadlet generation, the deployment smoke test |
 | `README quickstart runs on a clean checkout` | `docs.yml` / `quickstart` | the README's own commands, executed |
 | `Relative links resolve` | `docs.yml` / `links` | every relative link and image in the docs |
-| `Mermaid diagrams parse` **(not yet required)** | `docs.yml` / `diagrams` | every ```` ```mermaid ```` block in the docs, against a pinned Mermaid parser |
+| `Mermaid diagrams parse` | `docs.yml` / `diagrams` | every ```` ```mermaid ```` block in the docs, against a pinned Mermaid parser |
 
-**`Mermaid diagrams parse` is listed because the table is the intended set,
-and marked because it is not the enforced one.** A job reports from the moment
-it lands and becomes required only when the write below is run, and that write
-is a GitHub setting rather than a file, so nothing in a diff can make the two
-agree. Until it runs, a pull request can go red on that job and still merge.
-The ordering is in [Renaming a job](#renaming-a-job) — land it, let it report
-on the pull request, *then* rewrite the required set, *then* verify against
-that head. **Delete the marker in the same change**, or this paragraph becomes
-the thing it exists to prevent.
+`Mermaid diagrams parse` was the most recent addition, and getting it there
+took the ordering in [Renaming a job](#renaming-a-job): land the job, let it
+report on the pull request, *then* rewrite the required set, *then* verify
+against that head. The table carried a `(not yet required)` marker in the
+interval, because a GitHub setting and a file cannot be changed in one diff
+and a table that claims enforcement it does not have is worse than one that
+admits the gap.
 
 `Publish, sign, and attest image` is **not** required — see below.
 
@@ -391,11 +405,11 @@ nothing would ever have surfaced it: every commit on `main` is a direct push,
 there has never been a pull request here, and required checks are not
 consulted on that path.
 
-The required set was rewritten to the reported names — eight of them at the
-time, and eight still until `Mermaid diagrams parse` is added — and it was
-verified by set-differencing the required contexts against the check-runs the
-repository actually reports, empty in the direction that matters, rather than
-by reading the rule back and trusting it looked right.
+The required set is the reported names, and it is verified by
+set-differencing the required contexts against the check-runs the repository
+actually reports — empty in the direction that matters — rather than by
+reading the rule back and trusting it looked right. That check was run again
+when `Mermaid diagrams parse` was added, and came back empty.
 
 `Publish, sign, and attest image` is deliberately excluded. Its `if:` admits
 a push to `main` and a push of a `v*` tag and nothing else, so it never runs

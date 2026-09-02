@@ -3,6 +3,52 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-09-02 — Locking the mermaid parser, and changing my mind about it
+
+**Branch protection caught up in the same branch.** `Mermaid diagrams parse`
+is now the ninth required context on `main`. Verified the way that section
+says to — set-differencing the required contexts against the check-runs the
+repository actually reports, empty in the direction that matters — rather than
+by reading the rule back. The `(not yet required)` marker the table carried in
+the interval is gone, which is what the note next to it asked for; a marker
+that outlives its condition is the same class of stale as the claim it was
+guarding against.
+
+**`.github/scripts/package.json` and a committed lockfile; the gate runs
+`npm ci`.** The first version installed `mermaid` and `happy-dom` ephemerally
+at exact versions, on the `uvx semgrep==` precedent in `ci.yml`. Review said
+that leaves the transitive graph unpinned, which is true — the script imports
+and executes that code — and the counter-argument, that this repository has
+already accepted the same trade for semgrep, is a precedent rather than a
+reason.
+
+**What actually settled it was not the security argument.** It is that a
+`package.json` puts these under Renovate's ordinary npm manager, which let the
+custom regex manager go. A regex that matches nothing looks exactly like a
+regex with nothing to do — the manager would have gone quiet the moment
+someone reformatted the workflow line, and nothing would have said so. Trading
+a silent-failure mode for 47KB of lockfile is a good trade on its own; the
+reproducible dependency graph is the bonus.
+
+**Both halves were exercised.** `npm ci` from a clean tree installs 122
+packages and the gate passes. Desynchronising the manifest from the lockfile
+makes it exit 1 naming the package — `lock file's mermaid@11.17.2 does not
+satisfy mermaid@11.17.1` — so forgetting to run `npm install` after editing
+the manifest is loud rather than silently resolving something else. Every one
+of the 122 locked entries carries a pinned version and an integrity hash,
+checked rather than assumed. And before deleting the custom manager, the two
+that remain were run against the tree to confirm they still match seven and
+one thing respectively; a manager matching nothing is the failure this whole
+change is about.
+
+**What did not change:** `--ignore-scripts` stays, the job still checks out
+with `persist-credentials: false`, and `.github/scripts/node_modules` is
+already covered by the gitignore. happy-dom is now pinned in two manifests —
+here and in the frontend. They are not required to agree and nothing breaks if
+they drift; reusing it was always about not vetting a second DOM
+implementation, and the comment now says that rather than implying the
+versions are coupled.
+
 ## 2026-09-02 — The review found the fence bug, and it was in both scripts
 
 **A closing fence carries no info string, and neither checker knew it.**
