@@ -75,6 +75,17 @@ the file mode should be the only thing protecting it. Nothing legitimate needs
 group access — the backup container writes as uid 999 and `restore.sh` runs as
 root.
 
+One thing that will look like a contradiction if you meet it before you have
+read the rest of this document: with off-host backups configured, the
+installer adds a POSIX ACL granting one named user read access, and `ls` then
+shows the directory as `drwxr-x---+` and the dumps as `-rw-r-----+` rather
+than the `0700`/`0600` described above. **That is not group access.** The group
+bits of a file carrying an ACL are the ACL *mask*, not `group::`, which stays
+`---`; a member of gid 999 is still refused. `getfacl` is the only reading of
+those permissions that means anything, and
+[How an unprivileged unit reads a 0700 directory](#reading-the-dumps) has the
+measurement.
+
 It seeds `/etc/sre-tab/app.env` from `deploy/app.env.example` **once** and
 never overwrites it afterwards. Everything else it installs is replaced on
 every run: keep intentional changes in the repository, not in `/etc`.
