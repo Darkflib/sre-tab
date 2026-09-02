@@ -297,11 +297,16 @@ have been exercised under live systemd in this workstream, so some of what
 follows is worth more than the cutover itself.
 
 - **The stack came up healthy with every unit on its new credential.**
-  `sre-tab-db` healthy at T+13s; `sre-tab-migrate` exited zero; the
-  application and Caddy started; `/api/v1/healthz` returned
-  `"status":"ok"` with the database probe green and the scheduler on
-  `postgres-advisory`. `systemctl --failed` was empty throughout, including
-  across the stops the rollback test performed.
+  `install.sh --start` returned after 17.7s on an empty volume;
+  `sre-tab-migrate.service` exited zero and stayed `active (exited)`; the
+  application and Caddy started; `/api/v1/healthz` returned `"status":"ok"`
+  with the database probe green and the scheduler on `postgres-advisory`.
+  `systemctl --failed` was empty throughout, including across the stops the
+  rollback test performed. (That 17.7s is one host's number on a first start
+  with `initdb` in it, recorded because it is what the run produced, not as a
+  figure to expect — the deploy-window table in
+  [deploy/README.md](README.md#how-long-a-deploy-actually-takes) is the
+  measured account of restart timing.)
 - **The privilege boundary holds from inside the running application
   container**, which is the finding closed where it actually matters rather
   than in a harness. Connecting through the container's own `DATABASE_URL`,
