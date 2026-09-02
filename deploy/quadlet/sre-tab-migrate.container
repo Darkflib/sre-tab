@@ -19,7 +19,20 @@ Image=ghcr.io/darkflib/sre-tab:sha-9238b95dddddcc1b39ddf16a44567f469fed8736@sha2
 Pull=missing
 Network=sre-tab.network
 EnvironmentFile=/etc/sre-tab/app.env
-Secret=sre-tab-database-url,type=env,target=DATABASE_URL
+# sretab_migrate, the only role in this deployment with DDL rights. It has
+# CREATE and USAGE on schema public and owns every table and sequence in it,
+# which is what lets a future migration ALTER or DROP one — PostgreSQL has no
+# GRANT-able ALTER or DROP on a table, only ownership.
+#
+# Its being the role that runs CREATE TABLE is also what makes
+# `ALTER DEFAULT PRIVILEGES FOR ROLE sretab_migrate` in deploy/roles.sql fire
+# at all: default privileges attach to the role that creates an object, so a
+# table this unit creates arrives with sretab_app's DML grants and
+# sretab_readonly's SELECT already on it, and needs no manual GRANT
+# afterwards. Point this line back at the superuser and that mechanism
+# silently stops firing, leaving every new table unreadable by the
+# application with nothing to say why.
+Secret=sre-tab-migrate-database-url,type=env,target=DATABASE_URL
 
 # `alembic upgrade head` in a unit of its own, ordered before the app, is the
 # answer to "migrations must not race". A single oneshot holds the whole
