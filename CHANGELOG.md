@@ -67,6 +67,64 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   worried about, which is that below 1024 is where the host's own listeners
   live, the TLS proxy that forwards to this port included.
 
+- **`ARCHITECTURE.md`: the system in nine Mermaid diagrams.** The README
+  carried an eight-line ASCII sketch of the topology and nothing else, so
+  every structural question — what a request passes through, what order the
+  SSRF guard checks things in, which unit connects to the database as which
+  role, how a commit becomes a running container — was answerable only by
+  reading the module docstrings that hold the reasoning. Those docstrings are
+  good and they are also scattered across a dozen files, which makes them a
+  reference rather than an orientation.
+
+  The document draws the deployment topology, the middleware and dependency
+  chain, the OAuth exchange, the schema, the refresh tick, the guard's eight
+  checks in order, the failure back-off, session ownership, and the path from
+  commit to host. It ends with a table naming, for each property this service
+  claims, the single place that makes it true — because a property enforced in
+  two places is enforced in neither, and one enforced only in prose is not
+  enforced at all. Two properties are listed as deliberately absent from that
+  table: the backup timer's overnight catch-up and the fetcher's
+  accept-a-redirect branch, neither of which anything verifies.
+
+  The topology diagram names 8080 as the default rather than the policy,
+  matching the `SRE_TAB_WEB_PORT` setting that landed alongside it — a diagram
+  is a claim about the deployment and goes stale the same way prose does, and
+  git could not see that one because the two changes touch different files.
+
+  Every diagram was parsed against a pinned Mermaid 11.17.2 and rendered to
+  check it is legible rather than merely valid, which caught four that were
+  not: a topology whose layout drew an edge that did not exist
+  between two external services, a state diagram whose labels overlapped into
+  illegibility, and two others too tall to read.
+
+- **A `Docs` job that parses every Mermaid block, and a `CONTRIBUTING.md`
+  section saying what it does not cover.** An unparseable diagram is not a
+  wrong sentence, it is a red "Unable to render rich display" box where the
+  picture should be, on the page a newcomer is most likely to open first, and
+  nothing here would have noticed — a reviewer least of all, since the diff
+  shows source and rejected Mermaid looks exactly like accepted Mermaid.
+
+  Two properties are worth naming because both come straight from the rule
+  about what a green check is worth. **Finding zero diagrams is a failure**,
+  since a repository with none and an extractor that has broken print the same
+  success line. And the script **self-tests before it reports** — a known-good
+  diagram must parse, a known-bad one must not, or it exits saying nothing
+  about the corpus. That is not decorative: Mermaid loads DOMPurify at parse
+  time and needs a `window`, and without one it does not fail cleanly, it
+  fails *partially*, with seven of the nine erroring and two parsing anyway.
+
+  The parser is installed ephemerally at pinned versions, on the same
+  reasoning as `uvx semgrep==` — a documentation linter belongs in neither
+  `uv.lock` nor the client's lockfile — with a Renovate custom manager
+  tracking both pins, since Renovate finds npm dependencies through
+  `package.json` files and there deliberately is not one. The DOM is
+  `happy-dom` at the version `frontend/package.json` already pins, so no
+  second DOM implementation enters the repository.
+
+  **This adds a ninth required check, and branch protection is not in this
+  diff.** `CONTRIBUTING.md` carries the updated context list and the ordering
+  to follow; until that write is run the job reports without being required.
+
 ### Fixed
 
 - **`restore.sh` polled a hardcoded 8080 for its post-restore health check.**
@@ -92,6 +150,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The refusal names what it could not determine and exits 1, saying plainly
   that the database itself is restored and verified; the happy path on a moved
   port still passes. Raised in review by CodeRabbit on #27.
+
+- **`check-doc-links.py` treated a fence with an info string as a closing
+  fence, and that was a false pass in a required check.** CommonMark is
+  explicit that a closing fence carries none. Without the rule, a line like
+  ```` ```markdown ```` *inside* a ```` ``` ````-opened block reads as a
+  close, and every fence after it pairs one out of step — so prose is read as
+  code and a broken link in it is never reported. Probed on a document holding
+  a link to a file that does not exist, which the script passed green.
+
+  Found while verifying the same omission in the new Mermaid checker, which a
+  review of this pull request flagged. Both are fixed, and
+  `tests/test_doc_links.py` now covers the case — it was made to fail against
+  the unfixed script first, which is the only reason to believe it.
 
 ### Changed
 
@@ -145,7 +216,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   of published ports, which says the same two things in a form the shell acts
   on, and it was seen to go red on that same sabotage and on a second one that
   stops the installer removing a stale drop-in.
-
 ## [1.1.0] - 2026-09-02
 
 ### Added

@@ -131,6 +131,24 @@ def test_nested_fence_of_greater_length_is_one_block(docs: Path) -> None:
     assert "nowhere.md" not in result.stderr
 
 
+def test_fence_with_an_info_string_does_not_close_a_block(docs: Path) -> None:
+    """A closing fence carries no info string, and the difference is a false pass.
+
+    Without that rule ``` markdown inside a ```-opened block reads as a close,
+    and every fence after it pairs one out of step — so the prose below is
+    read as code and its broken link is never reported. Found by a review of
+    PR #28 against the sibling mermaid checker, which had the same omission,
+    and probed here in the direction that matters: the document is wrong and
+    the script has to say so.
+    """
+    (docs / "root.md").write_text(
+        GOOD + "\n```text\n```markdown\n```\n\n[gone](sub/absent.md)\n",
+    )
+    result = check(docs)
+    assert result.returncode == 1
+    assert "broken relative link: sub/absent.md" in result.stderr
+
+
 def test_indented_pseudo_fence_does_not_open_a_block(docs: Path) -> None:
     """Four spaces makes it an indented code block, not a fence.
 

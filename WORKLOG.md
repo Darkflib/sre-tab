@@ -3,6 +3,148 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-09-02 — The review found the fence bug, and it was in both scripts
+
+**A closing fence carries no info string, and neither checker knew it.**
+CodeRabbit flagged it on the new `check-mermaid.mjs`; verifying the finding
+turned up the identical omission in `check-doc-links.py`, which has been in
+the tree since that script was written and is a **false pass in a required
+status check**.
+
+The mechanism is the same in both. A line like ```` ```markdown ```` inside a
+```` ``` ````-opened block reads as a close, so every fence after it pairs one
+out of step: content becomes prose and prose becomes content. For the mermaid
+gate that meant a plainly invalid diagram was skipped and the run reported
+green. For the link checker it meant a link to a file that does not exist was
+never reported. Both were probed, both did the wrong thing, both now do the
+right one.
+
+**Reachability is low and that is not the point.** Producing the state needs a
+```` ``` ````-opened block containing a ```` ```lang ```` line, which is
+malformed markdown for what the author meant — they would have written
+```` ```` ````. Nobody has done it. But the failure is silent in the direction
+this repository keeps getting hurt in, the fix is one condition, and two
+scripts implementing the same rule differently is worse than either.
+
+`tests/test_doc_links.py` covers it now, and the test was made to fail against
+the unfixed script before it was believed. The mermaid side has no test file
+of its own; its probe was run by hand and is described in the pull request.
+
+**Also from the review, and also correct:** the changelog claimed Mermaid 11
+is "the renderer GitHub uses". GitHub does not publish the version it renders
+with. The claim is gone, and what replaces it is the fact that matters — the
+pin is *approximately* GitHub's grammar, the gap can only be seen by putting a
+fenced `info` block on github.com and reading what it renders, and a diagram
+newer than whatever GitHub runs would pass here and still render as a red box.
+An unsupported claim, in a file arguing that unsupported claims are the
+problem.
+
+## 2026-09-02 — A gate for the diagrams, and what it deliberately does not check
+
+**`check-mermaid.mjs`, run by the `Docs` workflow.** Nine diagrams landed with
+nothing stopping the tenth from being unparseable, and the failure mode is
+unusually bad for a documentation defect: GitHub renders a rejected block as a
+red box reading "Unable to render rich display", in place of the picture, on
+the file most likely to be opened first. The diff shows source, and rejected
+Mermaid reads exactly like accepted Mermaid, so review does not catch it
+either.
+
+**Two questions from the green-check rule, answered in the script rather than
+in a comment.**
+
+*What does it say when its subject is missing or empty?* It fails. A
+repository with no diagrams and an extractor that has stopped finding them
+produce identical output, so zero blocks is an error with a message saying
+which of the two to go and check. If the diagrams are ever all deleted, the
+honest response is deleting the check, not softening it.
+
+*Would it still pass if what it protects were reverted?* The script proves the
+parser rejects things **in this environment** before believing that it
+accepted anything: a known-good diagram must parse and a known-bad one must
+not, or it exits 2 having said nothing about the corpus. Both directions were
+made to fire on purpose before this was believed.
+
+That second guard is not decorative, and the reason is worth writing down.
+**Mermaid needs a DOM to parse** — DOMPurify is loaded at parse time and
+throws `DOMPurify.addHook is not a function` without a `window`. Run it
+without one and it does not fail cleanly: seven of the nine diagrams error and
+two parse anyway. So a botched environment reads as seven broken diagrams,
+which is a plausible-looking result that sends the reader to the wrong place
+entirely. `happy-dom` rather than `jsdom` because `frontend/package.json`
+already pins happy-dom at 20.12.2 for its two Vitest files that need a
+document, and vetting a second DOM implementation to lint documentation is not
+a trade worth making.
+
+**Installed ephemerally, pinned, and tracked.** `npm install --prefix
+.github/scripts --no-save mermaid@11.17.2 happy-dom@20.12.2`, on the same
+reasoning as `uvx semgrep==` in `ci.yml`: a linter for the documentation has
+no business in `uv.lock`, in the client's lockfile, or in the image. Renovate
+finds npm dependencies through `package.json` files and there deliberately is
+not one, so a custom manager matches the two `name@version` strings in the
+workflow — and it was verified by running the regex over the workflows and
+asserting it matched exactly two things, rather than by reading it and
+agreeing with it.
+
+**The gap this leaves is larger than the gate.** All nine diagrams parsed on
+the first attempt and four were still wrong; one had the layout engine draw an
+edge between two services that never talk to each other. A syntax check cannot
+see that, and saying so in `CONTRIBUTING.md` next to the check is the only
+honest way to ship it — otherwise the green tick starts meaning "the diagrams
+are fine", which is the failure this repository keeps finding under new names.
+
+**Not in this change: branch protection.** The required set is a GitHub
+setting, not a file, so the ninth context has to be written with `gh api`
+after the job has reported on a pull request. `CONTRIBUTING.md` now lists nine
+and carries the updated command; until it is run, the job reports without
+being required, and the table says so.
+
+## 2026-09-02 — The architecture, drawn rather than described
+
+**Nine Mermaid diagrams in a new `ARCHITECTURE.md`.** The reasoning behind
+this system is unusually well written down and unusually badly located: it
+lives in module docstrings — `urlguard.py` on the eight checks and their
+order, `locks.py` on why the lock is per source, `pagination.py` on why the
+cursor carries an id, `csrf_middleware.py` on why the check moved out of
+`Depends` — which makes it excellent reference material and no help at all to
+someone asking what this is. The README's ASCII topology was the only picture
+in the repository.
+
+**Drawn from the code, not from the README.** Each diagram was built by
+reading the module it describes and the unit files it deploys as. Worth
+recording: the ingest diagram
+shows four distinct failure edges converging on `record_failure`, which is the
+per-source isolation property as a shape rather than as a sentence, and the
+guard diagram's staircase — every refusal leaving to the same node — is the
+one that makes "the checks are ordered cheapest and most decisive first"
+legible at a glance.
+
+**A diagram that parses is not a diagram that reads, and the difference cost
+four rewrites.** All nine were checked against a pinned Mermaid 11.17.2 and
+then rendered to PNG and looked at. Parsing caught nothing; looking
+caught four:
+
+- the topology diagram put the two external services side by side and routed
+  the app-to-GitHub edge straight through the feed-origins box, so the render
+  showed an arrow **between two services that never talk to each other** —
+  a false statement produced entirely by the layout engine;
+- the source-health state diagram's self-loop labels landed on top of the
+  transition labels, leaving overlapping text;
+- the request-path and topology diagrams were both tall enough to need
+  scrolling for no reason, because long node labels inflate the shapes.
+
+The fixes were the obvious ones once seen — merge the two external nodes,
+move the back-off arithmetic from edge labels into notes, and cut label text
+that the prose already carries. None of them would have been found by any
+check that only asks whether the source is valid, which is the same shape as
+the six green checks in `AGENTS.md` that verified nothing: the guard answered
+a real question, just not the one it was being relied on for.
+
+**Ends with the table that should have existed already.** One row per property
+this service claims, naming the single place that makes it true, and two
+properties deliberately left out of it — the backup timer's overnight
+catch-up and the fetcher's accept-a-redirect branch — because nothing verifies
+either, and a table that listed them would be the thing it exists to prevent.
+
 ## 2026-09-02 — A host with podman, and no container DNS
 
 **`aardvark-dns` is a *Recommends* of Debian's podman package, and a

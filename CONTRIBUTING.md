@@ -149,6 +149,50 @@ removed network, the upgrade procedure was wrong as written, and
 `deploy/README.md` described a deploy as a "sub-second blip" that measured
 43.7 seconds. All were found by running them on Linux, not by reviewing them.
 
+<a id="diagrams-parse-but-are-not-read"></a>
+### A diagram that parses is not a diagram that reads
+
+`.github/scripts/check-mermaid.mjs` parses every ```` ```mermaid ```` block in
+the tracked Markdown and runs in the `Docs` workflow. It exists because an
+unparseable block is not a wrong word, it is a red "Unable to render rich
+display" box where the diagram should be — on `ARCHITECTURE.md`, which is a
+reasonable guess at the first page a newcomer opens — and nothing else here
+would notice. A reviewer would not either: the diff shows the source, and
+Mermaid source that is rejected by the grammar looks like Mermaid source that
+is not.
+
+**It is a syntax gate and only a syntax gate, and the gap is not small.** All
+nine diagrams in `ARCHITECTURE.md` parsed on the first attempt. Four of them
+were still wrong when rendered and looked at, and the worst was wrong in the
+way that matters: the layout engine routed one edge through an unrelated node,
+so the picture showed an arrow between two services that never talk to each
+other. Valid source, false diagram, and no checker will ever catch it. Render
+it and look:
+
+```sh
+npx --yes @mermaid-js/mermaid-cli -i diagram.mmd -o diagram.png
+```
+
+**The pinned parser is not GitHub's, and cannot be.** GitHub does not publish
+the Mermaid version it renders with, and moves it on its own schedule, so this
+gate agrees with the real renderer only approximately — syntax newer than
+whatever GitHub is running would pass here and still render as that red box.
+The only published way to ask is to put a fenced block containing the single
+word `info` in any Markdown on github.com and read what it renders. Worth
+doing if a diagram is rejected there and accepted here.
+
+Two things the script does that are not obvious, both from the rule in
+[AGENTS.md](AGENTS.md) about what a green check is worth. **Zero blocks is a
+failure**, because a repository with no diagrams and an extractor that has
+stopped finding them print the same success line — if the diagrams are ever
+all deleted, deleting the check is the honest response. And it **self-tests
+before it reports**: a known-good diagram must parse and a known-bad one must
+not, or it exits without saying anything about the corpus at all. That second
+one is not theoretical. Mermaid loads DOMPurify at parse time and needs a
+`window`; run it without one and it does not fail cleanly, it fails
+*partially* — seven of the nine diagrams error and two parse anyway, which
+from the outside is indistinguishable from seven broken diagrams.
+
 ### Linking to a heading requires an explicit anchor
 
 A link into the middle of a document has two halves and they rot at different
@@ -285,8 +329,10 @@ parts have been run and which have not.
 <a id="branch-protection"></a>
 ## Branch protection
 
-`main` is protected. Eight checks are required. They are listed here by the
-name GitHub reports — the job's `name:`, which is what a required check
+`main` is protected. **Eight checks are enforced today; the table below lists
+nine.** The ninth, `Mermaid diagrams parse`, reports on every pull request but
+is not yet in the required set — see below the table. They are listed here by
+the name GitHub reports — the job's `name:`, which is what a required check
 actually matches on, not the job key in the workflow:
 
 | Required check | Workflow / job | What it is |
@@ -299,6 +345,17 @@ actually matches on, not the job key in the workflow:
 | `Container build and deployment smoke` | `ci.yml` / `container` | image build, Caddyfile validation, Quadlet generation, the deployment smoke test |
 | `README quickstart runs on a clean checkout` | `docs.yml` / `quickstart` | the README's own commands, executed |
 | `Relative links resolve` | `docs.yml` / `links` | every relative link and image in the docs |
+| `Mermaid diagrams parse` **(not yet required)** | `docs.yml` / `diagrams` | every ```` ```mermaid ```` block in the docs, against a pinned Mermaid parser |
+
+**`Mermaid diagrams parse` is listed because the table is the intended set,
+and marked because it is not the enforced one.** A job reports from the moment
+it lands and becomes required only when the write below is run, and that write
+is a GitHub setting rather than a file, so nothing in a diff can make the two
+agree. Until it runs, a pull request can go red on that job and still merge.
+The ordering is in [Renaming a job](#renaming-a-job) — land it, let it report
+on the pull request, *then* rewrite the required set, *then* verify against
+that head. **Delete the marker in the same change**, or this paragraph becomes
+the thing it exists to prevent.
 
 `Publish, sign, and attest image` is **not** required — see below.
 
@@ -307,6 +364,7 @@ and report on something other than the code under change, so a CVE published
 this morning or a registry hiccup should not hide the test results behind the
 same red cross.
 
+<a id="renaming-a-job"></a>
 ### Renaming a job can silently break a required check
 
 GitHub keys a required
@@ -333,10 +391,11 @@ nothing would ever have surfaced it: every commit on `main` is a direct push,
 there has never been a pull request here, and required checks are not
 consulted on that path.
 
-The required set is now the eight reported names, and it was verified by
-set-differencing the required contexts against the check-runs the repository
-actually reports — empty in the direction that matters — rather than by
-reading the rule back and trusting it looked right.
+The required set was rewritten to the reported names — eight of them at the
+time, and eight still until `Mermaid diagrams parse` is added — and it was
+verified by set-differencing the required contexts against the check-runs the
+repository actually reports, empty in the direction that matters, rather than
+by reading the rule back and trusting it looked right.
 
 `Publish, sign, and attest image` is deliberately excluded. Its `if:` admits
 a push to `main` and a push of a `v*` tag and nothing else, so it never runs
@@ -381,7 +440,8 @@ gh api -X PATCH repos/Darkflib/sre-tab/branches/main/protection/required_status_
   -f 'contexts[]=Frontend lint, types, contract, tests, build' \
   -f 'contexts[]=Container build and deployment smoke' \
   -f 'contexts[]=README quickstart runs on a clean checkout' \
-  -f 'contexts[]=Relative links resolve'
+  -f 'contexts[]=Relative links resolve' \
+  -f 'contexts[]=Mermaid diagrams parse'
 ```
 
 Then confirm it by comparing the two sets, rather than by rereading the rule:
