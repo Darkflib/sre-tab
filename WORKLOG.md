@@ -3,6 +3,60 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-09-02 — A host with podman, and no container DNS
+
+**`aardvark-dns` is a *Recommends* of Debian's podman package, and a
+Recommends is not installed on a host built with
+`--no-install-recommends`.** ny01 — Debian 13, podman 5.4.2 — had podman and
+netavark and not it. `deploy/scripts/smoke.sh` failed at its first
+cross-container step with a SQLAlchemy connection traceback, and the only
+clue anywhere was a line podman prints and then carries on past:
+
+```
+level=warning msg="aardvark-dns binary not found, container dns will not be enabled"
+```
+
+`sudo apt-get install aardvark-dns` fixed it.
+
+**Not a test-harness problem.** Every hop in the deployed stack is by name —
+five units on `sre-tab.network` reach the database as `sre-tab-db`, and the
+Caddyfile's upstream is `sre-tab-app:8000` — so the same host would have
+taken `install.sh --start` to a `sre-tab-migrate.service` failing on
+psycopg's "could not translate host name", which reads like a database that
+is down rather than a package that was never installed.
+
+**Both halves, because neither is enough on its own.** `deploy/README.md`'s
+host preparation now names the two packages and installs them under a
+`docs:run` marker, so the throwaway Debian host that executes that document
+bootstraps itself instead of being assumed ready — which is why the document
+could not have caught this before, having never installed podman either. And
+`install.sh --start` refuses, before the timers are enabled, because a note
+only helps the reader who reads it, and this deployment's other first-deploy
+trap is documented at length and *also* fails closed.
+
+Neither check looks for the binary: Debian installs it under
+`/usr/lib/podman`, other distributions under `/usr/libexec/podman`,
+`containers.conf` can move it, and it is on `PATH` nowhere. Both ask podman.
+
+**The first version asked with a `--format` template naming the field that
+holds the path, and the review of PR #25 was right that it had a hole.** A
+template naming a field the local podman does not carry exits non-zero having
+reported nothing, which is not distinguishable from aardvark-dns being
+absent. That version warned and continued in that case, reasoning that
+refusing would be deciding on evidence it did not have — true, and beside the
+point, because continuing is the green check that checks nothing, and this
+repository has six of those in its history for a reason. Both horns are real,
+which is the signal that the state itself was the mistake. `--format json`
+and a substring has no third state: either the string is in the document or
+it is not, and no podman at all is the empty document, which refuses like any
+other host that cannot resolve a container name. It also settled a question
+this development host could not answer, having no podman to run the template
+against.
+
+Present, absent, and a podman that will not answer were each run against a
+stubbed engine, in both scripts, before either was believed — as was
+`smoke.sh`'s Docker path, which has no aardvark-dns to be missing.
+
 ## 2026-09-01 — The review's remaining findings, filed
 
 A production-readiness review of the tree and of the repository's own

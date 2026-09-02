@@ -229,6 +229,47 @@ grep -qxF 'Environment=POSTGRES_USER=sretab' \
     || fail "sre-tab-db.container no longer bootstraps the sretab superuser"
 echo "  sre-tab-db.container still bootstraps the superuser, which owns the cluster"
 
+step "The host can resolve one container from another"
+# Also before a single container starts, and for the same reason as the step
+# above: this is a two-second question whose answer, unasked, surfaces three
+# minutes in as a SQLAlchemy connection traceback.
+#
+# aardvark-dns is a *Recommends* of Debian's podman package rather than a
+# dependency, so a host built with --no-install-recommends has podman, has
+# netavark, and has no container DNS at all. Measured on a fresh Debian 13
+# host with podman 5.4.2, where this harness failed at its first
+# cross-container step. Nothing announces it — podman warns once,
+#
+#   level=warning msg="aardvark-dns binary not found, container dns will not be enabled"
+#
+# and carries on. Every container below then starts normally and the first
+# one to reach another by name dies instead; all three role URLs above name
+# the host `sre-tab-db`, and the Caddyfile's upstream is `sre-tab-app:8000`,
+# so that is the whole run.
+#
+# Asked of podman rather than looked for on PATH, where it never is: Debian
+# installs the binary under /usr/lib/podman, other distributions under
+# /usr/libexec/podman, and containers.conf's helper_binaries_dir can move it
+# anywhere. `--format json` and a substring rather than a Go template naming
+# the field, because a template that names a field this podman does not carry
+# fails exactly as a missing binary does, and a check with a state it cannot
+# resolve has to either refuse without evidence or pass without checking. The
+# document has no such state, and no podman at all is the empty document.
+# deploy/install.sh carries the same check and the same reasoning at length.
+case "${ENGINE##*/}" in
+    podman*)
+        "$ENGINE" info --format json 2>/dev/null | grep -q aardvark-dns || fail \
+            "podman reports no aardvark-dns, so containers on $NET will not resolve each other by name and every step below would fail at its first cross-container call — install it (on Debian, sudo apt-get install aardvark-dns) and run this again"
+        echo "  aardvark-dns: present"
+        ;;
+    *)
+        # Docker runs its own resolver on a user-defined network and has no
+        # aardvark-dns to be missing, so there is nothing here to check
+        # rather than a check being skipped quietly.
+        echo "  $ENGINE is not podman: container DNS is the engine's own"
+        ;;
+esac
+
 step "Preparing $NET"
 "$ENGINE" rm --force sre-tab-web sre-tab-app sre-tab-db >/dev/null 2>&1 || true
 "$ENGINE" network rm --force "$NET" >/dev/null 2>&1 || true

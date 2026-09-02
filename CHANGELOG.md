@@ -248,6 +248,46 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   says nothing is the green check that checks nothing. All three branches
   were exercised against a stubbed `podman` before being believed.
 
+- **Host prerequisites, because a thin Debian install has no container
+  DNS.** `aardvark-dns` is a *Recommends* of Debian's `podman` package, so
+  a host built with `--no-install-recommends` has podman, has netavark, and
+  cannot resolve one container from another — which is how every hop in
+  this stack works: five units reach the database as `sre-tab-db`, and
+  Caddy's upstream is `sre-tab-app:8000`. Podman does not fail, it warns
+  once (`aardvark-dns binary not found, container dns will not be
+  enabled`) and carries on, so the first symptom is a psycopg "could not
+  translate host name" traceback out of `sre-tab-migrate.service`, which
+  reads like a database that is down. Observed on a fresh Debian 13 host
+  with podman 5.4.2, where `deploy/scripts/smoke.sh` failed the same way at
+  its first cross-container step.
+
+  `deploy/README.md`'s host preparation now names both packages and
+  installs them under a `docs:run` marker, so the throwaway host that
+  executes that document bootstraps itself rather than being assumed.
+  `install.sh --start` refuses to start the stack when podman reports no
+  aardvark-dns, before the timers are enabled, and `smoke.sh` refuses
+  before it creates its network, beside the Quadlet-credential check that
+  already runs there for the same reason — a two-second question whose
+  answer, unasked, arrives three minutes in as a connection traceback.
+  Under `CONTAINER_ENGINE=docker` the harness says the engine resolves
+  names itself rather than skipping quietly.
+
+  Both checks read `podman info --format json` for the string, rather than
+  a `--format` template naming the field that holds the path, and that is
+  the second version. The template has a third state — one naming a field
+  this podman does not carry exits non-zero having reported nothing, which
+  is not distinguishable from the binary being absent — and every way of
+  handling it is wrong: refusing decides on evidence it does not have, and
+  warning through is the green check that checks nothing. Removing the
+  state was the fix. The whole document cannot fail that way, and no podman
+  at all is the empty document, which refuses like any other host that
+  cannot resolve a container name. Neither looks for the binary on `PATH`,
+  where it never is: Debian installs it under `/usr/lib/podman`, other
+  distributions under `/usr/libexec/podman`, and `containers.conf` can move
+  it. Every branch of both checks, the harness's Docker path and a podman
+  that will not answer at all included, was exercised against a stubbed
+  engine before being believed.
+
 ### Changed
 
 - **`verify-image.sh` now accepts the set of refs this workflow signs from,
