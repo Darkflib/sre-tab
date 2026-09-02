@@ -161,6 +161,12 @@ enabled source is failing so a monitoring job can call it and mean it.
   SQLite there is no advisory-lock equivalent, so the lock degrades to
   process-local and logs a warning once at start-up rather than pretending.
 
+[ARCHITECTURE.md](ARCHITECTURE.md) draws all of that properly — the request
+path through the middleware, the sign-in exchange, the SSRF guard's decision
+order, the schema, and the route from a commit to a running host — and, at
+the end, a table naming the single place each of these properties is actually
+enforced.
+
 <a id="the-two-things-that-look-like-bugs"></a>
 ## The two things that look like bugs
 
@@ -320,6 +326,7 @@ reasoning for each is in [prd-v1.md](prd-v1.md#non-goals-for-v1).
 
 | Document | What it covers |
 | --- | --- |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | The system in diagrams: request path, ingest, schema, deployment |
 | [prd-v1.md](prd-v1.md) | Product requirements: scope, data model, acceptance criteria |
 | [PLAN-v1.md](PLAN-v1.md) | How v1 was decomposed across parallel agents, and why |
 | [ROADMAP.md](ROADMAP.md) | Deferred work, grouped by why it was deferred |

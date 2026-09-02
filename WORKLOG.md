@@ -3,6 +3,53 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-09-02 — The architecture, drawn rather than described
+
+**Nine Mermaid diagrams in a new `ARCHITECTURE.md`.** The reasoning behind
+this system is unusually well written down and unusually badly located: it
+lives in module docstrings — `urlguard.py` on the eight checks and their
+order, `locks.py` on why the lock is per source, `pagination.py` on why the
+cursor carries an id, `csrf_middleware.py` on why the check moved out of
+`Depends` — which makes it excellent reference material and no help at all to
+someone asking what this is. The README's ASCII topology was the only picture
+in the repository.
+
+**Drawn from the code, not from the README.** Each diagram was built by
+reading the module it describes and the unit files it deploys as. Worth
+recording: the ingest diagram
+shows four distinct failure edges converging on `record_failure`, which is the
+per-source isolation property as a shape rather than as a sentence, and the
+guard diagram's staircase — every refusal leaving to the same node — is the
+one that makes "the checks are ordered cheapest and most decisive first"
+legible at a glance.
+
+**A diagram that parses is not a diagram that reads, and the difference cost
+four rewrites.** All nine were checked against Mermaid 11, the renderer GitHub
+uses, and then rendered to PNG and looked at. Parsing caught nothing; looking
+caught four:
+
+- the topology diagram put the two external services side by side and routed
+  the app-to-GitHub edge straight through the feed-origins box, so the render
+  showed an arrow **between two services that never talk to each other** —
+  a false statement produced entirely by the layout engine;
+- the source-health state diagram's self-loop labels landed on top of the
+  transition labels, leaving overlapping text;
+- the request-path and topology diagrams were both tall enough to need
+  scrolling for no reason, because long node labels inflate the shapes.
+
+The fixes were the obvious ones once seen — merge the two external nodes,
+move the back-off arithmetic from edge labels into notes, and cut label text
+that the prose already carries. None of them would have been found by any
+check that only asks whether the source is valid, which is the same shape as
+the six green checks in `AGENTS.md` that verified nothing: the guard answered
+a real question, just not the one it was being relied on for.
+
+**Ends with the table that should have existed already.** One row per property
+this service claims, naming the single place that makes it true, and two
+properties deliberately left out of it — the backup timer's overnight
+catch-up and the fetcher's accept-a-redirect branch — because nothing verifies
+either, and a table that listed them would be the thing it exists to prevent.
+
 ## 2026-09-02 — A host with podman, and no container DNS
 
 **`aardvark-dns` is a *Recommends* of Debian's podman package, and a

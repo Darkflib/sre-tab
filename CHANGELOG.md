@@ -6,6 +6,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`ARCHITECTURE.md`: the system in nine Mermaid diagrams.** The README
+  carried an eight-line ASCII sketch of the topology and nothing else, so
+  every structural question — what a request passes through, what order the
+  SSRF guard checks things in, which unit connects to the database as which
+  role, how a commit becomes a running container — was answerable only by
+  reading the module docstrings that hold the reasoning. Those docstrings are
+  good and they are also scattered across a dozen files, which makes them a
+  reference rather than an orientation.
+
+  The document draws the deployment topology, the middleware and dependency
+  chain, the OAuth exchange, the schema, the refresh tick, the guard's eight
+  checks in order, the failure back-off, session ownership, and the path from
+  commit to host. It ends with a table naming, for each property this service
+  claims, the single place that makes it true — because a property enforced in
+  two places is enforced in neither, and one enforced only in prose is not
+  enforced at all. Two properties are listed as deliberately absent from that
+  table: the backup timer's overnight catch-up and the fetcher's
+  accept-a-redirect branch, neither of which anything verifies.
+
+  Every diagram was parsed against Mermaid 11 — the renderer GitHub uses — and
+  rendered to check it is legible rather than merely valid, which caught four
+  that were not: a topology whose layout drew an edge that did not exist
+  between two external services, a state diagram whose labels overlapped into
+  illegibility, and two others too tall to read.
+
 ## [1.1.0] - 2026-09-02
 
 ### Added
