@@ -13,7 +13,10 @@ wrong.
 Every diagram is Mermaid, rendered inline by GitHub and by most editors. They
 are drawn from the code rather than from memory, and each is followed by the
 sentence it exists to make legible — a diagram that needs no prose is usually
-a diagram that says nothing.
+a diagram that says nothing. CI parses all of them on every push, which keeps
+them renderable and proves nothing whatever about whether they are true or
+readable; [CONTRIBUTING.md](CONTRIBUTING.md#diagrams-parse-but-are-not-read)
+has the distinction, and it is a wider gap than it sounds.
 
 | Section | What it answers |
 | --- | --- |

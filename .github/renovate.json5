@@ -148,5 +148,25 @@
       matchStrings: ["uvx (?<depName>semgrep)==(?<currentValue>[0-9.]+)"],
       datasourceTemplate: "pypi",
     },
+    {
+      // The documentation's mermaid parser, installed ephemerally by
+      // docs.yml for the same reason semgrep is: it lints the docs, so it
+      // belongs in neither uv.lock nor frontend/package-lock.json. Renovate
+      // finds npm dependencies through package.json files and there
+      // deliberately is not one, so without this the two pins sit in a
+      // workflow and drift unwatched.
+      //
+      // happy-dom is also pinned in frontend/package.json, where the npm
+      // manager already sees it. The two copies must agree — the point of
+      // reusing it is that this repository vets one DOM implementation — and
+      // matching on the bare `name@version` here means both land in the same
+      // weekly grouped PR, where a disagreement is visible in one diff.
+      customType: "regex",
+      managerFilePatterns: ["/^\\.github/workflows/.*\\.ya?ml$/"],
+      matchStrings: [
+        "(?<depName>mermaid|happy-dom)@(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)",
+      ],
+      datasourceTemplate: "npm",
+    },
   ],
 }

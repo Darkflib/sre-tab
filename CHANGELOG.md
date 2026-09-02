@@ -33,6 +33,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   between two external services, a state diagram whose labels overlapped into
   illegibility, and two others too tall to read.
 
+- **A `Docs` job that parses every Mermaid block, and a `CONTRIBUTING.md`
+  section saying what it does not cover.** An unparseable diagram is not a
+  wrong sentence, it is a red "Unable to render rich display" box where the
+  picture should be, on the page a newcomer is most likely to open first, and
+  nothing here would have noticed — a reviewer least of all, since the diff
+  shows source and rejected Mermaid looks exactly like accepted Mermaid.
+
+  Two properties are worth naming because both come straight from the rule
+  about what a green check is worth. **Finding zero diagrams is a failure**,
+  since a repository with none and an extractor that has broken print the same
+  success line. And the script **self-tests before it reports** — a known-good
+  diagram must parse, a known-bad one must not, or it exits saying nothing
+  about the corpus. That is not decorative: Mermaid loads DOMPurify at parse
+  time and needs a `window`, and without one it does not fail cleanly, it
+  fails *partially*, with seven of the nine erroring and two parsing anyway.
+
+  The parser is installed ephemerally at pinned versions, on the same
+  reasoning as `uvx semgrep==` — a documentation linter belongs in neither
+  `uv.lock` nor the client's lockfile — with a Renovate custom manager
+  tracking both pins, since Renovate finds npm dependencies through
+  `package.json` files and there deliberately is not one. The DOM is
+  `happy-dom` at the version `frontend/package.json` already pins, so no
+  second DOM implementation enters the repository.
+
+  **This adds a ninth required check, and branch protection is not in this
+  diff.** `CONTRIBUTING.md` carries the updated context list and the ordering
+  to follow; until that write is run the job reports without being required.
+
 ## [1.1.0] - 2026-09-02
 
 ### Added

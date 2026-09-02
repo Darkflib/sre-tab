@@ -149,6 +149,42 @@ removed network, the upgrade procedure was wrong as written, and
 `deploy/README.md` described a deploy as a "sub-second blip" that measured
 43.7 seconds. All were found by running them on Linux, not by reviewing them.
 
+<a id="diagrams-parse-but-are-not-read"></a>
+### A diagram that parses is not a diagram that reads
+
+`.github/scripts/check-mermaid.mjs` parses every ```` ```mermaid ```` block in
+the tracked Markdown and runs in the `Docs` workflow. It exists because an
+unparseable block is not a wrong word, it is a red "Unable to render rich
+display" box where the diagram should be — on `ARCHITECTURE.md`, which is a
+reasonable guess at the first page a newcomer opens — and nothing else here
+would notice. A reviewer would not either: the diff shows the source, and
+Mermaid source that is rejected by the grammar looks like Mermaid source that
+is not.
+
+**It is a syntax gate and only a syntax gate, and the gap is not small.** All
+nine diagrams in `ARCHITECTURE.md` parsed on the first attempt. Four of them
+were still wrong when rendered and looked at, and the worst was wrong in the
+way that matters: the layout engine routed one edge through an unrelated node,
+so the picture showed an arrow between two services that never talk to each
+other. Valid source, false diagram, and no checker will ever catch it. Render
+it and look:
+
+```sh
+npx --yes @mermaid-js/mermaid-cli -i diagram.mmd -o diagram.png
+```
+
+Two things the script does that are not obvious, both from the rule in
+[AGENTS.md](AGENTS.md) about what a green check is worth. **Zero blocks is a
+failure**, because a repository with no diagrams and an extractor that has
+stopped finding them print the same success line — if the diagrams are ever
+all deleted, deleting the check is the honest response. And it **self-tests
+before it reports**: a known-good diagram must parse and a known-bad one must
+not, or it exits without saying anything about the corpus at all. That second
+one is not theoretical. Mermaid loads DOMPurify at parse time and needs a
+`window`; run it without one and it does not fail cleanly, it fails
+*partially* — seven of the nine diagrams error and two parse anyway, which
+from the outside is indistinguishable from seven broken diagrams.
+
 ### Linking to a heading requires an explicit anchor
 
 A link into the middle of a document has two halves and they rot at different
@@ -285,7 +321,7 @@ parts have been run and which have not.
 <a id="branch-protection"></a>
 ## Branch protection
 
-`main` is protected. Eight checks are required. They are listed here by the
+`main` is protected. Nine checks are required. They are listed here by the
 name GitHub reports — the job's `name:`, which is what a required check
 actually matches on, not the job key in the workflow:
 
@@ -299,6 +335,14 @@ actually matches on, not the job key in the workflow:
 | `Container build and deployment smoke` | `ci.yml` / `container` | image build, Caddyfile validation, Quadlet generation, the deployment smoke test |
 | `README quickstart runs on a clean checkout` | `docs.yml` / `quickstart` | the README's own commands, executed |
 | `Relative links resolve` | `docs.yml` / `links` | every relative link and image in the docs |
+| `Mermaid diagrams parse` | `docs.yml` / `diagrams` | every ```` ```mermaid ```` block in the docs, against the renderer's own grammar |
+
+`Mermaid diagrams parse` is the newest of the nine, and the one to check
+first if this table and GitHub disagree: a job reports from the moment it
+lands, but it is required only once the write below has been run. The command
+is the intended set; the ordering to follow when adding to it is in
+[Renaming a job](#renaming-a-job) — land it, let it report on the pull
+request, *then* rewrite the required set, *then* verify against that head.
 
 `Publish, sign, and attest image` is **not** required — see below.
 
@@ -307,6 +351,7 @@ and report on something other than the code under change, so a CVE published
 this morning or a registry hiccup should not hide the test results behind the
 same red cross.
 
+<a id="renaming-a-job"></a>
 ### Renaming a job can silently break a required check
 
 GitHub keys a required
@@ -381,7 +426,8 @@ gh api -X PATCH repos/Darkflib/sre-tab/branches/main/protection/required_status_
   -f 'contexts[]=Frontend lint, types, contract, tests, build' \
   -f 'contexts[]=Container build and deployment smoke' \
   -f 'contexts[]=README quickstart runs on a clean checkout' \
-  -f 'contexts[]=Relative links resolve'
+  -f 'contexts[]=Relative links resolve' \
+  -f 'contexts[]=Mermaid diagrams parse'
 ```
 
 Then confirm it by comparing the two sets, rather than by rereading the rule:

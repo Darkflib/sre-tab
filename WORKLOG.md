@@ -3,6 +3,65 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-09-02 — A gate for the diagrams, and what it deliberately does not check
+
+**`check-mermaid.mjs`, run by the `Docs` workflow.** Nine diagrams landed with
+nothing stopping the tenth from being unparseable, and the failure mode is
+unusually bad for a documentation defect: GitHub renders a rejected block as a
+red box reading "Unable to render rich display", in place of the picture, on
+the file most likely to be opened first. The diff shows source, and rejected
+Mermaid reads exactly like accepted Mermaid, so review does not catch it
+either.
+
+**Two questions from the green-check rule, answered in the script rather than
+in a comment.**
+
+*What does it say when its subject is missing or empty?* It fails. A
+repository with no diagrams and an extractor that has stopped finding them
+produce identical output, so zero blocks is an error with a message saying
+which of the two to go and check. If the diagrams are ever all deleted, the
+honest response is deleting the check, not softening it.
+
+*Would it still pass if what it protects were reverted?* The script proves the
+parser rejects things **in this environment** before believing that it
+accepted anything: a known-good diagram must parse and a known-bad one must
+not, or it exits 2 having said nothing about the corpus. Both directions were
+made to fire on purpose before this was believed.
+
+That second guard is not decorative, and the reason is worth writing down.
+**Mermaid needs a DOM to parse** — DOMPurify is loaded at parse time and
+throws `DOMPurify.addHook is not a function` without a `window`. Run it
+without one and it does not fail cleanly: seven of the nine diagrams error and
+two parse anyway. So a botched environment reads as seven broken diagrams,
+which is a plausible-looking result that sends the reader to the wrong place
+entirely. `happy-dom` rather than `jsdom` because `frontend/package.json`
+already pins happy-dom at 20.12.2 for its two Vitest files that need a
+document, and vetting a second DOM implementation to lint documentation is not
+a trade worth making.
+
+**Installed ephemerally, pinned, and tracked.** `npm install --prefix
+.github/scripts --no-save mermaid@11.17.2 happy-dom@20.12.2`, on the same
+reasoning as `uvx semgrep==` in `ci.yml`: a linter for the documentation has
+no business in `uv.lock`, in the client's lockfile, or in the image. Renovate
+finds npm dependencies through `package.json` files and there deliberately is
+not one, so a custom manager matches the two `name@version` strings in the
+workflow — and it was verified by running the regex over the workflows and
+asserting it matched exactly two things, rather than by reading it and
+agreeing with it.
+
+**The gap this leaves is larger than the gate.** All nine diagrams parsed on
+the first attempt and four were still wrong; one had the layout engine draw an
+edge between two services that never talk to each other. A syntax check cannot
+see that, and saying so in `CONTRIBUTING.md` next to the check is the only
+honest way to ship it — otherwise the green tick starts meaning "the diagrams
+are fine", which is the failure this repository keeps finding under new names.
+
+**Not in this change: branch protection.** The required set is a GitHub
+setting, not a file, so the ninth context has to be written with `gh api`
+after the job has reported on a pull request. `CONTRIBUTING.md` now lists nine
+and carries the updated command; until it is run, the job reports without
+being required, and the table says so.
+
 ## 2026-09-02 — The architecture, drawn rather than described
 
 **Nine Mermaid diagrams in a new `ARCHITECTURE.md`.** The reasoning behind

@@ -123,3 +123,45 @@ jobs:
       # the trap CONTRIBUTING.md documents.
       - name: Every relative link and image target exists
         run: python3 .github/scripts/check-doc-links.py
+
+  diagrams:
+    name: Mermaid diagrams parse
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+
+      # An ephemeral install rather than a dependency of anything, on the same
+      # reasoning as `uvx semgrep==` in ci.yml: this is a linter for the
+      # documentation, and it has no business in the client's dependency tree
+      # or in the image. Both versions are exact, and renovate.json5 carries a
+      # custom manager that tracks them here — Renovate reads package.json
+      # files, and there deliberately is not one.
+      #
+      # happy-dom, not jsdom, because frontend/package.json already pins
+      # happy-dom at this version for the two Vitest files that need a
+      # document. Mermaid does need one: DOMPurify is loaded at parse time and
+      # throws without a window — though only for some diagram types, so an
+      # absent DOM fails partially rather than cleanly. That is what the
+      # script's self-test is for.
+      - name: Install the parser
+        run: >
+          npm install --prefix .github/scripts --no-save --no-audit --no-fund
+          mermaid@11.17.2 happy-dom@20.12.2
+
+      # Parses every ```mermaid block in the tracked Markdown. GitHub renders
+      # one it cannot parse as a red "Unable to render rich display" box in
+      # place of the diagram, which nothing else here would notice and no
+      # reviewer would catch from the diff.
+      #
+      # This is a syntax gate and only a syntax gate. All nine diagrams in
+      # ARCHITECTURE.md parsed on the first attempt and four of them were
+      # still wrong when rendered — one had the layout engine draw an edge
+      # between two services that never talk to each other. Nothing automates
+      # that; the script's header says how to render and look.
+      - name: Every mermaid diagram parses
+        run: node .github/scripts/check-mermaid.mjs
