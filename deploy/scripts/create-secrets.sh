@@ -10,7 +10,7 @@
 # The second of those is read by no unit any more -- the application and the
 # migration unit connect as sretab_app and sretab_migrate, whose secrets
 # create-roles.sh writes. It is still written here and must not be deleted:
-# reverting the cutover points three units straight back at it, so leaving it
+# reverting the cutover points four units straight back at it, so leaving it
 # in place IS the rollback. See deploy/ROLES.md.
 #
 # The database password appears in two of those, and a mismatch between them

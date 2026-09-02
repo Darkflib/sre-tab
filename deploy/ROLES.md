@@ -38,7 +38,7 @@ This document is why; that one is how.
 | --- | --- | --- | --- |
 | `sretab_migrate` | the migration unit (`alembic upgrade head`) | `CREATE`/`USAGE` on schema `public`; owns every table and sequence in it, so it can `ALTER` and `DROP` them too | superuser, `CREATEDB`, `CREATEROLE`, `COPY ... PROGRAM` |
 | `sretab_app` | the application, and `sre-tab sessions prune` | `SELECT`/`INSERT`/`UPDATE`/`DELETE` on every table; `USAGE` and `SELECT` on every sequence | any DDL, `TRUNCATE`, `COPY ... PROGRAM` |
-| `sretab_readonly` | `pg_dump` (the backup unit) | `SELECT` on every table and every sequence | any write, any DDL, `COPY ... PROGRAM` |
+| `sretab_readonly` | `pg_dump` (the backup unit), and `sre-tab status` (the hourly health check) | `SELECT` on every table and every sequence | any write, any DDL, `COPY ... PROGRAM` |
 
 None of the three is superuser, and none can create a database or another
 role. `COPY ... PROGRAM` — the specific mechanism the finding is about — is
@@ -120,31 +120,37 @@ sudo deploy/scripts/create-roles.sh
 ```
 
 This creates the three roles (if they do not already exist), applies every
-grant in `roles.sql`, and writes the three podman secrets the units consume:
+grant in `roles.sql`, and writes the four podman secrets the units consume:
 
 | Podman secret | Holds | Read by |
 | --- | --- | --- |
 | `sre-tab-migrate-database-url` | a `DATABASE_URL` for `sretab_migrate` | `sre-tab-migrate.container`, and `restore.sh`'s `pg_restore` step |
 | `sre-tab-app-database-url` | a `DATABASE_URL` for `sretab_app` | `sre-tab.container` and `sre-tab-prune-sessions.container` |
 | `sre-tab-readonly-password` | just the password, for `PGPASSWORD` | `sre-tab-backup.container`, alongside `Environment=PGUSER=sretab_readonly` |
+| `sre-tab-readonly-database-url` | the same password, inside a `DATABASE_URL` | `sre-tab-status.container` |
+
+Four secrets for three roles, because `sretab_readonly` has two consumers
+wanting one password in two shapes — `pg_dump` takes `PGPASSWORD`, the CLI
+takes a `DATABASE_URL`. They are written together and rotated together;
+[the section on the status unit](#status-goes-read-only) has the reasoning.
 
 **It has to run against a database that is already up, which makes the
 first-install ordering counter-intuitive.** `create-roles.sh` reaches the
 cluster by `podman exec` into the running container, so the roles cannot
 exist before the database does — and the database is started by
-`install.sh --start`, which now refuses to run until the three secrets above
+`install.sh --start`, which now refuses to run until the four secrets above
 exist. A fresh host therefore starts the database on its own, in between:
 
 ```bash
 sudo deploy/install.sh                     # stage the units
 sudo deploy/scripts/create-secrets.sh < …  # the superuser's four secrets
 sudo systemctl start sre-tab-db.service    # the database alone
-sudo deploy/scripts/create-roles.sh        # the roles and their three secrets
+sudo deploy/scripts/create-roles.sh        # the roles and their four secrets
 sudo deploy/install.sh --start             # the rest of the stack
 ```
 
 `install.sh --start` prints exactly that sequence when a role secret is
-missing, rather than enabling the timers and then watching three units fail
+missing, rather than enabling the timers and then watching four units fail
 to resolve a `Secret=` reference. That check was watched failing on purpose
 before it was believed, on the reference host, and it exits before any timer
 is enabled.
@@ -173,13 +179,15 @@ is left exactly as it is — no password is rotated, nothing is overwritten
 — while every grant is re-applied regardless, which is harmless (`GRANT`
 and `ALTER DEFAULT PRIVILEGES` are no-ops when already in place) and is
 what makes it safe to run again after a schema change, or after a change
-to this tooling itself. `--rotate` regenerates all three passwords and
-secrets together; see "Rotating a role's password" below, which now has real
-consequences, because all three secrets are in use.
+to this tooling itself. `--rotate` regenerates all three role passwords and
+rewrites all four secrets together; see "Rotating a role's password" below,
+which now has real consequences, because every one of them is in use.
 
-If a role and its podman secret disagree about whether they exist, the
+If a role and its podman secrets disagree about whether they exist, the
 script refuses to guess and asks for `--rotate` explicitly, in either
-direction:
+direction — and for `sretab_readonly`, whose two secrets are one credential,
+"some of them exist" is the same drift as "none of them does", refused the
+same way and naming the one that is missing:
 
 - **Secret exists, role does not** — should only happen from a manual
   `DROP ROLE`. Generating a role with an unknown password would never
@@ -190,7 +198,7 @@ direction:
   existing password is not known to this script; left unguarded, this case
   used to fall through silently and report success with no secret written,
   surfacing only later as a unit that will not start because its `Secret=`
-  reference does not resolve — which, now that three units depend on these
+  reference does not resolve — which, now that four units depend on these
   secrets, is an outage rather than a curiosity.
 
 <a id="verification"></a>
@@ -260,7 +268,7 @@ environment — against a `postgres:18-trixie` container with this
 repository's migrations already applied, and the whole decision tree
 behaved as documented:
 
-- A first run created the three roles, wrote all three podman secrets, and
+- A first run created the three roles, wrote all the podman secrets, and
   swept every existing table onto `sretab_migrate`. `pg_roles` confirms none
   of the three holds `SUPERUSER`, `CREATEDB`, or `CREATEROLE`.
 - A second run with no flags printed "already exists, password left
@@ -284,6 +292,49 @@ behaved as documented:
   of `pg_restore`, restored as `sretab_migrate`, and left all fourteen
   tables owned by `sretab_migrate` with `sretab_app` holding `INSERT` and
   not `TRUNCATE`, and `sretab_readonly` holding `SELECT`.
+
+**The fourth secret was put through the same tree**, on the same kind of host
+(Debian 13, podman 5.4.2, rootful), from an empty one: no `/etc/sre-tab`, no
+secrets, no volumes.
+
+- A first run wrote four secrets, not three, and a second run with no flags
+  changed nothing — compared by secret ID, so "left alone" is observed rather
+  than inferred from the script's own output.
+- Removing `sre-tab-readonly-database-url` alone and re-running produced
+  "role sretab_readonly already exists, but sre-tab-readonly-database-url
+  does not" — the point of treating a role's secrets as a set, since the
+  other one was still there and the old code would have seen no drift at all.
+  Removing both named both. Dropping the role while both secrets remained
+  produced the mirror image, naming both.
+- `--rotate` moved all four secret IDs in one run, and the two
+  `sretab_readonly` secrets still agreed afterwards. Checked three ways
+  inside a throwaway container holding both: the password lifted out of the
+  URL is byte-identical to the bare secret; a connection made with the bare
+  password as the role named in the URL succeeds over a real `host`
+  connection (`inet_server_addr()` non-null, so not the loopback path that
+  trusts anything); and a deliberately wrong password is refused with
+  `FATAL: password authentication failed for user "sretab_readonly"`.
+- `install.sh --start` refuses on the fourth secret as it does on the other
+  three, and the whole first-install ordering — `install.sh`,
+  `create-secrets.sh`, `systemctl start sre-tab-db.service`,
+  `create-roles.sh`, `install.sh --start` — brought the stack up healthy with
+  `sretab_app` the only role connected to the database.
+- `sre-tab status --failures-over 3` was then run with the unit's own flags
+  and the real `sre-tab-readonly-database-url` secret: it printed the status
+  table and exited 0 on a healthy catalogue, and exited 1 naming the source
+  after a `source_status` row was planted four failures deep. `sre-tab
+  sources add` on that same secret is refused with `permission denied for
+  table sources`, which is the role boundary observed from the unit's own
+  credential rather than from a `psql` standing in for it.
+
+One thing that run did **not** prove, because it cannot yet: the unit as
+shipped. `sre-tab-status.container` pins the image digest from before this
+branch added `--failures-over`, so `systemctl start sre-tab-status.service`
+starts the container, resolves the secret, and then exits 2 with
+`unrecognized arguments: --failures-over 3`. That is the ordinary
+pin-then-promote sequence (`deploy/scripts/promote.sh`) and not a credential
+problem — the run above used a locally built image for exactly this reason —
+but the unit will not do useful work on a host until the digest moves.
 
 <a id="the-cutover-itself-was-run"></a>
 ### The cutover itself was run, on a real Quadlet install
@@ -401,17 +452,71 @@ reason the rollback section gives.
 | `deploy/quadlet/sre-tab-migrate.container` | `Secret=sre-tab-migrate-database-url,type=env,target=DATABASE_URL`, runs `alembic upgrade head` | **done** — `sretab_migrate` |
 | `deploy/quadlet/sre-tab-prune-sessions.container` | `Secret=sre-tab-app-database-url,type=env,target=DATABASE_URL`, runs `sre-tab sessions prune` (a `DELETE` on `sessions`) | **done** — `sretab_app`, because it is DML; the same role as the application, not the DDL role |
 | `deploy/quadlet/sre-tab-backup.container` | `Environment=PGUSER=sretab_readonly` + `Secret=sre-tab-readonly-password,type=env,target=PGPASSWORD`, runs `pg_dump` | **done** — `sretab_readonly` |
-| `deploy/quadlet/sre-tab-status.container` | hourly `sre-tab status` | **outstanding** — this unit is not in this branch. It arrives with PR #19 (`deploy/status-alerting`) still naming `sre-tab-database-url`. `sre-tab status` is read-only — `refresh_status` and `nonconforming_slugs` are both `SELECT`s — so it belongs on **`sretab_readonly`**. There is a shape mismatch to solve first: `sre-tab-readonly-password` holds a bare password for `PGPASSWORD`, and the CLI wants a whole `DATABASE_URL`. **Mint a `sre-tab-readonly-database-url` in `create-roles.sh` alongside the bare password** rather than settling for `sretab_app` — giving a read-only job write rights because the secret is the wrong shape is widening a role to suit a format, which is the opposite of what this file is for. Whichever branch merges second owns this row |
-| `deploy/install.sh` | **done** — `--start` now refuses until `sre-tab-migrate-database-url`, `sre-tab-app-database-url`, and `sre-tab-readonly-password` exist, and prints the first-install ordering | nothing further |
+| `deploy/quadlet/sre-tab-status.container` | `Secret=sre-tab-readonly-database-url,type=env,target=DATABASE_URL`, runs `sre-tab status --failures-over 3` hourly | **done** — `sretab_readonly`, because the check is two `SELECT`s and never commits. The shape mismatch it arrived with was closed by minting a fourth secret rather than by moving the job to `sretab_app`; [see below](#status-goes-read-only) |
+| `deploy/install.sh` | **done** — `--start` now refuses until `sre-tab-migrate-database-url`, `sre-tab-app-database-url`, `sre-tab-readonly-password`, and `sre-tab-readonly-database-url` exist, and prints the first-install ordering | nothing further |
 | `deploy/scripts/create-secrets.sh` | builds `sre-tab-database-url` as `postgresql+psycopg://sretab:...@...`, `--user` defaults to `sretab` | **unchanged, deliberately.** It still writes the superuser's own secrets, `--rotate-db` still needs it, and `sre-tab-database-url` is now read by nothing except a rollback — which is exactly why it must keep being written |
 | `deploy/scripts/restore.sh` | **done** — `--user`/`--password-secret` still default to the superuser and cover only `DROP DATABASE`/`CREATE DATABASE`; `pg_restore` runs as `--restore-user`, defaulting to `sretab_migrate` and taking its credential from `sre-tab-migrate-database-url` | nothing further; [see below](#restore-split-credential) for the decision and its reasoning |
-| `deploy/scripts/smoke.sh` | **done** — applies `roles.sql` to its throwaway PostgreSQL, runs migrate as `sretab_migrate`, app and session sweep as `sretab_app`, backup as `sretab_readonly`, and now reads the unit files first and refuses to proceed if they disagree | nothing further; [see below](#smoke-tests-the-cutover) |
-| `deploy/README.md` | **done** — its "Secrets" table names all seven and marks the two the cutover stopped reading, and it carries the rollout runbook | nothing further |
+| `deploy/scripts/smoke.sh` | **done** — applies `roles.sql` to its throwaway PostgreSQL, runs migrate as `sretab_migrate`, app and session sweep as `sretab_app`, backup and the hourly status check as `sretab_readonly`, and now reads the unit files first and refuses to proceed if they disagree | nothing further; [see below](#smoke-tests-the-cutover) |
+| `deploy/README.md` | **done** — its "Secrets" table names all eight and marks the two the cutover stopped reading, and it carries the rollout runbook | nothing further |
 
-The `sre-tab-status.container` row is the one open item, and it is open
-because the unit does not exist on this branch: a file that is not here
-cannot be edited here. It is named rather than left to be discovered, which
-is the whole reason this table exists.
+Nothing in that table is outstanding. The last row to close was
+`sre-tab-status.container`, which could not be edited while it and the
+cutover were being written on different branches; it is named here rather
+than left to be discovered, which is the whole reason this table exists.
+
+<a id="status-goes-read-only"></a>
+### `sre-tab-status.service` is the one application unit that goes read-only
+
+Every other unit running the application image needs DML or DDL, so the
+cutover for them is a straight swap onto `sretab_app` or `sretab_migrate`.
+The hourly source health check is not: `sre-tab status` calls exactly two
+functions in `app/cli/operations.py`, `refresh_status` and
+`nonconforming_slugs`, and both are a single `select()` — the first an
+outer join of `sources` against `source_status`, the second a scan of
+`sources.slug` and `topics.slug`. `_cmd_status` in `app/cli/__init__.py`
+never calls `commit()`, and the session it is handed is closed by the
+context manager, which rolls back. There is nothing to widen the role for.
+
+Two consequences worth having on purpose. It is the least-privilege answer
+— a monitoring job that runs unattended every hour is the last thing that
+should hold write access — and it differs from `sre-tab-prune-sessions`,
+which runs from the same image and genuinely needs `DELETE`. The two are
+not interchangeable, and that is now a gate rather than a sentence: the
+unit-file check in `smoke.sh` fails if the status unit names anything but
+`sre-tab-readonly-database-url`, and a `sretab_readonly` `DELETE` is asserted
+to be refused, so a swap in either direction goes red in CI. Both were
+watched failing on purpose — see
+"[`smoke.sh` tests the cutover](#smoke-tests-the-cutover)".
+
+**The secret it needs is a fourth one, and minting it was the whole cost of
+this row.** `create-roles.sh` wrote `sre-tab-readonly-password` — just a
+password, for `PGPASSWORD`, because the only consumer planned for
+`sretab_readonly` was `pg_dump`, which takes its credential that way.
+`sre-tab status` takes a `DATABASE_URL`, like every other application unit,
+so `create-roles.sh` now writes both:
+
+| Podman secret | Holds | For |
+| --- | --- | --- |
+| `sre-tab-readonly-password` | the bare password, for `PGPASSWORD` | `sre-tab-backup` |
+| `sre-tab-readonly-database-url` | the same password inside a `DATABASE_URL` | `sre-tab-status` |
+
+**Four secrets, three roles, and three passwords.** The two above are two
+spellings of one credential, not two credentials, and everything in
+`create-roles.sh` treats them as a set: they are written from a single
+generated password, `--rotate` moves both, a role whose secrets are only
+partly present is refused as drift exactly as a role with no secret is, and
+the drift message names whichever of the two is missing. A rotation that
+moved one and not the other would leave the backup and the health check on
+different passwords, with only one of them failing — and the one that failed
+would be whichever ran next, which is not a diagnosis.
+
+The alternative was to put the check on `sretab_app`, whose secret is already
+a `DATABASE_URL`, and it was not taken: that widens a read-only job to write
+rights because a credential is in the wrong shape, which is the reasoning of
+this file exactly backwards. The cost of the shape is a dozen lines in one
+script. The cost of the widening is an hourly unattended job holding
+`INSERT`/`UPDATE`/`DELETE` on every table, for ever, for a command that runs
+two `SELECT`s.
 
 <a id="restore-split-credential"></a>
 ### `restore.sh` takes a split credential — decided, and landed
@@ -493,7 +598,7 @@ It used to connect as nothing but the superuser, so it would have kept
 reporting success through a half-done or silently reverted cutover — it was
 not capable of catching a regression in this area at all. It now:
 
-0. **Reads the four unit files before it starts a single container**, and
+0. **Reads the five unit files before it starts a single container**, and
    fails if any of them names a credential other than the one the
    corresponding container below is about to be handed. This step is listed
    zeroth because it is the one that makes the rest of the list mean what it
@@ -501,7 +606,7 @@ not capable of catching a regression in this area at all. It now:
    already did. It did not: the harness has no podman secrets — under
    `CONTAINER_ENGINE=docker` it cannot have any — so it invents its own
    connection strings, and every assertion below would have gone on passing
-   with all four units reverted to the superuser, because nothing in the file
+   with every unit reverted to the superuser, because nothing in the file
    ever opened one. That is precisely the shape of green check this
    repository has shipped six times: a gate reporting success about something
    it does not read. The check also refuses a unit that consumes
@@ -511,7 +616,12 @@ not capable of catching a regression in this area at all. It now:
    mutations: the whole cutover reverted, the session sweep left behind, the
    backup moved to `PGUSER=sretab_readonly` while still holding the
    superuser's password secret, and the migration unit handed `sretab_app`.
-   Each named the file and the line.
+   Each named the file and the line. The status unit was added to that list
+   when it was cut over, and watched failing the same way on that host,
+   twice: pointed back at `sre-tab-database-url`, and pointed at
+   `sre-tab-app-database-url` — the settle-for-`sretab_app` slip, which the
+   superuser check alone would not have caught, because that credential is
+   not the superuser's.
 1. **Applies `roles.sql` against its own throwaway PostgreSQL**, before the
    migrations rather than after. That makes `sretab_migrate` the role running
    every `CREATE TABLE` from the start, which is both the post-cutover steady
@@ -523,19 +633,30 @@ not capable of catching a regression in this area at all. It now:
    `psql` over stdin as `\set` variables, never as literals in the SQL and
    never on a command line.
 2. **Runs the migration container as `sretab_migrate`, the application and
-   `sre-tab sessions prune` as `sretab_app`, and the backup as
-   `sretab_readonly`.** Each role gets a different password, deliberately: a
-   shared one would let a container handed the wrong `DATABASE_URL` connect
-   anyway, and every assertion below would pass while testing the wrong
-   thing. Nothing but the superuser `psql` helper and `restore.sh`'s
-   `DROP`/`CREATE DATABASE` step connects as `sretab`.
+   `sre-tab sessions prune` as `sretab_app`, and the backup and
+   `sre-tab status` as `sretab_readonly`.** Each role gets a different
+   password, deliberately: a shared one would let a container handed the
+   wrong `DATABASE_URL` connect anyway, and every assertion below would pass
+   while testing the wrong thing. Nothing but the superuser `psql` helper and
+   `restore.sh`'s `DROP`/`CREATE DATABASE` step connects as `sretab`.
 3. **Asserts the refusals by their text**, not merely by a non-zero exit: a
    `psql` that fails from a typo, the wrong database, or a connection it
    never made would otherwise read as a passing negative assertion.
    `sretab_app` cannot `CREATE TABLE` (`permission denied for schema
    public`); none of the three can `COPY ... TO PROGRAM` (the
    `pg_execute_server_program` refusal — the mechanism this whole document is
-   about, asserted for the DDL role too); `sretab_readonly` cannot `INSERT`.
+   about, asserted for the DDL role too); `sretab_readonly` can neither
+   `INSERT` nor `DELETE`. The `DELETE` is the newest and is about the two
+   units that run the same image on a timer with nobody watching: the session
+   sweep, which is a `DELETE`, and the status check, which is two `SELECT`s.
+   Swapping their credentials trips the unit-file check above; widening
+   `sretab_readonly` so that the swap would *work* trips this one. Watched
+   failing under both engines by adding `DELETE` to the read-only role's
+   default privileges, which is where a widening would actually land. Adding
+   it instead as a plain `GRANT ... ON ALL TABLES` trips nothing here, and
+   that is worth knowing rather than discovering: this harness applies
+   `roles.sql` to an empty schema, so every table it then creates takes its
+   privileges from `ALTER DEFAULT PRIVILEGES` and from nothing else.
 4. **Exercises the default-privileges mechanism rather than reading it.** A
    table `sretab_migrate` creates is immediately writable by `sretab_app` and
    readable by `sretab_readonly`, sequence included, with no `GRANT` anywhere
@@ -543,7 +664,14 @@ not capable of catching a regression in this area at all. It now:
    because naming the wrong role in `FOR ROLE` applies without error and then
    simply never fires — and the assertion was watched failing with exactly
    that mutation before it was believed.
-5. **Restores through the split credential**, so the `restore.sh` path above
+5. **Runs `sre-tab status --failures-over 3` as `sretab_readonly`**, the
+   status unit's own command on the status unit's own role, and asserts both
+   halves of it: the seeded catalogue is read back on a role with no write
+   privilege at all, and a planted `source_status` row four consecutive
+   failures deep makes the command exit non-zero and name the source. Without
+   the second, the check would only ever be exercised in the state where every
+   answer is zero, and a `sre-tab status` that always exited zero would pass.
+6. **Restores through the split credential**, so the `restore.sh` path above
    is covered on every run, and re-checks after the restore that the tables
    came back owned by `sretab_migrate` and that `sretab_app` can read them
    but still cannot `CREATE TABLE`.
@@ -568,18 +696,28 @@ It is the same shape as rotating the superuser's password
 (`create-secrets.sh --rotate-db`, documented in
 [deploy/README.md](README.md)). Rotating a role that is in active use means,
 in order: run `create-roles.sh --rotate`, then restart every unit that
-consumes a secret that changed. `--rotate` changes all three at once, so
-that is every unit:
+consumes a secret that changed. `--rotate` changes all three passwords and
+all four secrets at once, so that is every unit:
 
 ```bash
 sudo deploy/scripts/create-roles.sh --rotate
 sudo systemctl restart sre-tab-migrate.service sre-tab.service
 ```
 
-`sre-tab-prune-sessions.service` and `sre-tab-backup.service` need no restart
-and cannot usefully take one: they are timer-driven oneshots that are not
-running, so each picks up the new secret at its next elapse. Restarting them
-does not stage anything — it runs the job.
+`sre-tab-prune-sessions.service`, `sre-tab-backup.service`, and
+`sre-tab-status.service` need no restart and cannot usefully take one: they
+are timer-driven oneshots that are not running, so each picks up the new
+secret at its next elapse. Restarting them does not stage anything — it runs
+the job.
+
+Two secrets share one password, and that is a property to preserve rather
+than a redundancy to tidy away. `sre-tab-readonly-password` and
+`sre-tab-readonly-database-url` both carry `sretab_readonly`'s, so a rotation
+that wrote one and not the other would leave the nightly backup and the
+hourly health check disagreeing, and only whichever ran next would fail —
+which reads as that job's problem rather than as a half-finished rotation.
+`create-roles.sh` writes both from a single generated password for that
+reason, and treats a role whose secrets are only partly present as drift.
 
 Note that `sre-tab.service` and `sre-tab-prune-sessions.service` share
 `sre-tab-app-database-url`, which is why they are named together anywhere a
@@ -604,10 +742,13 @@ To roll back:
 2. `sudo deploy/install.sh` to regenerate the systemd units from the
    reverted Quadlet files.
 3. `sudo systemctl restart sre-tab.service sre-tab-migrate.service
-   sre-tab-prune-sessions.service sre-tab-backup.service` — every unit the
-   cutover touched. The last two are oneshots, so restarting them *runs*
-   them; that is intended here, because it is what proves they work on the
-   reverted credential rather than merely being staged on it.
+   sre-tab-prune-sessions.service sre-tab-status.service
+   sre-tab-backup.service` — every unit the cutover touched. The last three
+   are timer-driven oneshots and are not running, so restarting them *runs*
+   them: a sweep, a status check, and a backup, there and then. That is
+   intended here, because it is what proves they work on the reverted
+   credential rather than merely being staged on it — but it is a run, not
+   a no-op, and on a large database the backup is the slow one.
 
 **This has been executed, on the reference host, against a live install.**
 `git revert` of the cutover commit, `install.sh`, that one `systemctl
@@ -620,9 +761,9 @@ and `systemctl --failed` stayed empty. Re-applying the cutover afterwards
 procedure; this one is a procedure.
 
 One detail the run made concrete: `install.sh --start`'s new preflight still
-demands the three role secrets after a rollback, and that is correct rather
-than an obstacle — they still exist, because the rollback does not delete
-them.
+demands the role secrets — all four of them — after a rollback, and that is
+correct rather than an obstacle: they still exist, because the rollback does
+not delete them.
 
 The three non-superuser roles and their secrets are harmless to leave in
 place after a rollback; nothing references them once the `Secret=` lines

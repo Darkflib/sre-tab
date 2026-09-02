@@ -66,6 +66,52 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rotation happened and the week it matters is the week after a suspected
   compromise. 04:17 is after the backup's jitter window closes at 03:42,
   so a `pg_dump` never races the `DELETE`.
+- **A failing source now reaches a person.** `sre-tab-status.timer` runs
+  `sre-tab status --failures-over 3` hourly at :48, and
+  `sre-tab-status.service` carries `OnFailure=sre-tab-alert@%n.service` —
+  a template that gathers the failed unit's journal and hands it to
+  `/etc/sre-tab/alert.sh`. Until now a broken feed was visible only if
+  somebody ran the CLI: `/api/v1/healthz` knows and deliberately will not
+  say, because `app/scheduler/service.py` reports `ok=true` with the failure
+  count in its detail string so one dead feed cannot take the instance out of
+  rotation. Readiness and alerting want opposite answers to the same
+  question and only one of them was being asked.
+
+  **The transport is the operator's and this repository does not ship one.**
+  Reaching a person is a property of the host, and a mail client or an HTTP
+  library would be a supply-chain decision taken on their behalf. `install.sh`
+  installs `alert.sh.example` — msmtp and a `curl` webhook, both worked
+  through — and warns at the end of every run while `/etc/sre-tab/alert.sh`
+  is absent. That case is deliberately the loudest path in the whole chain,
+  because an alert that goes nowhere quietly is the exact defect this change
+  exists to remove: the report still reaches the journal, and
+  `alert-dispatch.sh` exits 1 so the alert unit lands in
+  `systemctl --failed` naming the file it wanted.
+
+  Proven on the reference deployment rather than asserted — Debian 13, podman
+  5.4.2, systemd 257: the Quadlet generator accepts the unit, the timer
+  schedules, `OnFailure=` fires with the failed unit's name substituted, the
+  journal reaches a stub transport, and the exit code moves between three and
+  four consecutive failures. Two things that only turn up that way: `%n` (not
+  `%N`) is what makes the template's `%i` a name `journalctl -u` accepts
+  unmodified, and `systemd-run` does not expand specifiers in `--property=`
+  at all, so the by-hand test in `deploy/README.md` names the instance in
+  full.
+- `sre-tab status --failures-over N`, defaulting to 0 so nothing changes for
+  anyone running it by hand. It is strictly over: `--failures-over 3` clears a
+  source on its third consecutive failure and fails on its fourth, which at
+  the default 30-minute refresh interval is roughly two hours without a
+  successful fetch. The unthresholded command exits 1 on a single failure,
+  and on an hourly timer that pages a human for one transient 502 from one
+  feed — an alert that fires on noise is an alert somebody mutes.
+
+  It gates the refresh-failure half only. A malformed slug fails the command
+  at any threshold, because the counter the threshold measures is one a
+  malformed slug never increments — the source fetches perfectly and simply
+  cannot be filtered to — so any value above zero would suppress a permanent
+  configuration defect for ever. The cost is that it alerts hourly until the
+  slug is re-added, which `deploy/README.md` states outright rather than
+  leaving to be found at 03:00.
 - Three least-privilege PostgreSQL roles in `deploy/roles.sql` —
   `sretab_migrate` (DDL), `sretab_app` (DML), `sretab_readonly` (the dump)
   — installed by `deploy/scripts/create-roles.sh`, with the reasoning, the
@@ -196,6 +242,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   there is a window where the socket says ready and TCP refuses.
 - **`install.sh --start` checks all seven secrets, not the pre-cutover four.**
   A guard naming the old set would have passed and then watched three units
+- **`create-roles.sh` writes four secrets for three roles.**
+  `sretab_readonly` has two consumers that want one password in two shapes —
+  `pg_dump` takes `PGPASSWORD`, `sre-tab status` takes a `DATABASE_URL` —
+  so `sre-tab-readonly-database-url` is written beside
+  `sre-tab-readonly-password` from the same generated password. They are one
+  credential and are treated as one throughout: `--rotate` moves both, and a
+  role whose secrets are only partly present is refused as drift exactly as a
+  role with no secret is, naming the one that is missing. A rotation that
+  moved one and not the other would leave the nightly backup and the hourly
+  health check on different passwords, with only whichever ran next failing.
+- **The smoke test covers the status check the way it covers the sweep.** It
+  runs `sre-tab status --failures-over 3` — the unit's own command — as
+  `sretab_readonly`, and asserts both halves: the seeded catalogue reads back
+  on a role with no write privilege, and a planted `source_status` row four
+  failures deep makes the command exit non-zero and name the source, which is
+  the half a check that always exited zero would have passed. The unit-file
+  step gained the status unit, and `sretab_readonly` is now asserted unable to
+  `DELETE` as well as unable to `INSERT`: the sweep and the status check run
+  the same image on the same kind of timer and differ only in credential, so
+  swapping them fails CI rather than silently stopping the sweep deleting.
+  Watched failing first — the status unit pointed back at
+  `sre-tab-database-url` and then at `sre-tab-app-database-url`, and
+  `sretab_readonly` given `DELETE` in `roles.sql`'s default privileges.
+- **`install.sh --start` checks all eight secrets, not the pre-cutover four.**
+  A guard naming the old set would have passed and then watched four units
   fail to resolve a `Secret=` reference. When a role secret is the missing
   one it prints the first-install ordering, which is genuinely
   counter-intuitive: `create-roles.sh` installs the roles against the
@@ -219,6 +290,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ways out, raised on the administrative connection before anything is
   dropped rather than as `password authentication failed` with the database
   already gone.
+- `deploy/install.sh` installs `deploy/systemd/*.service` as well as
+  `*.timer`. The alert template is a `.service`, so the old glob would have
+  installed the timer that fires the check and left every `OnFailure=`
+  pointing at a unit that does not exist. The enable loop still globs
+  `*.timer` only, deliberately: widening it would not have failed loudly —
+  measured on systemd 257, `systemctl enable` on a bare template prints "not
+  meant to be enabled" and then exits **zero**, so under `set -e` the loop
+  would have gone on reporting a clean install while enabling nothing.
+- `deploy/scripts/promote.sh` moves five application Quadlets, was four.
+  `UNITS` is an explicit list rather than a glob, so a unit missing from it
+  is not a slow drift: CI greps every `Image=` line under `deploy/quadlet`
+  and fails unless exactly one distinct reference exists, which means the
+  next promotion would break the build having left the new unit on the
+  previous digest.
 - **The shipped and tested interpreter is Python 3.14.** `.python-version`
   and both Containerfile stages now agree on `python:3.14-slim-trixie`, and
   the workflows read `.python-version` rather than carrying a copy, so
@@ -263,9 +348,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   really deletes. `deploy/README.md` carries the ordered rollout runbook for
   an existing deployment and `deploy/ROLES.md` the reasoning.
 
-  One consumer is outstanding: `sre-tab-status.container`, which arrives on
-  another branch and should move to `sretab_readonly`. It is named in
-  `deploy/ROLES.md`'s consumer table rather than left to be found.
+  The last consumer to move was `sre-tab-status.container`, the hourly source
+  health check, which arrived on another branch still naming the superuser's
+  `DATABASE_URL` — the two could not edit each other's files, and the unit
+  file check in `smoke.sh` is what caught the gap once they met. It now
+  connects as `sretab_readonly`, because `sre-tab status` is two `SELECT`s
+  and never commits. It needed a fourth secret rather than a fourth role:
+  `sre-tab-readonly-password` holds a bare password for `pg_dump`'s
+  `PGPASSWORD`, and the CLI wants a whole URL, so `create-roles.sh` now also
+  writes `sre-tab-readonly-database-url` from the same generated password.
+  Putting the check on `sretab_app` would have been one line and would have
+  given an unattended hourly job write access to every table because a
+  credential was in the wrong shape.
 
 ### Fixed
 

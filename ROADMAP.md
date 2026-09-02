@@ -35,7 +35,6 @@ that.
     shared store.
 - [Operations](#operations)
   - Off-host backups.
-  - An `OnFailure=` alert unit.
   - Release hygiene: the machinery is in place and has never been run. No
     `v1.1.0` tag has been pushed, so no Release object and no versioned image
     tag exist yet.
@@ -277,8 +276,8 @@ genuinely held by the three-operator assumption.
   files first and refuses to run if they name anything other than the
   credentials it is about to use, watched failing under four separate
   mutations. `install.sh --start` had the mirror-image problem — it checked
-  for four secrets that predate the cutover and none of the three the units
-  now need — and now checks all seven.
+  for four secrets that predate the cutover and none of the four the units
+  now need — and now checks all eight.
 
   The privilege boundary is demonstrated where it matters rather than only in
   a harness: from inside the running application container on a real Podman
@@ -294,13 +293,23 @@ genuinely held by the three-operator assumption.
   among everything it found, on the ground this entry opened with: it was the
   only item in this section whose severity three operators did not cap.
 
-  **One consumer is outstanding, and it is outstanding by sequencing rather
-  than by decision.** `deploy/quadlet/sre-tab-status.container` — an hourly
-  `sre-tab status` check — arrives with the status-alerting branch and names
-  `sre-tab-database-url`. `sre-tab status` is read-only, so it belongs on
-  `sretab_readonly`; whichever of the two branches merges second owns the
-  change, and `deploy/ROLES.md`'s consumer table carries the row so it cannot
-  be discovered in production instead.
+  **The last consumer has moved, and the gate is what found it.**
+  `deploy/quadlet/sre-tab-status.container` — an hourly `sre-tab status`
+  check — was written on the status-alerting branch while the cutover was
+  written on another, so neither could edit the other's file and it arrived
+  still naming `sre-tab-database-url`. `smoke.sh`'s unit-file step failed on
+  the merge, which is the gate doing exactly what it was added for. It now
+  connects as `sretab_readonly`: the command is two `SELECT`s and never
+  commits, so there is nothing to widen the role for. The obstacle was the
+  shape of the credential rather than the decision — `sretab_readonly`'s only
+  planned consumer was `pg_dump`, which takes a bare `PGPASSWORD`, and the CLI
+  takes a `DATABASE_URL` — and it was closed by minting a fourth secret,
+  `sre-tab-readonly-database-url`, from the same password rather than by
+  putting a read-only job on the DML role to suit a format. Both new guards
+  were watched failing: the unit-file check with the status unit pointed back
+  at the superuser and then at `sretab_app`'s secret, and a new
+  "`sretab_readonly` cannot `DELETE`" assertion with the read-only role
+  widened, which is what keeps it and the session sweep non-interchangeable.
 - **PostgreSQL traffic inside the deployment is cleartext.** Raised by review
   of the role cutover, and it is correct: the generated `DATABASE_URL`s and the
   backup's `PGPASSWORD` path use libpq's default `sslmode=prefer`, and
@@ -552,20 +561,21 @@ prerequisite for going past it.
   verify at the far end, and not a backup format, a checksum scheme, or a
   restore procedure. All three of those exist and `smoke.sh` runs them on
   every push.
-- **`OnFailure=` alert unit.** Deliberately not invented in v1 — orbit-data's
-  equivalent is a subcommand of its own application, and sre-tab had no CLI
-  at the time. It has one now, and `sre-tab status` already exits non-zero
-  when an enabled source is failing, so the alert path has something to call.
+- **`OnFailure=` alert unit** — **landed, and it needs one file from the
+  operator.** `sre-tab-status.timer` runs `sre-tab status --failures-over 3`
+  hourly at :48; `sre-tab-status.service` carries
+  `OnFailure=sre-tab-alert@%n.service`; that template gathers the failed
+  unit's journal and hands it to `/etc/sre-tab/alert.sh`, which this
+  repository deliberately does not ship. No new dependency: reaching a person
+  is a property of the host, so `alert.sh.example` carries two worked
+  transports — msmtp and a `curl` webhook — and the operator copies one.
 
-  The shape that needs no new dependency: a timer running `sre-tab status`,
-  and `OnFailure=` on that service pointing at whatever the host already
-  uses to reach a person. What it buys is the part worth stating, because it
-  is invisible from either piece on its own — a failing source is currently
-  visible only if somebody runs the CLI. The readiness probe knows and
-  deliberately does not say: `app/scheduler/service.py` returns `ok=True`
-  with the failure count in the detail string, because one broken feed must
-  not take the instance out of rotation. Readiness and alerting want
-  opposite answers to the same question, and only one of them is being
+  What it buys was invisible from either piece on its own. A failing source
+  was visible only if somebody ran the CLI: the readiness probe knows and
+  deliberately does not say, because `app/scheduler/service.py` returns
+  `ok=True` with the failure count in the detail string so that one broken
+  feed cannot take the instance out of rotation. Readiness and alerting want
+  opposite answers to the same question, and only one of them was being
   asked.
 - **Nothing here can be installed by version** — **the machinery has landed;
   nothing has been released with it.** The original entry is worth keeping in
@@ -1165,6 +1175,9 @@ difference between the two.
 - **A `/metrics` endpoint.** Prometheus exposition is among the commoner
   self-hosting asks, and it costs this project nothing it has promised:
   a scrape is a local pull, so "nothing phones home" survives it intact.
-  It ranks below the `OnFailure=` alert unit in
-  [Operations](#operations), which closes the same loop for the reference
-  deployment without a new dependency, a new route, or a scraper to run.
+  It ranked below the `OnFailure=` alert unit in
+  [Operations](#operations), which has since landed and closes the same loop
+  for the reference deployment without a new dependency, a new route, or a
+  scraper to run. What a `/metrics` endpoint would add over it is history and
+  a graph rather than a page at the moment of failure — worth having, and
+  worth less than it was a change ago.

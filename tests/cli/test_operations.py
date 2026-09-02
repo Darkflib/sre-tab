@@ -460,3 +460,132 @@ def test_the_cli_status_exits_non_zero_for_a_slug_that_predates_the_check(
     assert "legacy,topic" in output
     # Reported as a slug problem, not misfiled under refresh failures.
     assert "predate the format check" in output
+
+
+# --- `status --failures-over` -------------------------------------------
+#
+# The flag exists so sre-tab-status.timer can run this hourly without
+# paging a human for one transient 502 from one feed. Its semantics are
+# the load-bearing part: "over" is strictly over, and an off-by-one here
+# is silent in both directions — it either alerts a refresh early or
+# never alerts at all — so the boundary is pinned rather than described.
+
+
+def _seed_consecutive_failures(url: str, slug: str, times: int) -> None:
+    """Drive one source to exactly ``times`` consecutive failures.
+
+    Through the registry the scheduler itself uses rather than by writing
+    the row directly, so the counter under test is the one the running
+    system produces.
+    """
+    engine = create_db_engine(url)
+    try:
+        factory = build_session_factory(engine)
+        with factory() as session:
+            source_id = session.scalar(select(Source.id).where(Source.slug == slug))
+        assert source_id is not None
+        registry = SourceStatusRegistry(factory)
+        for attempt in range(times):
+            registry.record_failure(
+                source_id=source_id,
+                slug=slug,
+                refresh_minutes=30,
+                error_class="UpstreamStatusError",
+                detail="503 from upstream",
+                now=NOW + timedelta(minutes=30 * attempt),
+            )
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture
+def failing_catalogue(tmp_path_factory: pytest.TempPathFactory) -> str:
+    url = _migrated(tmp_path_factory.mktemp("cli") / "cli.db")
+    assert main(["--database-url", url, "seed"]) == 0
+    return url
+
+
+@pytest.mark.parametrize(
+    ("failures", "expected"),
+    [(1, 0), (2, 0), (3, 0), (4, 1)],
+)
+def test_failures_over_three_fires_on_the_fourth_and_not_the_third(
+    failing_catalogue: str,
+    capsys: pytest.CaptureFixture[str],
+    failures: int,
+    expected: int,
+) -> None:
+    """The boundary the timer depends on, in both directions.
+
+    Three consecutive failures is what the flag is named for and is
+    deliberately still a clean exit: ``--failures-over 3`` means over
+    three, so the fourth is the first one that pages anybody.
+    """
+    _seed_consecutive_failures(failing_catalogue, "lwn", failures)
+    code = main(["--database-url", failing_catalogue, "status", "--failures-over", "3"])
+    assert code == expected
+
+    # The failing source is named whatever the exit code, because the
+    # journal this writes into is what the alert unit forwards.
+    output = capsys.readouterr().out
+    assert "UpstreamStatusError" in output
+    assert ("not being treated as an outage" in output) is (expected == 0)
+
+
+def test_failures_over_defaults_to_the_historical_behaviour(
+    failing_catalogue: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing changes for anyone running this by hand.
+
+    The default of zero is "more than zero consecutive failures", which
+    is the condition the command has always exited 1 on.
+    """
+    _seed_consecutive_failures(failing_catalogue, "lwn", 1)
+    assert main(["--database-url", failing_catalogue, "status"]) == 1
+    assert main(["--database-url", failing_catalogue, "status", "--failures-over", "0"]) == 1
+    assert "not being treated as an outage" not in capsys.readouterr().out
+
+
+def test_failures_over_refuses_a_negative_threshold(
+    failing_catalogue: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same refusal ``--revoked-grace-days`` makes, for the same
+    reason: a negative threshold is one no source can ever exceed, so the
+    command would report clean no matter what was broken."""
+    with pytest.raises(SystemExit) as raised:
+        main(["--database-url", failing_catalogue, "status", "--failures-over", "-1"])
+    assert raised.value.code == 2
+    assert "cannot be negative" in capsys.readouterr().err
+
+
+def test_failures_over_does_not_gate_a_malformed_slug(
+    failing_catalogue: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A malformed slug fails the command at any threshold.
+
+    It is not a refresh failure — the source fetches perfectly — so it
+    never increments the counter the threshold is measured against, and
+    gating it would mean any threshold above zero suppressed a permanent
+    configuration defect for ever.
+    """
+    engine = create_db_engine(failing_catalogue)
+    try:
+        with build_session_factory(engine)() as session:
+            session.add(Topic(slug="legacy,topic", name="Legacy"))
+            session.commit()
+    finally:
+        engine.dispose()
+
+    assert main(["--database-url", failing_catalogue, "status", "--failures-over", "99"]) == 1
+    assert "predate the format check" in capsys.readouterr().out
+
+
+def test_failures_over_ignores_a_disabled_source(
+    failing_catalogue: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A disabled source is not fetched, so its stale counter must not
+    page anyone — the same rule the unthresholded command already had."""
+    _seed_consecutive_failures(failing_catalogue, "lwn", 10)
+    assert main(["--database-url", failing_catalogue, "sources", "disable", "lwn"]) == 0
+    capsys.readouterr()
+    assert main(["--database-url", failing_catalogue, "status", "--failures-over", "3"]) == 0
