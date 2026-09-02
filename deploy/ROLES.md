@@ -761,9 +761,9 @@ and `systemctl --failed` stayed empty. Re-applying the cutover afterwards
 procedure; this one is a procedure.
 
 One detail the run made concrete: `install.sh --start`'s new preflight still
-demands the three role secrets after a rollback, and that is correct rather
-than an obstacle — they still exist, because the rollback does not delete
-them.
+demands the role secrets — all four of them — after a rollback, and that is
+correct rather than an obstacle: they still exist, because the rollback does
+not delete them.
 
 The three non-superuser roles and their secrets are harmless to leave in
 place after a rollback; nothing references them once the `Secret=` lines
