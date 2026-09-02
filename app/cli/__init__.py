@@ -62,6 +62,21 @@ def _grace_days(value: str) -> int:
     return days
 
 
+def _failure_threshold(value: str) -> int:
+    """A consecutive-failure threshold, refused if negative.
+
+    Same shape and the same reasoning as ``_grace_days``: a negative
+    threshold is not a stricter one, it is a value the comparison below
+    can never fall under, so every source would clear it and the command
+    would report clean no matter what was broken. Zero — the default —
+    is the meaningful floor and means "any failure at all".
+    """
+    threshold = int(value)
+    if threshold < 0:
+        raise argparse.ArgumentTypeError("a failure threshold cannot be negative")
+    return threshold
+
+
 def _stamp(value: datetime | None) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%SZ") if value is not None else "—"
 
@@ -238,7 +253,18 @@ def _cmd_status(args: argparse.Namespace) -> int:
     """The operator status view the PRD's non-functional targets require.
 
     Exits non-zero when an enabled source is failing, so it doubles as a
-    check a monitoring job can run.
+    check a monitoring job can run — ``sre-tab-status.timer`` is that job.
+
+    ``--failures-over`` is what makes it usable on a timer rather than
+    only by hand. The default of 0 keeps the historical behaviour exactly:
+    any enabled source with any consecutive failure fails the command. The
+    timer passes a threshold instead, because one transient 502 from one
+    feed is not worth waking anyone for and an hourly check would page on
+    every one of them.
+
+    Every failing source is still printed whatever the threshold, because
+    the journal this writes into is the context the alert unit forwards;
+    only the exit code is gated.
     """
     with _session(args.database_url) as session:
         views = ops.refresh_status(session)
@@ -264,15 +290,30 @@ def _cmd_status(args: argparse.Namespace) -> int:
     )
 
     failing = [view for view in views if view.enabled and view.consecutive_failures]
+    # Strictly over, as the flag name says: --failures-over 3 clears a
+    # source sitting on its third consecutive failure and fails on its
+    # fourth. Pinned by a test, because an off-by-one here is silent in
+    # both directions — either it pages a run early or it never pages.
+    alerting = [view for view in failing if view.consecutive_failures > args.failures_over]
     if failing:
         print()
         for view in failing:
             print(f"{view.slug}: {view.last_error_class}: {view.last_error_detail}")
+        if not alerting:
+            print(
+                f"none of these has failed more than {args.failures_over} "
+                "times in a row, so this is not being treated as an outage"
+            )
 
     # A malformed slug is not a refresh failure — the source fetches
     # perfectly and simply cannot be filtered to — so it is reported
-    # separately. It still fails the command, because the whole point of
-    # exiting non-zero here is that a monitoring job notices.
+    # separately. It still fails the command, and --failures-over does not
+    # gate it: the threshold counts consecutive fetch failures, a counter a
+    # malformed slug never touches, so gating it would mean any threshold
+    # above zero suppressed a permanent configuration defect for ever. The
+    # cost is that the alert repeats hourly until somebody fixes the slug,
+    # which is documented in deploy/README.md rather than discovered at
+    # 03:00, and is the pressure to fix a thing that never self-heals.
     if malformed:
         print()
         print("slugs that predate the format check:")
@@ -280,7 +321,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
             print(f"  {kind} {slug!r}: it {problem}")
         print("these fetch normally but cannot be filtered to; re-add under a valid slug")
 
-    return 1 if failing or malformed else 0
+    return 1 if alerting or malformed else 0
 
 
 # --- parser -------------------------------------------------------------
@@ -303,7 +344,39 @@ def build_parser() -> argparse.ArgumentParser:
     seed = commands.add_parser("seed", help="Install the v1 topic taxonomy and source catalogue.")
     seed.set_defaults(handler=_cmd_seed)
 
-    status = commands.add_parser("status", help="Per-source refresh status; non-zero if failing.")
+    status = commands.add_parser(
+        "status",
+        help="Per-source refresh status; non-zero if failing.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Exits 1 when an enabled source is failing or when a slug predates the\n"
+            "format check, so a monitoring job can call it and mean it. That is what\n"
+            "sre-tab-status.timer does, hourly, with sre-tab-status.service carrying\n"
+            "an OnFailure= to the alert template.\n"
+            "\n"
+            "--failures-over is strictly over: --failures-over 3 clears a source on\n"
+            "its third consecutive failure and fails on its fourth. At the default\n"
+            "30-minute refresh interval each failure is another half hour without a\n"
+            "successful fetch, so 3 means roughly two hours before anyone is woken.\n"
+            "\n"
+            "It gates the refresh-failure half only. A malformed slug fails the\n"
+            "command at any threshold, because the counter it would be measured\n"
+            "against is one a malformed slug never increments — the source fetches\n"
+            "perfectly — so any threshold above zero would suppress it for ever.\n"
+            "Unlike a fetch failure it never self-heals, so an alert wired to this\n"
+            "command repeats until the slug is re-added under a valid one."
+        ),
+    )
+    status.add_argument(
+        "--failures-over",
+        type=_failure_threshold,
+        default=0,
+        metavar="N",
+        help=(
+            "Only fail the command for a source with MORE than N consecutive "
+            "failures (default: 0, meaning any failure at all)."
+        ),
+    )
     status.set_defaults(handler=_cmd_status)
 
     sources = commands.add_parser("sources", help="Manage feed sources.").add_subparsers(
