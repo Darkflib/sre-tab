@@ -21,6 +21,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   treats as one. Blank issues are disabled and the security advisory channel
   is the first link a reporter sees, rather than something found after
   posting publicly.
+
+  The metadata half is done too: sixteen topics and a homepage pointing at
+  the live instance, whose landing page explains the product and says plainly
+  that sign-in is operator-restricted, so a visitor who cannot sign in still
+  learns what this is. A social preview image is the one piece still missing,
+  and it is missing for a structural reason rather than an oversight —
+  GitHub exposes no API for it, so it cannot be set from a script or checked
+  by anything in this repository, and nothing will ever report that it is
+  absent.
 - **`AGENTS.md`'s "a green check is not a passed check" rule now covers the
   harder half.** The six instances it named were guards that *could not*
   fail. This release found eleven that could, went red on demand, and still

@@ -57,8 +57,8 @@ that.
   - `deploy/README.md` in CI, which needs a journald-capable runner, and
     the upgrade sequence, still unexecuted.
 - [Repository](#repository)
-  - Issue and pull-request templates, and the repository's own
-    discoverability — no topics, no homepage, no social preview.
+  - A social preview image — the last of the discoverability items, and the
+    only one with no API.
 - [Product](#product)
   - Per-device preferences (v2).
   - Non-RSS sources.
@@ -1156,6 +1156,24 @@ tasks.
   because protection lives in GitHub's settings rather than in a file anyone
   reviews. [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection) carries the
   read and fix commands for the next time a job is renamed.
+
+- **Issue and pull-request templates, and nothing that makes the repository
+  findable** — **three of the four have landed.** The templates exist
+  (`.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`), and the
+  repository now carries sixteen topics and a homepage pointing at the live
+  instance, whose landing page explains the product and says plainly that
+  sign-in is operator-restricted.
+
+  **A social preview image is the one still open, and it is open for a
+  different reason from the others.** GitHub exposes no REST endpoint for it,
+  so unlike topics and the homepage it cannot be set from a script or checked
+  by anything here — it is Settings → General in a browser, and nothing will
+  ever notice that it is missing. It is also the item with the most reach per
+  minute of the four, because it is what renders when the repository is
+  linked anywhere at all.
+
+  The original entry follows, because its reasoning is what made these one
+  item rather than four.
 
 - **Issue and pull-request templates, and nothing that makes the repository
   findable.** Neither template exists, which was the whole of this entry and
