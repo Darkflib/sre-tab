@@ -1,0 +1,43 @@
+[Unit]
+Description=Schedule the Developer News Dashboard source health check
+
+[Timer]
+# Hourly. :48 rather than anything nearer the two nightly jobs, and not on a
+# minute anything cron-shaped lands on: the backup starts at 03:22 with up
+# to 20 minutes of jitter, so its window is 03:22-03:42, and the session
+# sweep starts at 04:17 with 10, so its window is 04:17-04:27. An hourly
+# timer runs inside both of those windows on those two hours unless its
+# minute is chosen to miss them. :48 plus the five minutes of jitter below
+# gives a 48-53 window, clear of both by six minutes at the nearest edge,
+# and clear of :00, :15, :30, and :45.
+#
+# The collision being avoided is not contention — this is two SELECTs — but
+# legibility. A check that reports at the same minute a pg_dump is holding a
+# snapshot invites the reading that the two are related, and the first hour
+# of an incident is the worst time to be resolving a coincidence.
+OnCalendar=*-*-* *:48:00 UTC
+# Five minutes, so the check does not sit on a fixed minute for ever and
+# whatever is added to this host next has somewhere to land. The window stays
+# inside the hour it belongs to.
+RandomizedDelaySec=5m
+# NOT Persistent=true, unlike the backup and the sweep, and this is the one
+# line in this file worth arguing about.
+#
+# Those two catch up because each missed run is work that did not happen: an
+# un-taken backup is a night with no copy, and an un-run sweep is a table
+# that kept growing. This is a question, not work. Its answer is about the
+# state right now, and the next run is at most an hour away — so a catch-up
+# run buys an hour of notice, once, and costs a check fired seconds after
+# boot, when the scheduler has not yet completed a refresh cycle and every
+# consecutive_failures in the table is whatever it was before the host went
+# down. That reads as an outage that may well have ended, at the exact moment
+# an operator is already dealing with a host that has just come back.
+#
+# Written out rather than omitted, so the difference from the other two
+# timers is visibly a decision.
+Persistent=false
+AccuracySec=1m
+Unit=sre-tab-status.service
+
+[Install]
+WantedBy=timers.target

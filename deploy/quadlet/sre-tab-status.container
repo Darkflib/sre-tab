@@ -1,0 +1,108 @@
+[Unit]
+Description=Check Developer News Dashboard source refresh health
+# Same dependency as the session sweep, for the same reason: the database
+# accepting connections, not merely running. This unit talks to PostgreSQL
+# and to nothing else — it does not wait on the application and is not
+# blocked by the application being down, which is deliberate. A stopped
+# application is loud already; a source that has quietly stopped fetching
+# is exactly what nothing currently notices.
+Requires=sre-tab-db.service
+After=sre-tab-db.service
+
+# The whole point of the unit. Quadlet copies [Unit] and [Service] into the
+# generated service verbatim, so this lands in sre-tab-status.service as
+# written and needs no support from podman at all.
+#
+# %n rather than %N: %n is the full unit name, so the instance becomes
+# `sre-tab-status.service` and the template's %i is a name `journalctl -u`
+# and `systemctl show` accept unmodified. %N would drop the suffix and
+# leave the template re-deriving it. Verified on the reference host rather
+# than read out of systemd.unit(5) — a specifier that resolved to something
+# unusable would fail only at the moment the alert was needed, which is the
+# one moment nobody is watching. A `.` in an instance name is legal; only
+# `/` needs escaping, and there is none here.
+#
+# OnFailure= fires when this unit enters a failed state, which for a
+# Type=oneshot means `sre-tab status` exited non-zero. It does NOT fire when
+# the start job is cancelled because Requires=sre-tab-db.service failed —
+# that path leaves this unit inactive rather than failed. A database that is
+# down is therefore reported by sre-tab-db.service's own failure and by
+# `systemctl --failed`, not by this alert. Deliberate: the alert this unit
+# exists for is the one nothing else raises.
+OnFailure=sre-tab-alert@%n.service
+
+[Container]
+ContainerName=sre-tab-status
+# The APPLICATION image, as with the session sweep: the check is
+# `sre-tab status`, which reads the source_status table through the same
+# code that writes it, rather than a hand-written query that would drift
+# from app/ingest/status.py.
+#
+# Byte-identical to the pin in the other application units, and CI fails if
+# it is not: the check in .github/workflows/ci.yml greps every Image= line
+# under deploy/quadlet and demands exactly one distinct reference. Change it
+# with deploy/scripts/promote.sh, whose UNITS list must name this file —
+# never by hand. See sre-tab.container for why Pull=missing rather than
+# newer.
+Image=ghcr.io/darkflib/sre-tab:sha-9238b95dddddcc1b39ddf16a44567f469fed8736@sha256:9e07b64f35a57885b507bbec8e0ed30cf53683859c0de46144b0738fea1e2bbb
+Pull=missing
+Network=sre-tab.network
+
+# The same two sources of configuration as the other application units: the
+# operator's non-secret file, and DATABASE_URL as a podman secret because it
+# carries the database password in the URL.
+EnvironmentFile=/etc/sre-tab/app.env
+Secret=sre-tab-database-url,type=env,target=DATABASE_URL
+
+# --failures-over 3 is strictly over three, so this fails on a source's
+# FOURTH consecutive failure and not its third. At the default 30-minute
+# refresh interval that is roughly two hours since the last successful
+# fetch, which is an outage rather than a blip. The unthresholded command —
+# what `sre-tab status` still does by hand — exits 1 on a single failure,
+# and on an hourly timer that would page a human for one transient 502 from
+# one feed. An alert that fires on noise is an alert somebody mutes, and a
+# muted alert is the failure this unit exists to fix.
+#
+# A malformed slug fails the command at ANY threshold: it is a permanent
+# configuration defect that never increments the failure counter, so the
+# alert repeats hourly until somebody re-adds the source under a valid slug.
+# That is intentional and documented in deploy/README.md so it is not
+# discovered at 03:00.
+#
+# No `$` anywhere in this line — see the note in sre-tab-migrate.container
+# about quadlet emitting Exec= into ExecStart=, where systemd would expand
+# it against the unit's own environment first.
+Exec=sre-tab status --failures-over 3
+
+ReadOnly=true
+Tmpfs=/tmp:rw,nosuid,nodev,size=16M
+NoNewPrivileges=true
+DropCapability=all
+# uid 10001 is `sre-tab` in this image, the same unprivileged identity the
+# application, migration, and sweep units run as. This one needs less than
+# any of them: `sre-tab status` is two SELECTs and writes nothing, which is
+# why deploy/ROLES.md moves it to sretab_readonly at cutover rather than to
+# sretab_app.
+User=10001
+Group=10001
+# systemd already captures the container's stdout under this unit, and here
+# that capture is load-bearing rather than incidental: the journal is what
+# sre-tab-alert@.service forwards to the operator, so the table and the
+# per-source error lines ARE the alert body. podman's journald driver would
+# write a second copy of all of it.
+LogDriver=none
+PidsLimit=64
+
+[Service]
+Type=oneshot
+# No RemainAfterExit: nothing orders itself after this unit, and a check
+# left "active (exited)" until the next boot obscures whether it has run
+# recently. `systemctl list-timers` is the right view.
+MemoryMax=256M
+# Five minutes, not the sweep's thirty. Two SELECTs against a v1-sized
+# catalogue are milliseconds, and a check that is still running when the
+# next hour's check starts has itself become the problem. A timeout puts
+# this unit in a failed state, which fires the alert — correctly: a health
+# check that cannot answer is worth hearing about, unlike a backup, where a
+# slow dump on a loaded host is ordinary.
+TimeoutStartSec=5m
