@@ -470,12 +470,22 @@ schema a failed migration left behind.
 ```bash
 systemctl --failed --no-pager
 
+ready=false
 for _ in $(seq 1 60); do
-    curl --fail --silent --max-time 5 http://127.0.0.1:8080/api/v1/healthz && break
+    if curl --fail --silent --max-time 5 http://127.0.0.1:8080/api/v1/healthz; then
+        ready=true
+        break
+    fi
     sleep 2
 done
 echo
+[ "$ready" = true ] || echo "NOT READY after two minutes - do not proceed, see rollback below"
 ```
+
+The flag is the point of that loop, not decoration. Without it the loop simply
+stops after two minutes and the next command runs, so an application that never
+became ready reads exactly like one that did — which is the failure this
+section's heading is about, arriving inside the check written to prevent it.
 
 **Good:** no failed units, and `{"status":"ok","live":true,"ready":true,…}`
 with the database probe `"ok":true`.

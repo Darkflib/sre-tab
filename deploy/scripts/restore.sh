@@ -339,6 +339,39 @@ error: role $restore_user does not exist in this cluster, so nothing can
 EOF
         exit 1
     fi
+
+    # Existing is not the same as usable, and the difference is the whole
+    # window this script is careful about. The check above proves the cluster
+    # knows the role; it proves nothing about whether the credential this run
+    # was handed still authenticates as it. A rotated create-roles.sh password
+    # against a stale sre-tab-migrate-database-url passes the existence test
+    # and then fails at pg_restore — which is line 498, after DROP DATABASE,
+    # with an empty database where the data used to be and the comment above
+    # correctly observing that `password authentication failed` does not name
+    # the actual problem.
+    #
+    # So the credential is exercised, not merely present: a real connection as
+    # the restore role, on the same path pg_restore will take, before the
+    # confirmation prompt and long before anything is dropped. Connecting to
+    # the database that is about to be replaced is fine — this only asks
+    # whether the server will accept the credential.
+    echo "Checking the restore credential authenticates as $restore_user..."
+    if ! run_restore_client psql --quiet --no-psqlrc --tuples-only --no-align \
+        --set=ON_ERROR_STOP=1 --command 'SELECT 1' >/dev/null; then
+        cat >&2 <<EOF
+error: could not connect as $restore_user with the credential given.
+       Nothing has been dropped.
+
+       The role exists, so this is the credential rather than the role. If
+       create-roles.sh has rotated it, the podman secret this run read is
+       stale relative to the cluster:
+
+           sudo deploy/scripts/create-roles.sh --rotate
+
+       rewrites both together. deploy/ROLES.md covers rotation.
+EOF
+        exit 1
+    fi
 fi
 
 # Whether roles.sql has anything to re-apply after the recreate, decided while

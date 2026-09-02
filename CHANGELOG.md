@@ -250,6 +250,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `sre-tab-db.container` still bootstraps the superuser. Watched failing under
   four mutations: the whole cutover reverted, the session sweep left behind,
   the backup half-cut, and the migration unit handed the application's role.
+- **`restore.sh` proves the restore credential works before it drops
+  anything.** It already refused to proceed when the restore *role* did not
+  exist, on the reasoning that discovering it after `DROP DATABASE` destroys
+  the thing you were about to fail on. Existing is not the same as usable: a
+  password rotated by `create-roles.sh --rotate` against a stale
+  `sre-tab-migrate-database-url` passes the existence check and then fails at
+  `pg_restore`, on the far side of the drop, with an empty database and a
+  `password authentication failed` that names the wrong problem. The
+  credential is now exercised with a real connection on the path `pg_restore`
+  will take, before the confirmation prompt.
+- **The cutover runbook's readiness loop can fail.** It polled `/healthz`
+  sixty times and then continued regardless, so an application that never
+  became ready read exactly like one that did — inside a step headed "do not
+  trust the prompt returning".
 - **The smoke test waited for the wrong PostgreSQL.** Its readiness loop ran
   `pg_isready` with no host, which talks to the unix socket — and the official
   image's entrypoint bootstraps a cluster by starting a *temporary* server
