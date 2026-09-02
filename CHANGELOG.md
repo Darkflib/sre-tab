@@ -250,6 +250,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `sre-tab-db.container` still bootstraps the superuser. Watched failing under
   four mutations: the whole cutover reverted, the session sweep left behind,
   the backup half-cut, and the migration unit handed the application's role.
+- **The smoke test waited for the wrong PostgreSQL.** Its readiness loop ran
+  `pg_isready` with no host, which talks to the unix socket — and the official
+  image's entrypoint bootstraps a cluster by starting a *temporary* server
+  with `listen_addresses=''`, reachable on that socket and nowhere else. So
+  the loop answered "ready" during the bootstrap, the entrypoint then shut
+  that server down to start the real one, and whatever connected next got
+  `FATAL: the database system is shutting down`. The race predates this
+  release and never fired, because the step after the wait was always a
+  container start slow enough to outlast the restart; applying `roles.sql`
+  connects immediately, and CI failed on the first run that did. The wait now
+  asks over TCP, which only the real server is listening on. Confirmed by
+  sampling both probes through a bootstrap rather than by reasoning about it:
+  there is a window where the socket says ready and TCP refuses.
+- **`install.sh --start` checks all seven secrets, not the pre-cutover four.**
+  A guard naming the old set would have passed and then watched three units
 - **`create-roles.sh` writes four secrets for three roles.**
   `sretab_readonly` has two consumers that want one password in two shapes —
   `pg_dump` takes `PGPASSWORD`, `sre-tab status` takes a `DATABASE_URL` —
