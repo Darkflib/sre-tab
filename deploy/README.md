@@ -17,7 +17,7 @@ podman info --format '{{.Host.CgroupsVersion}}'
 ```
                  ┌──────────────────── host ────────────────────┐
   client ─TLS─▶  │  existing reverse proxy                      │
-                 │        │ 127.0.0.1:8080                      │
+                 │        │ 127.0.0.1:8080 (default)            │
                  │        ▼                                     │
                  │  sre-tab-web   (Caddy, uid 65532)            │
                  │     │      │                                 │
@@ -147,6 +147,208 @@ measurement.
 It seeds `/etc/sre-tab/app.env` from `deploy/app.env.example` **once** and
 never overwrites it afterwards. Everything else it installs is replaced on
 every run: keep intentional changes in the repository, not in `/etc`.
+
+<a id="the-published-port"></a>
+### The published port is host policy
+
+`sre-tab-web` publishes on `127.0.0.1:8080` by default, and 8080 is a
+collision waiting to happen on any host that does more than one thing. On the
+reference deployment it collided.
+
+There was no supported way to say so, so the port was moved the only way
+available: by editing `PublishPort=` in the tracked
+`deploy/quadlet/sre-tab-web.container`. That works, and it is a local fork of
+a file this repository owns. `git checkout`, `git stash`, and `git reset
+--hard` each discard it without saying anything, and the next upstream change
+to that file turns `git pull` into a conflict. Nor can the edit live in
+`/etc`: `install.sh` copies every tracked Quadlet over
+`/etc/containers/systemd` on every run, so an edited copy there survives until
+the next install and no longer.
+
+It is a setting instead. The file is `/etc/sre-tab/install.env`, which holds
+host policy — things about *this host* that the repository cannot know — and
+which the installer reads and never writes:
+
+```bash
+sudo install -m 0644 /etc/sre-tab/install.env.example /etc/sre-tab/install.env
+sudo sed -i 's/^#SRE_TAB_WEB_PORT=.*/SRE_TAB_WEB_PORT=8081/' /etc/sre-tab/install.env
+sudo deploy/install.sh --start
+```
+
+Its absence is the default, so a host that never creates it gets exactly what
+it got before this file existed. That is not a claim about intent — the
+installer writes nothing at all when the setting is absent, and removes the
+drop-in described below if a previous run wrote one, so commenting the line
+out and re-running returns the host byte for byte to a host that never had it.
+
+**Only the host side moves.** The container still listens on 8080, and three
+things depend on that: the `:8080` site block in `deploy/Caddyfile`, the
+image's own healthcheck, and the right-hand number in `PublishPort=`. They
+have to agree with each other and none of the three is an operator's
+business. `SRE_TAB_WEB_PORT` sets the middle field of
+`PublishPort=127.0.0.1:<host>:8080` and nothing else.
+
+**It is not application configuration and does not belong in `app.env`.**
+That file is handed to the running containers as an `EnvironmentFile=`, so
+everything in it reaches a process environment and `podman inspect`. The port
+is consumed by the installer, on the host, at install time, and the
+application never reads it.
+
+**The installer stages; only a restart adopts.** Changing the value and
+running `deploy/install.sh` rewrites the generated drop-in and reloads the
+generator; the running container goes on publishing the old port until
+`sre-tab-web.service` restarts. `--start` does both. This is the same
+stage-then-adopt split as [step 4 and step 5 of the roles
+cutover](#cutting-a-running-deployment-over-to-the-roles), and for the same
+reason.
+
+**And tell the host's TLS proxy.** It is the one participant in this topology
+that nothing in this repository can reach, and a moved port that the proxy
+does not know about is a site that 502s.
+
+#### What the installer writes, and the three mechanisms it is not
+
+The port arrives as a **Quadlet drop-in**, at
+`/etc/containers/systemd/sre-tab-web.container.d/10-published-port.conf`:
+
+```ini
+[Container]
+PublishPort=
+PublishPort=127.0.0.1:8081:8080
+```
+
+Quadlet merges `<unit>.container.d/*.conf` exactly as systemd merges a
+`.service.d` drop-in. This installer already relies on that one layer up —
+`sre-tab-backup.service` gets its `OnSuccess=` from a `.service.d` drop-in
+rather than from an edit to `sre-tab-backup.container` — so the mechanism is
+the deployment's existing answer to "change one line of a unit without editing
+the unit". The tracked unit is installed byte for byte and the port arrives
+beside it, which means `diff` between `deploy/quadlet` and
+`/etc/containers/systemd` stays empty on a host that has moved its port. That
+is precisely the property the local edit destroyed.
+
+**The bare `PublishPort=` is the load-bearing line**, and it is the half of
+this that a naive implementation gets wrong. Quadlet honours systemd's list
+semantics: an assignment *adds*, and an empty assignment *resets*. Measured on
+Debian 13 with podman 5.4.2, a drop-in without the reset generates
+
+```
+--publish 127.0.0.1:8080:8080 --publish 127.0.0.1:8081:8080
+```
+
+— the old port still open beside the new one. The new port works, so nothing
+about the symptom points at the cause.
+
+Three other mechanisms were tried and are not used. Each is the obvious idea
+from a different direction, and the reason each was rejected is measured
+rather than assumed:
+
+- **A `.service.d` drop-in on the generated unit.** `PublishPort=` ends up
+  inside the generated `ExecStart=`, so overriding it there means restating
+  podman's entire command line — and re-deriving it after every podman
+  upgrade, silently, because a stale copy still starts a container.
+- **A variable in the unit file.** Quadlet does not expand one.
+  `PublishPort=127.0.0.1:${SRE_TAB_WEB_PORT}:8080` is copied through to
+  `--publish 127.0.0.1:${SRE_TAB_WEB_PORT}:8080` verbatim, with
+  `podman-system-generator --dryrun` reporting no error at all.
+- **That same variable, expanded by systemd.** This one *works*, which is why
+  it is worth naming rather than dismissing. Adding `Environment=` and
+  `EnvironmentFile=-` under `[Service]` makes systemd substitute the value
+  into the generated `ExecStart` at start, mid-word substitution included: on
+  a throwaway unit built exactly that way, the file absent published on the
+  `Environment=` default, and the file naming 8091 published on 8091.
+
+  It was rejected on the third case. An empty assignment expands to `--publish
+  127.0.0.1::8080`, which podman accepts by publishing on **a random ephemeral
+  port** — measured, `8080/tcp -> 127.0.0.1:37341`, with `systemctl start`
+  exiting 0 and `systemctl --failed` empty. The unit is up, nothing is
+  complaining, and the front door is somewhere nobody is looking. It also puts
+  the value beyond validation: it is read at container start rather than at
+  install time, so an operator who edits the file and never runs the installer
+  gets whatever they typed. A mechanism whose failure is silent is worse than
+  the hardcoded line it replaces.
+
+#### What the installer refuses
+
+The value is validated before anything at all is installed, so a bad one
+leaves the host exactly as it was rather than half-written. It must be a whole
+number from 1 to 65535 with no leading zero; empty, `0`, `70000`, `8080x`, and
+`08080` are each refused with the offending value quoted back, and the
+installer exits 2 having touched nothing.
+
+Refusing here rather than later is the point, and the later is measured.
+Quadlet generates a perfectly well-formed unit for `--publish
+127.0.0.1:70000:8080` and `podman-system-generator --dryrun` exits 0 over it.
+The refusal arrives at container start:
+
+```
+Error: parsing host port: port numbers must be between 1 and 65535 (inclusive), got 70000
+qport.service: Main process exited, code=exited, status=125/n/a
+```
+
+Which is during a restart, with the old container already gone.
+
+A port below 1024 is **accepted with a warning, not refused**. Rootful podman
+can bind one and this unit publishes on loopback only, so there is no
+measurement here that would support a refusal and inventing one would refuse a
+choice that works. It is still worth a second look, because below 1024 is
+where the host's own listeners are — including, on the documented topology,
+the TLS proxy that forwards to this very port — and that collision does not
+appear until the next restart.
+
+#### Proving it, without moving this host's port
+
+Staged into a temporary directory, so nothing under `/etc` is touched and no
+unit is restarted. It needs no root for the same reason:
+
+<!-- docs:run -->
+```bash
+stage=$(mktemp -d)
+install -d "$stage/etc/sre-tab"
+printf 'SRE_TAB_WEB_PORT=8099\n' > "$stage/etc/sre-tab/install.env"
+DESTDIR="$stage" deploy/install.sh
+
+QUADLET_UNIT_DIRS="$stage/etc/containers/systemd" \
+    /usr/lib/systemd/system-generators/podman-system-generator --dryrun \
+    > "$stage/dryrun"
+
+published=$(grep -o -- '--publish [^ ]*' "$stage/dryrun")
+echo "$published"
+[ "$published" = '--publish 127.0.0.1:8099:8080' ]
+
+rm -f "$stage/etc/sre-tab/install.env"
+DESTDIR="$stage" deploy/install.sh
+[ ! -e "$stage/etc/containers/systemd/sre-tab-web.container.d" ]
+rm -rf "$stage"
+```
+
+One equality against the *whole* set of published ports, rather than one
+`grep` for the new port and another for the absence of the old one. It says
+both things at once — the new port arrived, and nothing else is published —
+and it says them in a form that `set -e` actually acts on.
+
+**That second clause is not stylistic, and it is here because the obvious
+version of this block was written first and did not work.** It ended
+
+```bash
+grep -q -- '--publish 127.0.0.1:8099:8080' "$stage/dryrun"
+! grep -q -- '--publish 127.0.0.1:8080:8080' "$stage/dryrun"
+```
+
+which reads correctly and is a guard that cannot fail. Deleting the reset line
+from the installer on purpose produced an `ExecStart` carrying `--publish
+127.0.0.1:8080:8080 --publish 127.0.0.1:8099:8080` — the exact breakage — and
+the block still **exited 0**. POSIX says `set -e` is ignored for a pipeline
+beginning with the `!` reserved word, so a `!`-prefixed assertion is a comment
+with a trace line. Measured under bash 5.2 on Debian 13, in the harness that
+runs this document.
+
+One more green check that reported success while verifying nothing, in a
+repository that has now shipped seventeen of them under other names — and it
+was caught only by breaking the thing it guards rather than by reading it. The
+rewritten form goes red on the same sabotage, and red again when the installer
+is stopped from removing a stale drop-in. Writing the output to a file first
+removes the question.
 
 Then set the configuration. `APP_BASE_URL`, `GITHUB_REDIRECT_URI`,
 `GITHUB_CLIENT_ID`, and `ALLOWED_GITHUB_IDS` all have to be set. By hand:
@@ -351,14 +553,25 @@ belt-and-braces: the state described under Upgrading is a listener that
 *accepts* a connection and never answers, so a `curl` without `--max-time`
 against it waits indefinitely rather than failing.
 
+The port is asked of the front door rather than assumed, here and everywhere
+else below. 8080 is only the default — see [The published port is host
+policy](#the-published-port) — and a runbook that hardcodes it sends an
+operator who has moved it to a port nothing serves, where a healthy
+deployment is indistinguishable from a failed one. `${port:?…}` rather than a
+fallback to 8080, so an unanswerable question fails saying so instead of
+being answered with a guess:
+
 <!-- docs:run -->
 ```bash
 systemctl status --no-pager sre-tab-db.service sre-tab.service sre-tab-web.service
 
+port=$(sudo podman port sre-tab-web 8080/tcp | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -1)
+echo "front door: 127.0.0.1:${port:?sre-tab-web publishes no port, so it is not running}"
+
 ready=false
 for _ in $(seq 1 60); do
     if curl --fail --silent --max-time 5 --output /dev/null \
-            http://127.0.0.1:8080/api/v1/healthz; then
+            "http://127.0.0.1:$port/api/v1/healthz"; then
         ready=true
         break
     fi
@@ -369,8 +582,8 @@ if [ "$ready" != true ]; then
     exit 1
 fi
 
-curl --fail --silent --max-time 5 http://127.0.0.1:8080/api/v1/healthz
-curl --fail --silent --max-time 10 --output /tmp/sre-tab-index.html http://127.0.0.1:8080/
+curl --fail --silent --max-time 5 "http://127.0.0.1:$port/api/v1/healthz"
+curl --fail --silent --max-time 10 --output /tmp/sre-tab-index.html "http://127.0.0.1:$port/"
 head -5 /tmp/sre-tab-index.html
 ```
 
@@ -518,9 +731,11 @@ schema a failed migration left behind.
 ```bash
 systemctl --failed --no-pager
 
+port=$(sudo podman port sre-tab-web 8080/tcp | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -1)
 ready=false
 for _ in $(seq 1 60); do
-    if curl --fail --silent --max-time 5 http://127.0.0.1:8080/api/v1/healthz; then
+    if curl --fail --silent --max-time 5 \
+            "http://127.0.0.1:${port:?}/api/v1/healthz"; then
         ready=true
         break
     fi
@@ -529,6 +744,10 @@ done
 echo
 [ "$ready" = true ] || echo "NOT READY after two minutes - do not proceed, see rollback below"
 ```
+
+Caddy is not restarted by this cutover, so it is up and can be asked which
+port it publishes. `${port:?}` rather than 8080, for the reason given under
+[First start](#first-start).
 
 The flag is the point of that loop, not decoration. Without it the loop simply
 stops after two minutes and the next command runs, so an application that never
@@ -787,11 +1006,17 @@ is not yet established.
 The measurements were taken from the host's own loopback, which was first
 written up as a caveat — the tail might be a loopback-and-DNAT artefact a
 real client would not see. **It is not a caveat, it is the client path.**
-`sre-tab-web.container` publishes `127.0.0.1:8080:8080` deliberately, because
-TLS is terminated by the host's existing proxy, and that proxy reaches Caddy
-over loopback exactly as the polling did. There is no off-host client of this
-port to compare against, so nothing insulates users from the tail: it is what
-the outer proxy sees, and it reaches them as 502s for the duration.
+`sre-tab-web.container` publishes on loopback deliberately, because TLS is
+terminated by the host's existing proxy, and that proxy reaches Caddy over
+loopback exactly as the polling did. There is no off-host client of this port
+to compare against, so nothing insulates users from the tail: it is what the
+outer proxy sees, and it reaches them as 502s for the duration.
+
+The measurements in this section were taken on 8080, which was the only port
+this unit could publish on at the time. Nothing here depends on the number —
+the mechanism is netavark's hostport rule and podman's reservation listener,
+and both are per-port — but the figures are that host's, on that port, and
+have not been re-measured since the port became a setting.
 
 One caveat does stand: this is a 4-core cloud instance, so the absolute
 figures are that host's, not a constant.
@@ -904,8 +1129,20 @@ with name or ID systemd-sre-tab` and no unit looking guilty.
 
 ## TLS termination and what the outer proxy must not do
 
-Caddy listens on `127.0.0.1:8080` only. Terminate TLS at the host's existing
-proxy or load balancer and forward to that address.
+Caddy is published on `127.0.0.1` only, on port 8080 unless the host says
+otherwise. Terminate TLS at the host's existing proxy or load balancer and
+forward to that address.
+
+**Ask the host rather than assuming the number.** `SRE_TAB_WEB_PORT` in
+`/etc/sre-tab/install.env` moves the published port — see [The published port
+is host policy](#the-published-port) — and this proxy is the one participant
+in the topology that nothing in this repository configures, so a moved port
+that it does not know about is a site that 502s with no failed unit anywhere
+to explain it. What the front door is actually on:
+
+```bash
+sudo podman port sre-tab-web 8080/tcp
+```
 
 The application sets its own security headers in `app/middleware.py`, and
 Caddy sets a verbatim mirror of them on the files it serves from disk — the
@@ -922,8 +1159,8 @@ The outer proxy must therefore:
   helpfully add their own CSP; two `Content-Security-Policy` headers are
   intersected by the browser, and the result is usually a broken page.
 - **Not serve the site to clients over plain HTTP.** Forwarding to Caddy on
-  `127.0.0.1:8080` over HTTP is the design and is expected; what must not
-  happen is a browser reaching the site over HTTP.
+  loopback over HTTP is the design and is expected; what must not happen is a
+  browser reaching the site over HTTP.
   `Strict-Transport-Security: max-age=31536000` is set by the application and
   by Caddy, but a browser only honours it on a response it received over
   HTTPS — and both of those layers sit behind the outer proxy on plain HTTP.
@@ -971,8 +1208,10 @@ client ─▶ TLS proxy ─▶ Caddy ─────────────▶ 
    `servers { trusted_proxies … }` block in `deploy/Caddyfile`, the outer
    proxy's header is thrown away at the front door and step 1 buys nothing.
    The default trusts `10.89.61.1/32`, the gateway on `sre-tab.network`,
-   which is the source address a connection to the published
-   `127.0.0.1:8080` port arrives from once Podman has DNATed it.
+   which is the source address a connection to the published loopback port
+   arrives from once Podman has DNATed it. That address is a property of the
+   network rather than of the port, so moving the published port with
+   `SRE_TAB_WEB_PORT` does not change it and this block needs no edit.
 3. **uvicorn resolves the chain.** It reads `X-Forwarded-For` only when the
    peer is in `FORWARDED_ALLOW_IPS`, then walks the chain from the right and
    takes the first address it does *not* trust. So that list has to name
@@ -1990,7 +2229,11 @@ systemctl status sre-tab-db.service sre-tab.service sre-tab-web.service
 journalctl -u sre-tab.service --since today
 journalctl -u sre-tab-migrate.service -n 50
 podman logs sre-tab-web
-curl --fail http://127.0.0.1:8080/api/v1/healthz | jq
+
+# 8080 is the default; SRE_TAB_WEB_PORT may have moved it, and the front door
+# is the thing that knows. See "The published port is host policy".
+port=$(podman port sre-tab-web 8080/tcp | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -1)
+curl --fail "http://127.0.0.1:${port:?}/api/v1/healthz" | jq
 ```
 
 `/api/v1/healthz` distinguishes liveness from readiness and names each probe,

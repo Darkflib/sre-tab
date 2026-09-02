@@ -56,7 +56,7 @@ flowchart TB
 
     outbound["Outside the host<br/>feed origins · GitHub"]
 
-    browser -->|"HTTPS"| proxy -->|"127.0.0.1:8080"| web
+    browser -->|"HTTPS"| proxy -->|"127.0.0.1:8080 by default"| web
     web -->|"/api/* and /docs"| app
     web -->|"everything else"| vol
     assets -->|"copied out of the image"| vol
@@ -70,11 +70,14 @@ flowchart TB
 
 Three things in that picture are load-bearing and easy to read past.
 
-**Only Caddy publishes a port, and only to `127.0.0.1`.** The database is not
-reachable from the host, let alone from outside it. Every hop inside the box
-is by container name, which is why a host missing `aardvark-dns` produces a
-psycopg error out of the migration unit and looks exactly like a database
-that is down — see [deploy/README.md](deploy/README.md).
+**Only Caddy publishes a port, and only to `127.0.0.1`.** 8080 is the default
+rather than the policy — `SRE_TAB_WEB_PORT` in `/etc/sre-tab/install.env`
+moves it, and the host's TLS proxy then has to be told, which is the one end
+of this the repository cannot reach. The database is not reachable from the
+host at all, let alone from outside it. Every hop inside the box is by
+container name, which is why a host missing `aardvark-dns` produces a psycopg
+error out of the migration unit and looks exactly like a database that is
+down — see [deploy/README.md](deploy/README.md).
 
 **Four units talk to PostgreSQL and none of them is a superuser.** The
 application and the session sweep hold DML only, the migration unit holds DDL

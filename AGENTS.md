@@ -82,6 +82,15 @@ If a rule here blocks you, say so rather than working around it.
   reverted?** If you cannot answer the second by trying it, the guard is
   documentation.
 
+  **One shell trap is worth naming, because it makes a guard unfailable
+  without looking wrong.** POSIX says `set -e` is ignored for a pipeline
+  beginning with the `!` reserved word, so `! grep -q pattern file` under
+  `set -e` asserts nothing at all: it runs, it reports, and the script
+  carries on whether the pattern was there or not. Caught here by
+  breaking the thing it guarded and watching the block exit 0 anyway.
+  Write the negative as a positive the shell acts on — an equality
+  against the whole expected set, or `if grep -q …; then exit 1; fi`.
+
 ## Data-access rules
 
 The service is sync SQLAlchemy by contract, but a later async migration

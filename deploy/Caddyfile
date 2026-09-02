@@ -7,6 +7,13 @@
 #
 # Listens on :8080 inside the container, published to 127.0.0.1 only. TLS is
 # terminated by the host's existing proxy, exactly as in orbit-data.
+#
+# The :8080 below is the CONTAINER port and is not the operator's to change.
+# Which host port that is published on is — SRE_TAB_WEB_PORT in
+# /etc/sre-tab/install.env — and moving it does not touch this file: the site
+# block, the image's healthcheck, and the right-hand number in
+# sre-tab-web.container's PublishPort= have to agree with each other, and the
+# host has no stake in which value they agree on.
 {
 	admin off
 	auto_https off
@@ -20,9 +27,9 @@
 	# single bucket for the whole internet, and nothing anywhere says so.
 	#
 	# 10.89.61.1 is the gateway on sre-tab.network, which is the source
-	# address a connection to the published 127.0.0.1:8080 port arrives from
-	# once Podman has DNATed it. Trusting it makes Caddy *append* rather than
-	# replace, so the chain that reaches uvicorn is
+	# address a connection to the published loopback port arrives from once
+	# Podman has DNATed it — whichever port that is. Trusting it makes Caddy
+	# *append* rather than replace, so the chain that reaches uvicorn is
 	# `<real client>, 10.89.61.1`.
 	#
 	# The two halves have to agree: FORWARDED_ALLOW_IPS in app.env must list

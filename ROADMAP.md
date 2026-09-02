@@ -997,7 +997,12 @@ during an incident.
 
   Not yet established: whether the ordering is fixable from the unit files at
   all, or is podman's to fix. `PublishPort=127.0.0.1:8080:8080` is the same
-  line orbit-data uses, so anything learned here applies there too.
+  line orbit-data uses, so anything learned here applies there too — and it is
+  now the default rather than the only possibility, since `SRE_TAB_WEB_PORT`
+  can move the host side. Nothing about the mechanism is port-specific: the
+  hostport rule and the reservation listener are per-port, and both exist for
+  whichever port is published. The figures above are that host's, on 8080, and
+  have not been re-measured on another.
 
 - **`requires-python = ">=3.12"` is a floor CI stopped testing today.**
   The five setup-python steps now take `python-version-file:
@@ -1072,9 +1077,16 @@ during an incident.
   anyway. Both are improvements to the document in their own right, which is
   the test of whether bending it toward execution was legitimate.
 
-  Seven blocks run: preparation, configuration, secrets, first start,
-  verification, network replacement, and an assertion that the recreated range
-  starts above Caddy's pinned `.20`.
+  Eight blocks run: preparation, configuration, secrets, first start,
+  verification, network replacement, an assertion that the recreated range
+  starts above Caddy's pinned `.20`, and — since the published port became a
+  setting — a staged proof that moving it moves the port and closes the old
+  one. That last block is deliberately the only place the drop-in path is
+  exercised outside a hand-run: CI's `podman-system-generator --dryrun` is
+  pointed at `deploy/quadlet`, which never contains a drop-in, so it validates
+  the shipped default and says nothing about a host that has moved its port.
+  A journald-capable runner would close that gap along with the rest of this
+  item.
 
   The verification block changed as a consequence of the deploy-window
   measurement above: it polls for `healthz` instead of requesting it once,
