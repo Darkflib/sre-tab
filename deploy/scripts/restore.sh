@@ -10,6 +10,30 @@
 #
 # THIS DESTROYS THE TARGET DATABASE. It drops it and rebuilds it from the
 # dump; anything written since the dump is gone.
+#
+# TWO CREDENTIALS, DELIBERATELY. `DROP DATABASE` and `CREATE DATABASE` are
+# database-level administrative operations that none of the three roles in
+# deploy/roles.sql holds, and none of them should: sretab_migrate owns the
+# objects *inside* the sretab database, which PostgreSQL does not conflate
+# with owning the database. So the recreate step keeps the administrative
+# credential this script has always used (--user/--password-secret, the
+# cluster superuser by default), and only the pg_restore step drops to
+# sretab_migrate (--restore-user/--restore-url-secret) — which needs exactly
+# the rights `alembic upgrade` needs and nothing beyond them.
+#
+# The alternative, granting sretab_migrate CREATEDB so one credential could
+# do both, was considered and rejected. CREATEDB is cluster-wide and
+# permanent: it would widen the role the migration unit runs unattended on
+# every deploy, in exchange for convenience in a break-glass procedure a
+# human runs with host root already in hand. The administrative credential
+# has to keep existing regardless — deploy/ROLES.md's rollback path depends
+# on sre-tab-database-url and sre-tab-postgres-password staying untouched —
+# so keeping the split costs nothing new and grants nothing new.
+#
+# Pre-cutover, or on any host where the three roles were never installed,
+# `--restore-user sretab` collapses this back to the single credential the
+# script used before, and the check below says so by name rather than
+# letting psql fail at authentication time.
 
 set -eu
 
@@ -26,17 +50,26 @@ Options:
   --network NAME      container network (default: systemd-sre-tab)
   --host NAME         database host on that network (default: sre-tab-db)
   --database NAME     database to restore into (default: sretab)
-  --user NAME         database superuser (default: sretab)
-  --password-secret N podman secret holding the password
+  --user NAME         database superuser, used ONLY to drop and recreate the
+                      database (default: sretab)
+  --password-secret N podman secret holding that superuser's password
                       (default: sre-tab-postgres-password)
+  --restore-user NAME role pg_restore itself connects as
+                      (default: sretab_migrate)
+  --restore-url-secret N
+                      podman secret holding a DATABASE_URL for that role
+                      (default: sre-tab-migrate-database-url). Ignored when
+                      --restore-user matches --user, which restores the
+                      single-credential behaviour for a host without the
+                      roles installed.
   --no-systemd        do not stop or start systemd units; used by the smoke
                       test and on hosts where the app is not run by systemd
   --yes               do not prompt for confirmation
   -h, --help          this message
 
-The password is read from a podman secret by default. With --engine docker,
-or when PGPASSWORD is already set in the environment, that value is used
-instead.
+Both passwords are read from podman secrets by default. With --engine docker,
+or when PGPASSWORD (superuser) and SRE_TAB_RESTORE_URL (restore role) are
+already set in the environment, those values are used instead.
 EOF
 }
 
@@ -47,9 +80,14 @@ db_host=sre-tab-db
 database=sretab
 db_user=sretab
 password_secret=sre-tab-postgres-password
+restore_user=sretab_migrate
+restore_url_secret=sre-tab-migrate-database-url
 use_systemd=true
 assume_yes=false
 dump=
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+roles_sql=$script_dir/../roles.sql
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -60,6 +98,8 @@ while [ "$#" -gt 0 ]; do
         --database) database=$2; shift 2 ;;
         --user) db_user=$2; shift 2 ;;
         --password-secret) password_secret=$2; shift 2 ;;
+        --restore-user) restore_user=$2; shift 2 ;;
+        --restore-url-secret) restore_url_secret=$2; shift 2 ;;
         --no-systemd) use_systemd=false; shift ;;
         --yes) assume_yes=true; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -132,6 +172,28 @@ else
     exit 2
 fi
 
+# The restore role's credential arrives as a whole DATABASE_URL rather than as
+# a bare password, because that is the secret create-roles.sh actually mints
+# for it: sre-tab-migrate-database-url exists so the migration unit can be
+# handed one env var, and minting a second secret holding the same password in
+# a different shape would be one more thing to keep in step. The password is
+# taken out of it inside the client container (see run_restore_client), never
+# here — a host-side parse would put it in this script's environment and in
+# every child process it spawns.
+restore_secret_args=""
+restore_env_args=""
+if [ "$restore_user" != "$db_user" ]; then
+    if [ -n "${SRE_TAB_RESTORE_URL:-}" ]; then
+        restore_env_args="--env SRE_TAB_RESTORE_URL"
+    elif [ "$engine" = "podman" ]; then
+        restore_secret_args="--secret $restore_url_secret,type=env,target=SRE_TAB_RESTORE_URL"
+    else
+        echo "error: set SRE_TAB_RESTORE_URL, or use --engine podman to read $restore_url_secret" >&2
+        echo "       (or pass --restore-user $db_user to restore with one credential)" >&2
+        exit 2
+    fi
+fi
+
 run_client() {
     # shellcheck disable=SC2086 # deliberate word splitting of the arg groups
     "$engine" run --rm --interactive \
@@ -148,16 +210,159 @@ run_client() {
         "$image" "$@"
 }
 
+# Runs inside the client container, ahead of pg_restore. SRE_TAB_RESTORE_URL
+# is `postgresql+psycopg://ROLE:PASSWORD@host:5432/db`, the shape
+# create-roles.sh writes. Only the password is lifted out of it: libpq does
+# not understand SQLAlchemy's `+psycopg` dialect suffix, and handing the whole
+# URI to pg_restore --dbname would publish the password in the host's process
+# table, which is the thing the podman secret exists to avoid.
+#
+# The role in the URL is checked against PGUSER rather than trusted, because
+# the two come from different flags and disagreeing about them otherwise
+# surfaces as `password authentication failed for user "sretab_migrate"` —
+# which reads as a rotation problem and is not one.
+# shellcheck disable=SC2016 # expanded by the container's shell, not by this one
+restore_password_preamble='
+creds=${SRE_TAB_RESTORE_URL#*://}
+creds=${creds%%@*}
+case "$creds" in
+    *:*) ;;
+    *) echo "error: the restore URL carries no password" >&2; exit 1 ;;
+esac
+if [ "${creds%%:*}" != "$PGUSER" ]; then
+    echo "error: the restore URL is for role ${creds%%:*}, but --restore-user is $PGUSER" >&2
+    exit 1
+fi
+PGPASSWORD=${creds#*:}
+export PGPASSWORD
+unset SRE_TAB_RESTORE_URL
+exec "$@"
+'
+
+# Grants and default privileges live inside the database, and the restore
+# drops the database: every table-level GRANT and every pg_default_acl row
+# goes with it. This puts them back, on the administrative connection, and it
+# runs twice.
+#
+# Before pg_restore, because that is what makes the restore possible at all:
+# it gives sretab_migrate CREATE on schema public, without which the first
+# CREATE TABLE in the dump is refused, and it re-establishes
+# ALTER DEFAULT PRIVILEGES FOR ROLE sretab_migrate so that every table the
+# restore creates arrives with sretab_app's DML grants and sretab_readonly's
+# SELECT already attached.
+#
+# After it, because the pass before can only cover objects the restore role
+# creates. Restoring with `--restore-user sretab` — the documented fallback —
+# leaves every table owned by the superuser instead, which those default
+# privileges do not reach, and the application would come back to a database
+# it cannot read with nothing to say why. The second pass is roles.sql's
+# ownership sweep and its GRANT ON ALL TABLES doing exactly the job they were
+# written for. On the default path it is a genuine no-op, which is also worth
+# having: every restore exercises the idempotency the install path relies on.
+#
+# No password is set or rotated: the three set_password_* flags are false,
+# which is the path create-roles.sh takes on a re-run against roles that
+# already exist. roles.sql raises if a role is missing, which is why the check
+# above establishes that first. The unused password variables are still
+# defined, because psql resolves a variable reference in a branch it is not
+# taking.
+apply_roles_sql() {
+    {
+        printf '\\set set_password_migrate false\n'
+        printf '\\set migrate_password unused\n'
+        printf '\\set set_password_app false\n'
+        printf '\\set app_password unused\n'
+        printf '\\set set_password_readonly false\n'
+        printf '\\set readonly_password unused\n'
+        cat "$roles_sql"
+    } | run_client psql --quiet --no-psqlrc --set=ON_ERROR_STOP=1 \
+        --dbname "$database"
+}
+
+run_restore_client() {
+    if [ "$restore_user" = "$db_user" ]; then
+        run_client "$@"
+        return
+    fi
+    # shellcheck disable=SC2086 # deliberate word splitting of the arg groups
+    "$engine" run --rm --interactive \
+        --network "$network" \
+        --volume "$dump_dir:/restore:ro" \
+        --env "PGHOST=$db_host" \
+        --env "PGUSER=$restore_user" \
+        --env "PGDATABASE=$database" \
+        $restore_env_args $restore_secret_args \
+        --user 999:999 \
+        --read-only \
+        --security-opt=no-new-privileges \
+        --cap-drop all \
+        "$image" sh -ec "$restore_password_preamble" sre-tab-restore "$@"
+}
+
 echo "Verifying the dump is readable..."
 run_client pg_restore --list "/restore/$dump_name" >/dev/null
 echo "Dump parses cleanly."
 
+# Deliberately not piped through `tr` to tidy the output: a pipeline's status
+# is the last stage's, so a psql that could not connect at all would arrive
+# here as an empty string and a zero exit, and be read below as "the role does
+# not exist". Both callers assign it, so `set -e` stops on a failed query and
+# shows psql's own message.
+count_roles() {
+    run_client psql --quiet --no-psqlrc --tuples-only --no-align \
+        --set=ON_ERROR_STOP=1 --command "$1"
+}
+
+# Established here, on the administrative connection, before the confirmation
+# prompt and long before DROP DATABASE. A restore that discovers the restore
+# role does not exist only once the database is gone has already destroyed the
+# thing it was about to fail on, and `FATAL: password authentication failed`
+# from pg_restore is not a message that names the actual problem.
+if [ "$restore_user" != "$db_user" ]; then
+    present=$(count_roles \
+        "SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname = '$restore_user'")
+    if [ "$present" != 1 ]; then
+        cat >&2 <<EOF
+error: role $restore_user does not exist in this cluster, so nothing can
+       restore as it. Nothing has been dropped.
+
+       Install the three least-privilege roles first:
+
+           sudo deploy/scripts/create-roles.sh
+
+       or, on a host that has not been cut over to them yet, restore with the
+       single administrative credential the way this script used to:
+
+           deploy/scripts/restore.sh --restore-user $db_user ...
+
+       deploy/ROLES.md has the reasoning for the split.
+EOF
+        exit 1
+    fi
+fi
+
+# Whether roles.sql has anything to re-apply after the recreate, decided while
+# the roles can still be seen. It is a separate question from the one above:
+# `--restore-user sretab` on a host that HAS been cut over still needs the
+# grants put back, or the application returns to a database it cannot read.
+roles_installed=false
+if [ -f "$roles_sql" ]; then
+    installed=$(count_roles \
+        "SELECT count(*) FROM pg_catalog.pg_roles \
+         WHERE rolname IN ('sretab_migrate', 'sretab_app', 'sretab_readonly')")
+    if [ "$installed" = 3 ]; then
+        roles_installed=true
+    fi
+fi
+
 cat <<EOF
 
 About to restore:
-  dump      $dump_dir/$dump_name
-  into      $database on $db_host (network $network)
-  engine    $engine
+  dump         $dump_dir/$dump_name
+  into         $database on $db_host (network $network)
+  engine       $engine
+  recreate as  $db_user
+  restore as   $restore_user
 
 THIS DROPS $database AND EVERYTHING IN IT.
 EOF
@@ -266,18 +471,40 @@ fi
 echo "Recreating $database..."
 run_client psql --quiet --no-psqlrc --set=ON_ERROR_STOP=1 \
     --command "DROP DATABASE IF EXISTS \"$database\" WITH (FORCE)"
+# Owned by the administrative role, not by the restore role. Making
+# sretab_migrate the database owner would hand it DROP DATABASE on this
+# database permanently — the same widening --restore-user exists to avoid,
+# arrived at from the other direction.
 run_client psql --quiet --no-psqlrc --set=ON_ERROR_STOP=1 \
     --command "CREATE DATABASE \"$database\" OWNER \"$db_user\""
+
+if [ "$roles_installed" = true ]; then
+    echo "Re-applying deploy/roles.sql to the new database..."
+    apply_roles_sql
+fi
 
 # --single-transaction with --exit-on-error: the database is either fully
 # restored or left empty for a second attempt. A half-restored schema that
 # the app then migrates on top of is the failure mode worth designing out.
-echo "Restoring..."
-run_client pg_restore \
+#
+# --no-owner matters more now than it did. A dump taken before the cutover
+# names the superuser as every table's owner, and sretab_migrate cannot
+# ALTER ... OWNER TO a role it is not a member of, so honouring the dump's
+# ownership would fail the whole single transaction. Without it, every object
+# simply lands owned by whoever ran the restore — sretab_migrate — which is
+# the ownership the three roles are built around, arrived at by construction
+# rather than by a statement in the dump.
+echo "Restoring as $restore_user..."
+run_restore_client pg_restore \
     --dbname "$database" \
     --no-owner --no-privileges \
     --exit-on-error --single-transaction \
     "/restore/$dump_name"
+
+if [ "$roles_installed" = true ]; then
+    echo "Settling ownership and grants over the restored objects..."
+    apply_roles_sql
+fi
 
 echo "Verifying..."
 run_client psql --quiet --no-psqlrc --tuples-only --no-align \
