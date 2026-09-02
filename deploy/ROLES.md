@@ -344,6 +344,23 @@ follows is worth more than the cutover itself.
   runs every `docs:run` block in document order, which now includes the
   database-first ordering the roles impose. It completed, and the state it
   left behind had `sretab_app` as the only role connected to the database.
+- **The rollout runbook was run against the shape it is written for**, which
+  is not a fresh install: the host was rewound to a deployment already up on
+  the superuser, with data and with the three roles dropped entirely, and the
+  runbook was then followed step by step. The ownership sweep reassigned all
+  fourteen existing tables; steps 3 and 4 changed nothing that was running,
+  confirmed by asking `pg_stat_activity` between them; step 5 moved the
+  application to `sretab_app`; and both timer-driven units were exercised
+  immediately afterwards, the backup growing from 128,620 to 135,926 bytes
+  across the change rather than collapsing, which is what a missing grant
+  would look like if it did not fail outright.
+- **The outage that step causes was measured rather than estimated.** Polling
+  five times a second across the restart: the API answered `502` for 6.4
+  seconds and the SPA document never stopped answering `200`. Caddy is not
+  among the units being restarted, so the published port is never withdrawn
+  and the netavark hostport tail that dominates a promotion does not occur.
+  `systemctl` returned at 16.3 seconds — about ten seconds *after* service
+  resumed, which is `Notify=healthy` waiting on the image's healthcheck.
 
 Three things the run contradicted, all now fixed rather than only noted.
 `install.sh --start` checked for four secrets that predate the cutover and

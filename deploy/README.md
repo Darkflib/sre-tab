@@ -328,11 +328,22 @@ tonight is the night:
   commit with a one-command rollback, and a promotion in the same window
   entangles the two — if something misbehaves you want to know which of them
   did it.
-- **Budget one application restart**, which is roughly 40 seconds of 502s
-  through the outer proxy on the reference host. See
-  [How long a deploy actually takes](#how-long-a-deploy-actually-takes); the
-  service is unreachable for about 20 seconds *after* `systemctl` returns, so
-  do not read the prompt coming back as the all-clear.
+- **Budget one application restart, and it is a small one.** Measured on the
+  reference host across step 5, polling five times a second: the API answered
+  `502` for **6.4 seconds** and the SPA document never stopped answering `200`
+  at all. That is much shorter than a promotion's window, and for a reason
+  worth knowing rather than trusting — this restarts two units and neither is
+  Caddy, so the published port is never withdrawn and the netavark hostport
+  tail described under
+  [How long a deploy actually takes](#how-long-a-deploy-actually-takes) does
+  not happen. A user with the page open sees failing API calls, not a dead
+  site.
+
+  One thing from that section does still apply, in the opposite direction:
+  `systemctl` returned at **16.3s**, roughly ten seconds *after* the service
+  was answering again, because `Notify=healthy` waits for the image's
+  healthcheck. Do not read the prompt coming back as the moment service
+  resumed; it is later than that, not earlier.
 - **The reversible point is step 4.** Everything before it can be abandoned by
   doing nothing at all.
 - Every step below has been executed end to end on a Debian 13 host with
