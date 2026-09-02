@@ -1,0 +1,11 @@
+# Security reports must not arrive as public issues. SECURITY.md offers a
+# private advisory channel; this makes it the first thing a reporter sees
+# rather than something they find after posting.
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Darkflib/sre-tab/security/advisories/new
+    about: Report privately through a GitHub security advisory. Please do not open a public issue.
+  - name: Findings already accepted and held
+    url: https://github.com/Darkflib/sre-tab/blob/main/ROADMAP.md#security-findings-this-deployment-absorbs
+    about: Real findings this deployment knowingly absorbs, with the reasoning. Worth reading before reporting one.

@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest something the project should do.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        [ROADMAP.md](https://github.com/Darkflib/sre-tab/blob/main/ROADMAP.md)
+        records what is planned, what was deliberately not done, and why. If
+        your idea is already there, saying so — and saying why the reasoning
+        does not hold for you — is more useful than a fresh request.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >-
+        What you were trying to do, not the solution you have in mind. The
+        product is deliberately small; a feature earns its place by removing
+        a real difficulty rather than by being reasonable in the abstract.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Including "nothing" — that is a useful answer too.
