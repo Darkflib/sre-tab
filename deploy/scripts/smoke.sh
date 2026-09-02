@@ -16,6 +16,22 @@
 # podman-system-generator --dryrun, and the secret plumbing only exists under
 # podman on the deployment host.
 #
+# It also installs the three least-privilege roles from deploy/roles.sql and
+# runs everything below as one of them: the migration container as
+# sretab_migrate, the application and the session sweep as sretab_app, the
+# backup as sretab_readonly. Nothing but the throwaway psql helper and
+# restore.sh's DROP/CREATE DATABASE step connects as the superuser. That is
+# what makes the negative assertions further down meaningful, and it is what
+# stops a half-done or silently reverted cutover from passing CI — the gap
+# deploy/ROLES.md named, and now records as closed, under "smoke.sh tests the
+# cutover rather than routing around it".
+#
+# roles.sql is applied through psql directly rather than by calling
+# create-roles.sh, which writes podman secrets and would tie this file to one
+# engine. ROLES.md permits either; the discipline that matters is the one this
+# file keeps — the role passwords reach psql over stdin as `\set` variables,
+# never as literals in the SQL and never on a command line.
+#
 # Engine-agnostic on purpose: CONTAINER_ENGINE=docker runs it on a developer
 # machine, and it defaults to podman for CI and the deployment host.
 #
@@ -37,7 +53,21 @@ NET=sre-tab-smoke
 ASSETS_VOL=sre-tab-smoke-assets
 DB_VOL=sre-tab-smoke-db
 DB_PASSWORD=smoke-only-not-a-secret
-DATABASE_URL="postgresql+psycopg://sretab:$DB_PASSWORD@sre-tab-db:5432/sretab"
+
+# One password per role, deliberately different from each other and from the
+# superuser's. Sharing one would make a mix-up invisible: a container handed
+# the wrong role's URL would still connect, and every assertion below would
+# pass while testing the wrong thing.
+MIGRATE_PASSWORD=smoke-only-not-a-secret-migrate
+APP_PASSWORD=smoke-only-not-a-secret-app
+READONLY_PASSWORD=smoke-only-not-a-secret-readonly
+
+# Post-cutover connection strings: the migration unit is the only thing that
+# gets DDL rights, the application and the session sweep share the DML role,
+# and the backup runs read-only. The superuser has no DATABASE_URL here at
+# all, which is the point — deploy/ROLES.md's cutover section.
+MIGRATE_DATABASE_URL="postgresql+psycopg://sretab_migrate:$MIGRATE_PASSWORD@sre-tab-db:5432/sretab"
+APP_DATABASE_URL="postgresql+psycopg://sretab_app:$APP_PASSWORD@sre-tab-db:5432/sretab"
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 workdir=$(mktemp -d)
@@ -70,6 +100,61 @@ psql_db() {
     "$ENGINE" exec --env "PGPASSWORD=$DB_PASSWORD" sre-tab-db \
         psql --quiet --no-psqlrc --tuples-only --no-align \
         --username sretab --dbname sretab "$@"
+}
+
+# The same query, as one of the three roles, over the container network —
+# deliberately not `$ENGINE exec` into the database container like psql_db
+# above. The official image's pg_hba.conf trusts the unix socket and the
+# loopback interface unconditionally, so a socket connection proves the
+# privilege but never checks the password; this takes the `host` path the
+# application takes, so a role whose credential is wrong fails here rather
+# than in production.
+psql_as() {
+    as_role=$1
+    as_password=$2
+    shift 2
+    "$ENGINE" run --rm --network "$NET" \
+        --env PGHOST=sre-tab-db --env PGDATABASE=sretab \
+        --env "PGUSER=$as_role" --env "PGPASSWORD=$as_password" \
+        --read-only --security-opt=no-new-privileges --cap-drop all \
+        --user 999:999 --pids-limit 64 \
+        "$PG_IMAGE" \
+        psql --quiet --no-psqlrc --tuples-only --no-align "$@"
+}
+
+# A refusal, not merely a failure. A psql that exits non-zero because of a
+# typo, the wrong database, or a connection it never made would otherwise read
+# as a passing negative assertion — which is the exact shape of green check
+# this repository keeps finding, and the reason every one of these names the
+# error text PostgreSQL must produce.
+assert_refused() {
+    what=$1
+    want=$2
+    shift 2
+    if out=$("$@" 2>&1); then
+        fail "$what was permitted, not refused: ${out:-(no output)}"
+    fi
+    printf '%s' "$out" | grep -q "$want" \
+        || fail "$what failed, but not with '$want': $out"
+    echo "  refused: $what"
+}
+
+# The three role passwords travel over psql's stdin as `\set` variables ahead
+# of roles.sql's own text — never as literals in the SQL, never on a command
+# line — which is the discipline create-roles.sh keeps and the reason roles.sql
+# reads them as variables at all.
+apply_roles() {
+    {
+        printf '\\set set_password_migrate true\n'
+        printf '\\set migrate_password %s\n' "$MIGRATE_PASSWORD"
+        printf '\\set set_password_app true\n'
+        printf '\\set app_password %s\n' "$APP_PASSWORD"
+        printf '\\set set_password_readonly true\n'
+        printf '\\set readonly_password %s\n' "$READONLY_PASSWORD"
+        cat "$repo_root/deploy/roles.sql"
+    } | "$ENGINE" exec --interactive --env "PGPASSWORD=$DB_PASSWORD" sre-tab-db \
+        psql --quiet --no-psqlrc --set=ON_ERROR_STOP=1 \
+        --username sretab --dbname sretab
 }
 
 step "Preparing $NET"
@@ -112,10 +197,30 @@ until "$ENGINE" exec sre-tab-db pg_isready --quiet --username=sretab --dbname=sr
 done
 echo "PostgreSQL is accepting connections (read-only rootfs, 5 capabilities)."
 
+step "Installing the three least-privilege roles"
+# Before the migrations, not after: the ownership sweep in roles.sql exists for
+# tables the superuser created before the roles did, and there are none here.
+# Applying it first means sretab_migrate is the role that runs every
+# CREATE TABLE from the start — the post-cutover steady state — and every table
+# it creates picks up sretab_app's and sretab_readonly's grants from
+# ALTER DEFAULT PRIVILEGES rather than from the one-off GRANT ON ALL TABLES.
+# That is the mechanism most likely to be silently misconfigured, because
+# naming the wrong role in FOR ROLE applies without error and simply never
+# fires, so the whole run below depends on it having worked.
+apply_roles
+for role in sretab_migrate sretab_app sretab_readonly; do
+    attrs=$(psql_db --command \
+        "SELECT rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls \
+         FROM pg_catalog.pg_roles WHERE rolname = '$role'")
+    [ "$attrs" = "f" ] || fail "$role is not a plain login role: $attrs"
+done
+echo "  sretab_migrate, sretab_app, and sretab_readonly exist, none privileged"
+
 step "Running migrations"
-# The same command deploy/quadlet/sre-tab-migrate.container runs.
+# The same command deploy/quadlet/sre-tab-migrate.container runs, as the role
+# it will run as after the cutover.
 "$ENGINE" run --rm --name sre-tab-migrate --network "$NET" \
-    --env "DATABASE_URL=$DATABASE_URL" \
+    --env "DATABASE_URL=$MIGRATE_DATABASE_URL" \
     --read-only --tmpfs /tmp:rw,nosuid,nodev,size=64M \
     --security-opt=no-new-privileges --cap-drop all \
     --user 10001:10001 --pids-limit 64 \
@@ -128,6 +233,80 @@ tables=$(psql_db --command \
     "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" | tr -d ' ')
 echo "Schema at revision $revision with $tables tables in public."
 [ "$tables" -ge 12 ] || fail "expected at least 12 tables, found $tables"
+
+# Owned by the role that created them, which is what lets a future migration
+# ALTER or DROP them: PostgreSQL has no GRANT-able ALTER or DROP on a table,
+# only ownership. A table owned by anyone else here means the migration
+# container connected as the wrong role.
+foreign=$(psql_db --command \
+    "SELECT count(*) FROM pg_catalog.pg_class c \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     WHERE n.nspname = 'public' AND c.relkind = 'r' \
+       AND pg_catalog.pg_get_userbyid(c.relowner) <> 'sretab_migrate'" | tr -d ' ')
+[ "$foreign" -eq 0 ] || fail "$foreign tables in public are not owned by sretab_migrate"
+echo "  every table owned by sretab_migrate"
+
+step "The roles can do what deploy/ROLES.md says, and nothing more"
+# The assertions ROLES.md's "Verification" section made by hand. They live
+# here so that widening a role by accident fails CI, rather than leaving that
+# document quietly wrong.
+
+# The mechanism the whole finding turns on: COPY ... TO PROGRAM executes a
+# command on the database server, and a superuser may. PostgreSQL gates it
+# behind membership of pg_execute_server_program, which roles.sql grants to
+# nobody — so this is refused by default, and the assertion is that it stays
+# that way for the DDL role as much as for the other two.
+assert_refused "sretab_app COPY ... TO PROGRAM" 'pg_execute_server_program' \
+    psql_as sretab_app "$APP_PASSWORD" \
+    --command "COPY (SELECT 1) TO PROGRAM 'touch /tmp/smoke-escalation'"
+assert_refused "sretab_migrate COPY ... TO PROGRAM" 'pg_execute_server_program' \
+    psql_as sretab_migrate "$MIGRATE_PASSWORD" \
+    --command "COPY (SELECT 1) TO PROGRAM 'touch /tmp/smoke-escalation'"
+assert_refused "sretab_readonly COPY ... TO PROGRAM" 'pg_execute_server_program' \
+    psql_as sretab_readonly "$READONLY_PASSWORD" \
+    --command "COPY (SELECT 1) TO PROGRAM 'touch /tmp/smoke-escalation'"
+
+assert_refused "sretab_app CREATE TABLE" 'permission denied for schema public' \
+    psql_as sretab_app "$APP_PASSWORD" \
+    --command "CREATE TABLE smoke_app_ddl (id int)"
+assert_refused "sretab_readonly INSERT" 'permission denied for table sources' \
+    psql_as sretab_readonly "$READONLY_PASSWORD" \
+    --command "INSERT INTO sources (slug, name, feed_url, website_url) \
+               VALUES ('smoke', 'smoke', 'https://example.com/feed', 'https://example.com/')"
+
+# The other half: a table sretab_migrate creates is usable by the other two
+# immediately, with no GRANT anywhere in this block. That is
+# ALTER DEFAULT PRIVILEGES FOR ROLE sretab_migrate firing — the piece most
+# likely to be silently misconfigured, because naming the wrong role there
+# applies without error and then never does anything.
+defaults_hint="ALTER DEFAULT PRIVILEGES FOR ROLE sretab_migrate is not firing"
+psql_as sretab_migrate "$MIGRATE_PASSWORD" \
+    --command "CREATE TABLE smoke_defaults (id serial primary key, note text)" >/dev/null \
+    || fail "sretab_migrate cannot CREATE TABLE, which is the one thing it is for"
+psql_as sretab_app "$APP_PASSWORD" \
+    --command "INSERT INTO smoke_defaults (note) VALUES ('written-by-app')" >/dev/null \
+    || fail "sretab_app cannot INSERT into a table sretab_migrate just created: $defaults_hint"
+read_back=$(psql_as sretab_readonly "$READONLY_PASSWORD" \
+    --command "SELECT note FROM smoke_defaults WHERE id = 1" | tr -d ' ')
+[ "$read_back" = "written-by-app" ] \
+    || fail "sretab_readonly read '$read_back' from a table sretab_migrate just created: $defaults_hint"
+# The sequence behind the SERIAL key, not only the table: USAGE is what makes
+# the implicit nextval() on INSERT work above, and SELECT is what pg_dump
+# needs from sretab_readonly to emit a setval() for it.
+seq_value=$(psql_as sretab_readonly "$READONLY_PASSWORD" \
+    --command "SELECT last_value FROM smoke_defaults_id_seq" | tr -d ' ')
+[ "$seq_value" = "1" ] \
+    || fail "sretab_readonly cannot read a new sequence's value ('$seq_value'): $defaults_hint"
+psql_as sretab_app "$APP_PASSWORD" \
+    --command "UPDATE smoke_defaults SET note = 'updated' WHERE id = 1" >/dev/null \
+    || fail "sretab_app cannot UPDATE a table sretab_migrate just created: $defaults_hint"
+psql_as sretab_app "$APP_PASSWORD" \
+    --command "DELETE FROM smoke_defaults WHERE id = 1" >/dev/null \
+    || fail "sretab_app cannot DELETE from a table sretab_migrate just created: $defaults_hint"
+psql_as sretab_migrate "$MIGRATE_PASSWORD" \
+    --command "DROP TABLE smoke_defaults" >/dev/null \
+    || fail "sretab_migrate cannot DROP a table it owns"
+echo "  a new table from sretab_migrate is writable by sretab_app and readable by sretab_readonly"
 
 step "Publishing frontend assets"
 "$ENGINE" run --rm --network "$NET" \
@@ -143,7 +322,7 @@ start_app() {
     # by its absence — see the note in that unit.
     "$ENGINE" rm --force sre-tab-app >/dev/null 2>&1 || true
     "$ENGINE" run --detach --name sre-tab-app --network "$NET" \
-        --env "DATABASE_URL=$DATABASE_URL" \
+        --env "DATABASE_URL=$APP_DATABASE_URL" \
         --env "SESSION_SECRET=smoke-only-not-a-secret" \
         --env "APP_BASE_URL=http://127.0.0.1:$PORT" \
         --env "LOG_JSON=true" \
@@ -246,6 +425,24 @@ reseeded=$(psql_db --command "SELECT count(*) FROM sources" | tr -d ' ')
 [ "$reseeded" -eq 7 ] || fail "re-seeding changed the source count to $reseeded"
 echo "  7 sources, 11 topics, all topiced, seed is idempotent"
 
+step "Session sweep, as the application role"
+# deploy/quadlet/sre-tab-prune-sessions.container, run the way it runs: the
+# application image, the DML role, a read-only rootfs and no capabilities. It
+# is a DELETE on one table, so it shares sretab_app rather than getting DDL
+# rights it has no use for. Nothing has signed in here, so the sweep is empty
+# — the assertion is on what it says, because an empty sweep and a sweep that
+# never reached the database both exit zero.
+prune_output=$("$ENGINE" run --rm --name sre-tab-prune-sessions --network "$NET" \
+    --env "DATABASE_URL=$APP_DATABASE_URL" \
+    --read-only --tmpfs /tmp:rw,nosuid,nodev,size=16M \
+    --security-opt=no-new-privileges --cap-drop all \
+    --user 10001:10001 --pids-limit 64 \
+    "$IMAGE" sre-tab sessions prune 2>&1)
+printf '%s\n' "$prune_output"
+printf '%s' "$prune_output" | grep -q 'no dead sessions' \
+    || fail "the session sweep did not report an empty sweep: $prune_output"
+echo "  sre-tab sessions prune ran as sretab_app and swept nothing"
+
 step "Operator CLI refuses a target the fetcher would refuse"
 # Acceptance criterion 5 at configuration time: no DNS, no socket, and the
 # reason reaches the operator now rather than as a failing source later.
@@ -306,15 +503,27 @@ echo "  app-set headers survive the proxy, static headers do not leak onto it"
 step "Backup"
 # A row that only exists in the dump, so the restore proves data round-trips
 # rather than merely rebuilding an empty schema.
-psql_db --command \
-    "CREATE TABLE smoke_marker (id int primary key, note text); \
-     INSERT INTO smoke_marker VALUES (1, 'present-before-backup')" >/dev/null
+#
+# Created by sretab_migrate and written by sretab_app, the two roles that
+# would create and write it in production — not by the superuser. A table the
+# superuser creates after roles.sql has run carries no grants for the other
+# three at all (default privileges are FOR ROLE sretab_migrate), so the
+# read-only backup below would fail on it, which is the correct behaviour and
+# would be a misleading way to fail this test.
+psql_as sretab_migrate "$MIGRATE_PASSWORD" \
+    --command "CREATE TABLE smoke_marker (id int primary key, note text)" >/dev/null
+psql_as sretab_app "$APP_PASSWORD" \
+    --command "INSERT INTO smoke_marker VALUES (1, 'present-before-backup')" >/dev/null
 
+# As sretab_readonly: the backup unit's post-cutover credential. This is also
+# the assertion that the role's sequence grants are right — pg_dump emits a
+# setval() per sequence and fails outright without SELECT on them, so a
+# tables-only read role produces no backup rather than a subtly wrong one.
 "$ENGINE" run --rm --network "$NET" \
     --volume "$backups:/backups:rw" \
     --volume "$repo_root/deploy/scripts/backup.sh:/usr/local/bin/sre-tab-backup:ro" \
-    --env PGHOST=sre-tab-db --env PGUSER=sretab --env PGDATABASE=sretab \
-    --env "PGPASSWORD=$DB_PASSWORD" \
+    --env PGHOST=sre-tab-db --env PGUSER=sretab_readonly --env PGDATABASE=sretab \
+    --env "PGPASSWORD=$READONLY_PASSWORD" \
     --env BACKUP_DIR=/backups --env BACKUP_KEEP_DAYS=14 \
     --read-only --tmpfs /tmp:rw,nosuid,nodev,size=64M \
     --security-opt=no-new-privileges --cap-drop all \
@@ -326,14 +535,22 @@ dump=$(find "$backups" -maxdepth 1 -name 'sretab-*.dump' | head -1)
 [ -f "$dump.sha256" ] || fail "backup.sh produced no checksum sidecar"
 
 step "Destroying the data the restore must bring back"
-psql_db --command "DROP TABLE smoke_marker" >/dev/null
+# Dropped by its owner, which is the only role that can: no GRANT confers
+# DROP on a table.
+psql_as sretab_migrate "$MIGRATE_PASSWORD" --command "DROP TABLE smoke_marker" >/dev/null
 psql_db --command "SELECT to_regclass('public.smoke_marker') IS NULL" | grep -q t \
     || fail "smoke_marker survived the drop"
 echo "  smoke_marker dropped"
 
 step "Restore"
-# The operator-facing script, unmodified, on the path an operator would take.
-PGPASSWORD="$DB_PASSWORD" "$repo_root/deploy/scripts/restore.sh" \
+# The operator-facing script, unmodified, on the path an operator would take —
+# and with the split credential it now takes by default: PGPASSWORD is the
+# superuser's, used only for DROP/CREATE DATABASE, while SRE_TAB_RESTORE_URL
+# carries sretab_migrate's, which is what pg_restore itself connects as. On
+# the deployment host those come from podman secrets instead; here they are
+# environment variables, which is the documented --engine docker path.
+PGPASSWORD="$DB_PASSWORD" SRE_TAB_RESTORE_URL="$MIGRATE_DATABASE_URL" \
+    "$repo_root/deploy/scripts/restore.sh" \
     --engine "$ENGINE" --image "$PG_IMAGE" --network "$NET" \
     --no-systemd --yes "$dump"
 
@@ -344,6 +561,25 @@ restored_revision=$(psql_db --command "SELECT version_num FROM alembic_version" 
 [ "$restored_revision" = "$revision" ] || \
     fail "alembic_version changed across the restore: $revision -> $restored_revision"
 echo "  smoke_marker restored, schema still at $restored_revision"
+
+# The restore dropped the database, and every grant and default privilege in
+# it went too. restore.sh re-applies roles.sql to the new database before
+# pg_restore runs, so the roles come back with it; without that the
+# application would return to a database it cannot read, and the health check
+# below is not a strong enough test of that on its own — it reconnects lazily.
+restored_owner=$(psql_db --command \
+    "SELECT pg_catalog.pg_get_userbyid(relowner) FROM pg_catalog.pg_class \
+     WHERE oid = 'public.smoke_marker'::regclass" | tr -d ' ')
+[ "$restored_owner" = "sretab_migrate" ] \
+    || fail "the restored smoke_marker is owned by $restored_owner, not sretab_migrate"
+restored_note=$(psql_as sretab_app "$APP_PASSWORD" \
+    --command "SELECT note FROM smoke_marker WHERE id = 1" | tr -d ' ')
+[ "$restored_note" = "present-before-backup" ] \
+    || fail "sretab_app cannot read the restored database: '$restored_note'"
+assert_refused "sretab_app CREATE TABLE, after the restore" \
+    'permission denied for schema public' \
+    psql_as sretab_app "$APP_PASSWORD" --command "CREATE TABLE smoke_app_ddl (id int)"
+echo "  the restored database is owned and privileged the same way it was"
 
 step "Application recovers against the restored database"
 attempt=0
