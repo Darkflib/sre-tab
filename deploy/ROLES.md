@@ -338,14 +338,24 @@ follows is worth more than the cutover itself.
   silent until the table grew.
 - **The rollback was executed, not described** — see
   "[Rollback](#rollback)".
+- **`deploy/README.md` was then executed rather than proofread**, on a second
+  wipe of the same host:
+  `python3 .github/scripts/run-doc-examples.py deploy/README.md --root .`
+  runs every `docs:run` block in document order, which now includes the
+  database-first ordering the roles impose. It completed, and the state it
+  left behind had `sretab_app` as the only role connected to the database.
 
-Two things the run contradicted, both now fixed rather than only noted.
+Three things the run contradicted, all now fixed rather than only noted.
 `install.sh --start` checked for four secrets that predate the cutover and
 none of the three the units now need, so it would have passed and then
-watched systemd fail; and `smoke.sh`, despite running as the three roles,
-never opens a file under `deploy/quadlet`, so a reverted cutover would have
-sailed through it. Both are gates now, and both were watched failing on
-purpose first.
+watched systemd fail. `smoke.sh`, despite running as the three roles, never
+opens a file under `deploy/quadlet`, so a reverted cutover would have sailed
+through it. And the runbook's own "which role is connected?" check queried
+`pg_stat_activity` without excluding `pg_backend_pid()`, so the superuser
+`psql` asking the question counted itself and the answer always contained
+`sretab` — a false alarm on the single check the whole procedure turns on,
+found by running the document rather than reading it. The first two are gates
+now, and both were watched failing on purpose first.
 
 <a id="cutover-procedure"></a>
 ## Cutover procedure — executed

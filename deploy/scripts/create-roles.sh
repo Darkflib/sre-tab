@@ -242,9 +242,10 @@ so this took effect for the next start and not for the current one. Verify:
   podman exec $container psql -U $db_user -d $db_name -c '\du sretab_*'
   podman secret ls | grep sre-tab-
 
-  # which roles are actually connected right now
+  # which roles are actually connected right now. pg_backend_pid() excludes
+  # this psql, which connects as $db_user and would otherwise count itself.
   podman exec $container psql -U $db_user -d $db_name -c \\
-    "SELECT usename, count(*) FROM pg_stat_activity WHERE datname = '$db_name' GROUP BY usename"
+    "SELECT usename, count(*) FROM pg_stat_activity WHERE datname = '$db_name' AND pid <> pg_backend_pid() GROUP BY usename"
 
 On a host that has not been cut over yet, that last query still answers
 "$db_user" and the ordered procedure to change it is in deploy/README.md,

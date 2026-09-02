@@ -451,13 +451,20 @@ connected?* Ask the database, not the unit file:
 
 ```bash
 sudo podman exec sre-tab-db psql -U sretab -d sretab -c \
-  "SELECT usename, count(*) FROM pg_stat_activity WHERE datname = 'sretab' GROUP BY usename ORDER BY 1"
+  "SELECT usename, count(*) FROM pg_stat_activity
+    WHERE datname = 'sretab' AND pid <> pg_backend_pid()
+    GROUP BY usename ORDER BY 1"
 ```
 
-**Good:** `sretab_app` with a handful of connections, and **no `sretab`**.
-Seeing `sretab` here means a container is still running on the old credential
-— almost always because step 5 was run before step 4, so `install.sh` had not
-yet staged the new unit.
+**Good:** `sretab_app` and nothing else. Seeing `sretab` means a container is
+still running on the old credential — almost always because step 5 was run
+before step 4, so `install.sh` had not yet staged the new unit.
+
+`pid <> pg_backend_pid()` is not tidiness: this `psql` connects as the
+superuser, so without it the query counts itself and always reports one
+`sretab` connection. That is a false alarm on the one check the whole
+procedure turns on, and it is in here because the first draft of this runbook
+had it and the run caught it.
 
 And the migration unit, which has already run by now:
 
