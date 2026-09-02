@@ -26,7 +26,6 @@ that.
   - Cut the deployment over to the three least-privilege database roles —
     the roles exist and are verified; nothing uses them yet.
   - The OAuth state cookie can be overwritten from a sibling subdomain.
-  - `upsert_user` has no conflict handling for a concurrent first sign-in.
 - [API surface](#api-surface)
   - Serve `/api/v1/openapi.json` from the committed file in
     `deploy/Caddyfile`, not from the running application.
@@ -336,6 +335,45 @@ count at all.
   place to put the equivalent is already built. Negligible at three
   operators — tens of rows a year — which is the only reason it is not
   done.
+- **`upsert_user` is select-then-insert with no conflict handling** —
+  **landed.** The lookup, the insert, and the profile refresh are one
+  `ON CONFLICT (github_id) DO UPDATE ... RETURNING` in
+  [app/auth/users.py](app/auth/users.py), on a new `upsert_returning` that
+  sits beside `insert_ignore` in
+  [app/services/upsert.py](app/services/upsert.py) and keeps the same
+  two-dialect split. There is no window between reading and writing because
+  there is no second statement, and the create path and the update path
+  stopped being two branches.
+
+  **The entry below names the wrong fix, and why it is wrong is the part
+  worth keeping.** It proposed insert-ignore followed by a select on
+  `github_id`, reasoning that the loser would read the winner's row rather
+  than raise. Measured against PostgreSQL 18 — one connection holding an
+  uncommitted insert, another signing in — that shape *does* work: DO
+  NOTHING's speculative insertion waits on the conflicting transaction, and
+  the follow-up `SELECT` takes a fresh snapshot that sees the committed
+  row. So the objection is not the one that first suggests itself, which is
+  that DO NOTHING takes no row lock and leaves the loser holding `None`.
+  It is quieter than that: the pairing is correct only because the
+  connection is at READ COMMITTED, which `create_db_engine` does not set
+  and no test asserts, and under REPEATABLE READ the same two statements
+  raise a serialization failure. DO UPDATE returns the surviving row from
+  the statement that resolved the conflict, so nothing about it turns on a
+  second snapshot, and it carries no `None` branch that can never be
+  reached and therefore never be tested.
+
+  Two things the work turned up. `users.updated_at`'s `onupdate=func.now()`
+  is an ORM-flush hook and does not reach a hand-written DO UPDATE set
+  clause, so the timestamp had to be set by hand or it would have frozen at
+  its insert value with nothing to say so. And the race needed a real
+  server to test at all: `tests/postgres/test_signin_race.py` holds an
+  uncommitted insert open on one connection while a thread signs in on
+  another, asserts the block against `pg_stat_activity` rather than against
+  a sleep, and was made to fail against the restored old body —
+  `UniqueViolation` on `uq_users_github_id` — before it was believed.
+
+  The entry below stands as written except for the fix it proposes.
+
 - **`upsert_user` is select-then-insert with no conflict handling.** Two
   concurrent first sign-ins for the same GitHub ID both find no row and
   both insert. `users.github_id` is `unique=True`, so the loser gets an

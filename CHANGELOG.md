@@ -106,6 +106,50 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A concurrent first sign-in no longer 500s one of the two callbacks.**
+  `upsert_user` was select-then-insert on `github_id`. Two sign-ins for one
+  GitHub account racing on that account's *first* sign-in both found no
+  row, both inserted, and the unique constraint handed the loser an
+  `IntegrityError`. The table was never at risk — the constraint did
+  exactly its job — but one of the two users got an error page. It is now a
+  single `ON CONFLICT (github_id) DO UPDATE ... RETURNING`, which folds the
+  profile refresh into the same statement, so the create path and the
+  update path stopped being two branches that have to be kept in step.
+
+  **The distinction worth remembering is DO NOTHING against DO UPDATE, and
+  the obvious argument for it turned out to be wrong.** ROADMAP.md proposed
+  reusing `insert_ignore` — `ON CONFLICT DO NOTHING` followed by a `SELECT`
+  — and the objection raised to that was that DO NOTHING takes no lock on
+  the conflicting row, so the loser would affect zero rows, still not see
+  the winner's uncommitted row, and fall out holding `None`. Measured
+  against PostgreSQL 18, that is not what happens: speculative insertion
+  waits on the conflicting transaction, and the follow-up `SELECT` is a
+  separate statement with a fresh snapshot, so it reads the committed row.
+  The pairing works. What is actually wrong with it is narrower and much
+  quieter — it works *because* the connection is at READ COMMITTED, which
+  nothing in `create_db_engine` sets and no test asserts, and under
+  REPEATABLE READ the same pair raises a serialization failure instead.
+  `DO UPDATE ... RETURNING` hands back the surviving row from the statement
+  that resolved the conflict, so there is no second snapshot for its
+  correctness to rest on, and no unreachable `None` branch whose only
+  correct handling would be a retry loop.
+
+  One finding fell out of this that would otherwise have shipped silently.
+  `users.updated_at` carries `onupdate=func.now()`, and that is an
+  ORM-flush hook: SQLAlchemy does not fold it into a hand-written
+  `on_conflict_do_update` set clause. Left out, the column freezes at its
+  insert value on every later sign-in and nothing complains. It is set
+  explicitly now, and the test guarding it back-dates the row first rather
+  than comparing two timestamps taken moments apart — SQLite's
+  `CURRENT_TIMESTAMP` has one-second resolution, so the naive version of
+  that test passes against the broken code.
+
+  The race test is in `tests/postgres/`, because two connections holding
+  write transactions open at once is precisely what SQLite cannot do. Both
+  guards were made to fail on purpose before being believed: the race test
+  against the restored select-then-insert body (`UniqueViolation` on
+  `uq_users_github_id`), and the timestamp test against an update mapping
+  with `updated_at` removed.
 - **The reason logged for a refused IPv4-mapped literal came from the
   interpreter rather than from the guard.** `classify_address` returned the
   first `ipaddress` predicate that matched, and which of those consult
