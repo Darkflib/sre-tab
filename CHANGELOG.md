@@ -185,6 +185,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   asserting the behaviour we want, so that whoever hardens `readCookie`
   gets an "expected to fail but passed" and deletes the markers.
 
+- **Host prerequisites, because a thin Debian install has no container
+  DNS.** `aardvark-dns` is a *Recommends* of Debian's `podman` package, so
+  a host built with `--no-install-recommends` has podman, has netavark, and
+  cannot resolve one container from another — which is how every hop in
+  this stack works: five units reach the database as `sre-tab-db`, and
+  Caddy's upstream is `sre-tab-app:8000`. Podman does not fail, it warns
+  once (`aardvark-dns binary not found, container dns will not be
+  enabled`) and carries on, so the first symptom is a psycopg "could not
+  translate host name" traceback out of `sre-tab-migrate.service`, which
+  reads like a database that is down. Observed on a fresh Debian 13 host
+  with podman 5.4.2, where `deploy/scripts/smoke.sh` failed the same way at
+  its first cross-container step.
+
+  `deploy/README.md`'s host preparation now names both packages and
+  installs them under a `docs:run` marker, so the throwaway host that
+  executes that document bootstraps itself rather than being assumed.
+  `install.sh --start` refuses to start the stack when podman reports no
+  aardvark-dns, before the timers are enabled, and `smoke.sh` refuses
+  before it creates its network, beside the Quadlet-credential check that
+  already runs there for the same reason — a two-second question whose
+  answer, unasked, arrives three minutes in as a connection traceback.
+  Under `CONTAINER_ENGINE=docker` the harness says the engine resolves
+  names itself rather than skipping quietly. The check asks
+  `podman info` for the path it resolved rather than looking on `PATH`,
+  where the binary never is, since Debian puts it under `/usr/lib/podman`
+  and other distributions under `/usr/libexec/podman`. A podman that
+  cannot answer that query at all warns rather than refuses: a guard
+  deciding on evidence it does not have is the wrong failure, and one that
+  says nothing is the green check that checks nothing. Every branch of both
+  checks, the harness's Docker path included, was exercised against a
+  stubbed engine before being believed.
+
 ### Changed
 
 - **`verify-image.sh` now accepts the set of refs this workflow signs from,

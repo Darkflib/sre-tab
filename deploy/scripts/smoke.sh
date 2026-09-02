@@ -229,6 +229,51 @@ grep -qxF 'Environment=POSTGRES_USER=sretab' \
     || fail "sre-tab-db.container no longer bootstraps the sretab superuser"
 echo "  sre-tab-db.container still bootstraps the superuser, which owns the cluster"
 
+step "The host can resolve one container from another"
+# Also before a single container starts, and for the same reason as the step
+# above: this is a two-second question whose answer, unasked, surfaces three
+# minutes in as a SQLAlchemy connection traceback.
+#
+# aardvark-dns is a *Recommends* of Debian's podman package rather than a
+# dependency, so a host built with --no-install-recommends has podman, has
+# netavark, and has no container DNS at all. Measured on a fresh Debian 13
+# host with podman 5.4.2, where this harness failed at its first
+# cross-container step. Nothing announces it — podman warns once,
+#
+#   level=warning msg="aardvark-dns binary not found, container dns will not be enabled"
+#
+# and carries on. Every container below then starts normally and the first
+# one to reach another by name dies instead; all three role URLs above name
+# the host `sre-tab-db`, and the Caddyfile's upstream is `sre-tab-app:8000`,
+# so that is the whole run.
+#
+# Asked of podman rather than looked for on PATH, where it never is: Debian
+# installs the binary under /usr/lib/podman, other distributions under
+# /usr/libexec/podman, and containers.conf's helper_binaries_dir can move it
+# anywhere. podman reports the path it actually resolved, and reports it
+# empty when it resolved none.
+case "${ENGINE##*/}" in
+    podman*)
+        if dns_helper=$("$ENGINE" info --format '{{.Host.NetworkBackendInfo.DNS.Path}}' 2>/dev/null); then
+            [ -n "$dns_helper" ] || fail "podman cannot find aardvark-dns, so containers on $NET will not resolve each other by name and every step below would fail at its first cross-container call — install it (on Debian, sudo apt-get install aardvark-dns) and run this again"
+            echo "  aardvark-dns: $dns_helper"
+        else
+            # Not a refusal. A podman whose `info` does not carry that field
+            # is not the same thing as a podman without container DNS, and a
+            # check that cannot tell them apart should not pick one. Saying
+            # nothing is the option that is actually wrong — that is the
+            # green check that checks nothing.
+            echo "  WARNING: could not ask $ENGINE where aardvark-dns is; container DNS is unverified" >&2
+        fi
+        ;;
+    *)
+        # Docker runs its own resolver on a user-defined network and has no
+        # aardvark-dns to be missing, so there is nothing here to check
+        # rather than a check being skipped quietly.
+        echo "  $ENGINE is not podman: container DNS is the engine's own"
+        ;;
+esac
+
 step "Preparing $NET"
 "$ENGINE" rm --force sre-tab-web sre-tab-app sre-tab-db >/dev/null 2>&1 || true
 "$ENGINE" network rm --force "$NET" >/dev/null 2>&1 || true

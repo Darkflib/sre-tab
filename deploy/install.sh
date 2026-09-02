@@ -110,6 +110,63 @@ fi
 systemctl daemon-reload
 
 if [ "$start_services" = true ]; then
+    # Checked before the secrets because it is the one precondition here that
+    # no script in this repository can create, and because it is the only one
+    # whose absence does not announce itself. aardvark-dns is a *Recommends*
+    # of Debian's podman package rather than a dependency, so a host built
+    # with --no-install-recommends has podman, has netavark, and has no
+    # container DNS at all. podman mentions it once, as a warning, and carries
+    # on:
+    #
+    #   level=warning msg="aardvark-dns binary not found, container dns will not be enabled"
+    #
+    # Every container then starts normally and none of them can resolve
+    # another by name, which is the only way anything here reaches anything
+    # else: five units on sre-tab.network connect to the host `sre-tab-db`,
+    # and the Caddyfile's upstream is `sre-tab-app:8000`. Measured on a fresh
+    # Debian 13 host with podman 5.4.2, the first symptom is a psycopg "could
+    # not translate host name" traceback out of sre-tab-migrate.service —
+    # which reads like a database that is down, and is a host that was
+    # installed thinly.
+    #
+    # Asked of podman rather than looked for on PATH, where it never is:
+    # Debian installs the binary under /usr/lib/podman, other distributions
+    # under /usr/libexec/podman, and containers.conf's helper_binaries_dir can
+    # move it anywhere. podman reports the path it actually resolved, and
+    # reports it empty when it resolved none.
+    if dns_helper=$(podman info --format '{{.Host.NetworkBackendInfo.DNS.Path}}' 2>/dev/null); then
+        if [ -z "$dns_helper" ]; then
+            cat >&2 <<'EOF'
+error: podman cannot find aardvark-dns, so containers on sre-tab.network
+       will not resolve each other by name — and every hop in this stack is
+       by name: five units reach the database as `sre-tab-db`, and Caddy
+       reaches the application as `sre-tab-app`.
+
+           sudo apt-get install aardvark-dns
+
+       It is a Recommends of Debian's podman package, so a host installed
+       with --no-install-recommends does not have it. Nothing else about
+       such a host is wrong: podman starts every container, and they simply
+       cannot see one another.
+EOF
+            exit 1
+        fi
+    else
+        # Two things reach here: a podman whose `info` does not carry that
+        # field, and no podman at all. Neither is grounds to refuse — the
+        # check would be deciding on evidence it does not have — and neither
+        # is grounds to say nothing, which is how a guard becomes a green
+        # check that checked nothing.
+        cat >&2 <<'EOF'
+warning: could not ask podman where aardvark-dns is, so this installer has
+         not checked for it. Without it containers do not resolve each other
+         by name and nothing here reaches the database. Check by hand before
+         concluding the stack is healthy:
+
+             podman info --format '{{.Host.NetworkBackendInfo.DNS.Path}}'
+EOF
+    fi
+
     for secret in sre-tab-postgres-password sre-tab-database-url \
                   sre-tab-session-secret sre-tab-github-client-secret; do
         if ! podman secret exists "$secret" 2>/dev/null; then

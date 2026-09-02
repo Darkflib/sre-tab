@@ -3,6 +3,57 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+## 2026-09-02 — A host with podman, and no container DNS
+
+**`aardvark-dns` is a *Recommends* of Debian's podman package, and a
+Recommends is not installed on a host built with
+`--no-install-recommends`.** ny01 — Debian 13, podman 5.4.2 — had podman and
+netavark and not it. `deploy/scripts/smoke.sh` failed at its first
+cross-container step with a SQLAlchemy connection traceback, and the only
+clue anywhere was a line podman prints and then carries on past:
+
+```
+level=warning msg="aardvark-dns binary not found, container dns will not be enabled"
+```
+
+`sudo apt-get install aardvark-dns` fixed it.
+
+**Not a test-harness problem.** Every hop in the deployed stack is by name —
+five units on `sre-tab.network` reach the database as `sre-tab-db`, and the
+Caddyfile's upstream is `sre-tab-app:8000` — so the same host would have
+taken `install.sh --start` to a `sre-tab-migrate.service` failing on
+psycopg's "could not translate host name", which reads like a database that
+is down rather than a package that was never installed.
+
+**Both halves, because neither is enough on its own.** `deploy/README.md`'s
+host preparation now names the two packages and installs them under a
+`docs:run` marker, so the throwaway Debian host that executes that document
+bootstraps itself instead of being assumed ready — which is why the document
+could not have caught this before, having never installed podman either. And
+`install.sh --start` refuses, before the timers are enabled, because a note
+only helps the reader who reads it, and this deployment's other first-deploy
+trap is documented at length and *also* fails closed.
+
+The check asks `podman info --format '{{.Host.NetworkBackendInfo.DNS.Path}}'`
+rather than looking for the binary: Debian installs it under
+`/usr/lib/podman`, other distributions under `/usr/libexec/podman`,
+`containers.conf` can move it, and it is on `PATH` nowhere. A podman that
+cannot answer that query warns instead of refusing — refusing would be the
+guard deciding on evidence it does not have — and warns rather than passing
+quietly, which is the shape of the six green checks this repository has
+already had to go back and fix. Resolved path, empty path, and unanswerable
+query were each run against a stubbed `podman` before the branch was
+believed.
+
+**Unverified here, and settled by the next CI run:** the field name in that
+template was not run against a real podman — there is none on the development
+host — so if it is wrong the warning branch fires and the refusal never does.
+The `smoke.sh` preflight is what closes this cheaply: CI runs that script
+under podman on a runner where container DNS demonstrably works, so the line
+it prints says which. `aardvark-dns: /usr/...` means the template is right;
+`WARNING: could not ask podman ...` means the field moved and both copies
+need the real name.
+
 ## 2026-09-01 — The review's remaining findings, filed
 
 A production-readiness review of the tree and of the repository's own

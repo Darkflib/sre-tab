@@ -67,6 +67,49 @@ new API is serving an old bundle. One image, one digest, no skew.
 
 ## Host preparation
 
+Two packages, and the second is the one that gets missed:
+
+<!-- docs:run -->
+```bash
+sudo apt-get update
+sudo apt-get install -y podman aardvark-dns
+```
+
+`aardvark-dns` is a *Recommends* of Debian's `podman`, not a dependency, so a
+host built with `--no-install-recommends` — or one whose apt configuration
+turns recommends off across the board — ends up with podman, with netavark,
+and with no container DNS at all. **Nothing announces it.** Podman says so
+once, as a warning, and carries on:
+
+```
+level=warning msg="aardvark-dns binary not found, container dns will not be enabled"
+```
+
+Every container then starts normally and none of them can resolve another by
+name, which is the only way anything here reaches anything else: five units
+on `sre-tab.network` connect to the database as `sre-tab-db`, and the
+Caddyfile's upstream is `sre-tab-app:8000`. So the symptom is not a DNS error
+but a psycopg one, out of `sre-tab-migrate.service`, reading like a database
+that is down. Measured on a fresh Debian 13 host with podman 5.4.2, where
+`deploy/scripts/smoke.sh` failed exactly that way at its first
+cross-container step.
+
+Both scripts now refuse rather than proceed: `install.sh --start` before it
+enables the timers, and `smoke.sh` before it creates its network. A thinly
+installed host is caught at install time rather than at the first request.
+To ask a host directly:
+
+```bash
+podman info --format '{{.Host.NetworkBackendInfo.DNS.Path}}'
+```
+
+Empty means missing. The path itself varies — Debian installs the binary
+under `/usr/lib/podman`, other distributions under `/usr/libexec/podman`, and
+`containers.conf` can move it — which is why both that command and the
+installer ask podman rather than looking on `PATH`, where it never is.
+
+Then install:
+
 <!-- docs:run -->
 ```bash
 sudo deploy/install.sh
