@@ -28,6 +28,18 @@ Volume=sre-tab-assets.volume:/srv/www:ro
 
 # Loopback only. TLS is terminated by the host's existing proxy or load
 # balancer; change this deliberately if Caddy must be directly reachable.
+#
+# The host port is the DEFAULT, not the policy. 8080 is taken on plenty of
+# hosts, so `SRE_TAB_WEB_PORT` in /etc/sre-tab/install.env moves it, and
+# deploy/install.sh expresses that as a Quadlet drop-in at
+# sre-tab-web.container.d/10-published-port.conf rather than by editing this
+# line. Do not edit it on a host: this file is copied over /etc on every
+# install, so the edit survives only until the next run, and it makes the
+# next `git pull` a conflict. deploy/README.md has the reasoning.
+#
+# The container side is not configurable and is not meant to be — the site
+# block in deploy/Caddyfile, the image's healthcheck, and this line have to
+# agree, and only one of the three is anybody's business on a host.
 PublishPort=127.0.0.1:8080:8080
 
 ReadOnly=true

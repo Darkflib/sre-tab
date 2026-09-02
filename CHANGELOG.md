@@ -6,6 +6,93 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The published host port is an operator setting, because on the reference
+  host it was already a local fork of a tracked file.** `sre-tab-web.container`
+  hardcoded `PublishPort=127.0.0.1:8080:8080`, 8080 was taken on the host it
+  was deployed to, and the only way to say so was to edit that file in the
+  checkout — which `git checkout`, `git stash`, and `git reset --hard` each
+  discard without a word, and which makes the next upstream change to that
+  file a merge conflict. Leaving the edit in `/etc` was not available either:
+  `install.sh` copies every tracked Quadlet over `/etc/containers/systemd` on
+  every run, so the fork had nowhere to live but the checkout. Which port a
+  service appears on is host policy, and there was no way to express it.
+
+  `SRE_TAB_WEB_PORT` in `/etc/sre-tab/install.env` is that way. The file's
+  absence is the default, so a host that never creates one is byte for byte
+  the host it was before — and commenting the line out and re-running returns
+  a host that had one, because the installer removes what it wrote rather than
+  leaving it behind. Only the **host** side moves: the container still listens
+  on 8080, where the Caddyfile's site block, the image's healthcheck, and the
+  right-hand number in `PublishPort=` have to agree with each other and where
+  a host has no stake in the value they agree on.
+
+  **It is a Quadlet drop-in, not a rewrite of the unit.** Quadlet merges
+  `<unit>.container.d/*.conf` exactly as systemd merges a `.service.d`
+  drop-in — the mechanism this installer already uses one layer up to give
+  `sre-tab-backup.service` its `OnSuccess=` — so `sre-tab-web.container` is
+  still installed byte for byte from the repository and `diff` between
+  `deploy/quadlet` and `/etc/containers/systemd` stays empty on a host that
+  has moved its port. The load-bearing line in that drop-in is the *empty*
+  `PublishPort=`: Quadlet honours systemd's list semantics, so without it the
+  generated `ExecStart` carries both ports and the old one stays open — the
+  half of "move the port" that a naive implementation misses, because the new
+  port works.
+
+  Three other mechanisms were measured and rejected, and the third is the one
+  worth recording. Quadlet does **not** expand variables: it copies
+  `PublishPort=127.0.0.1:${SRE_TAB_WEB_PORT}:8080` through to `--publish
+  127.0.0.1:${SRE_TAB_WEB_PORT}:8080` verbatim and `podman-system-generator
+  --dryrun` reports nothing wrong. systemd *would* then expand it from an
+  `EnvironmentFile=` under `[Service]`, mid-word substitution included — that
+  was measured working, on a throwaway unit, with the file absent and with it
+  naming a port — and it was rejected anyway, on the third case: an empty
+  assignment expands to `--publish 127.0.0.1::8080`, which podman accepts by
+  publishing on a random ephemeral port. Measured, `8080/tcp ->
+  127.0.0.1:37341`, with `systemctl start` exiting 0 and `systemctl --failed`
+  empty — the unit up, nothing complaining, and the front door somewhere
+  nobody is looking. It would also put the value beyond validation, since it
+  is read at container start rather than at install time. A `.service.d`
+  drop-in was the third: `PublishPort=` lands inside the generated
+  `ExecStart=`, so overriding it there means restating podman's whole command
+  line and re-deriving it after every podman upgrade.
+
+  The value is validated before anything is installed, so a bad one leaves the
+  host untouched rather than half-written: empty, `0`, `70000`, `8080x`, and
+  `08080` are each refused with the value quoted back and exit 2. A port below
+  1024 is accepted with a warning rather than refused — rootful podman can
+  bind one and the unit publishes on loopback, so there is no measurement here
+  that would justify a refusal — and the warning says what it is actually
+  worried about, which is that below 1024 is where the host's own listeners
+  live, the TLS proxy that forwards to this port included.
+
+### Fixed
+
+- **`restore.sh` polled a hardcoded 8080 for its post-restore health check.**
+  On a host that had moved the published port, a restore that had succeeded
+  in every respect ended by declaring the application unhealthy and exiting 1
+  — the failure looking exactly like the one thing a restore must never do
+  quietly. It now asks `podman port sre-tab-web 8080/tcp` which port the front
+  door is on, rather than reading `/etc/sre-tab/install.env`: that file is the
+  *next* install's intention, and this loop has to poll the port that is
+  published now.
+
+  **An unanswerable question now fails the check rather than falling back to
+  8080**, and the first version of this fix got that wrong in a way worth
+  recording. It warned and used 8080 anyway, on the reasoning that the
+  fallback could only fail closed. It cannot: the hosts that set
+  `SRE_TAB_WEB_PORT` are exactly the hosts where something else already owns
+  8080 — that is the only reason to move it — so on the one host where this
+  question matters, the fallback aims the health check at a *different
+  service*. Staged on the test host in that exact shape, with the front door
+  stopped and an unrelated 200-answering listener on 8080, the fallback
+  version printed `Waiting for the health check on 127.0.0.1:8080... Healthy.
+  Restore complete.` and exited 0 while nothing served the dashboard at all.
+  The refusal names what it could not determine and exits 1, saying plainly
+  that the database itself is restored and verified; the happy path on a moved
+  port still passes. Raised in review by CodeRabbit on #27.
+
 ### Changed
 
 - **`actions/attest-sbom` is deprecated; the SBOM attestation now uses
@@ -32,6 +119,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   failure, but it means the check answers "an SPDX document is attested"
   rather than "exactly this version is". A bogus predicate type is still
   refused, which is what keeps it an assertion.
+
+- **`deploy/README.md`'s verification steps ask the front door which port it
+  is on** instead of hardcoding 8080, in first start, in the roles cutover,
+  and in Operations. A runbook that names the number sends an operator who has
+  moved it to a port nothing serves, where a healthy deployment and a failed
+  one produce the same output — the exact shape of quiet wrongness the
+  executed-documentation gate exists to remove. `${port:?…}` rather than a
+  fallback to 8080, so a question that cannot be answered fails saying so
+  instead of being answered with a guess.
+
+  The document gained a `docs:run` block that proves the mechanism without
+  moving the running host's port: it stages an install into a temporary
+  `DESTDIR`, asserts the whole set of published ports is exactly the new one,
+  and asserts that removing the setting removes the drop-in.
+
+  **Its first draft was a guard that could not fail, and that is worth
+  recording rather than quietly fixing.** It ended `! grep -q -- '--publish
+  127.0.0.1:8080:8080' "$stage/dryrun"`, which reads as "assert the old port
+  is gone". Deleting the reset line from the installer on purpose produced an
+  `ExecStart` carrying both ports — the exact breakage the assertion existed
+  to catch — and the block still exited 0. POSIX says `set -e` is ignored for
+  a pipeline beginning with the `!` reserved word, so a `!`-prefixed assertion
+  is a comment with a trace line. It is now one equality against the whole set
+  of published ports, which says the same two things in a form the shell acts
+  on, and it was seen to go red on that same sabotage and on a second one that
+  stops the installer removing a stale drop-in.
 
 ## [1.1.0] - 2026-09-02
 

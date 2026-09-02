@@ -557,9 +557,62 @@ if [ "$use_systemd" = true ]; then
     echo "Starting the application..."
     systemctl start sre-tab-migrate.service
     systemctl start sre-tab.service
-    echo "Waiting for the health check..."
+
+    # Which port the front door is on, asked of the front door.
+    #
+    # This used to be the literal 8080, which is only the default — a host
+    # that has moved it with SRE_TAB_WEB_PORT would poll a port nothing
+    # serves and end a successful restore by declaring the application
+    # unhealthy. Caddy is untouched by a restore and is still running here,
+    # so it can simply be asked.
+    #
+    # Asked of the container rather than read out of /etc/sre-tab/install.env
+    # on purpose: that file is the *next* install's intention, and this loop
+    # has to poll the port that is published *now*. An operator who edited it
+    # and has not re-run the installer would otherwise send this check to the
+    # wrong port at the one moment it is being relied on.
+    web_port=$("$engine" port sre-tab-web 8080/tcp 2>/dev/null \
+        | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -1)
+
+    # No answer is a refusal, and NOT a fall back to 8080. This is the whole
+    # reason the question is asked at all.
+    #
+    # An earlier version of this warned and used 8080 anyway, reasoning that
+    # the fallback could only fail closed. It cannot. The hosts that set
+    # SRE_TAB_WEB_PORT are exactly the hosts where something else already owns
+    # 8080 — that is what the setting is for — so on the one host this
+    # question matters most, a fallback aims the health check at a DIFFERENT
+    # SERVICE. That service answers 200, the loop below is satisfied, and this
+    # script prints "Healthy." and exits 0 while the restored front door is
+    # not serving at all. Measured, not reasoned about: with sre-tab-web
+    # stopped and an unrelated listener on 8080, the fallback version reported
+    # a healthy restore.
+    #
+    # A restore that cannot verify the front door has to say so. It must not
+    # answer the question from somewhere else.
+    if [ -z "$web_port" ]; then
+        cat >&2 <<EOF
+error: sre-tab-web publishes no host port for 8080/tcp, so there is no
+       address to health-check, and this script will not guess one.
+
+       THE DATABASE IS RESTORED AND VERIFIED. That part finished above and
+       is not in doubt; what could not be confirmed is the front door.
+
+           systemctl status sre-tab-web.service
+           $engine port sre-tab-web
+
+       There is deliberately no fallback to 8080 here. On a host that moved
+       the published port because something else owns 8080 — which is the
+       only reason to move it — falling back would have health-checked that
+       other service and reported a healthy restore on its answer.
+EOF
+        exit 1
+    fi
+
+    echo "Waiting for the health check on 127.0.0.1:$web_port..."
     attempt=0
-    until curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/healthz >/dev/null; do
+    until curl --fail --silent --show-error \
+        "http://127.0.0.1:$web_port/api/v1/healthz" >/dev/null; do
         attempt=$((attempt + 1))
         if [ "$attempt" -ge 30 ]; then
             echo "error: the application did not become healthy after the restore" >&2

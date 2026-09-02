@@ -20,6 +20,12 @@ than editing the installed copies. Two files are the operator's and are
 never overwritten: /etc/sre-tab/app.env, seeded once from
 deploy/app.env.example, and /etc/sre-tab/alert.sh, which is never written
 at all — alert.sh.example is installed beside it to be copied and edited.
+
+One host-policy setting is read rather than installed:
+/etc/sre-tab/install.env, which is never created here either. Set
+SRE_TAB_WEB_PORT in it to publish the front door somewhere other than
+127.0.0.1:8080, and re-run. Only the host side moves; the container still
+listens on 8080.
 EOF
 }
 
@@ -60,6 +66,123 @@ systemd_dir="$install_root/etc/systemd/system"
 config_dir="$install_root/etc/sre-tab"
 backup_dir="$install_root/srv/sre-tab/backups"
 
+# --- The published host port ----------------------------------------------
+#
+# Read and validated here, before anything is written, so that a bad value
+# leaves the host exactly as it was rather than half-installed.
+#
+# Which host port the front door appears on is host policy, not a property of
+# this application, and it therefore cannot live in the repository. 8080 is a
+# collision waiting to happen on any host that does more than one thing, and
+# on the reference deployment it collided: the operator edited `PublishPort=`
+# in the tracked deploy/quadlet/sre-tab-web.container, which works, and which
+# survives exactly until the next `git checkout`, `git stash`, or `git reset
+# --hard` — and this installer copies that file over /etc on every run, so the
+# edit had nowhere else it could live. This setting is where it lives instead.
+#
+# Only the HOST side moves. The container still listens on 8080: the
+# Caddyfile's site block, the image's healthcheck, and the application's
+# upstream all name it, and none of the three is an operator's business.
+#
+# The file is read as a table of values, not sourced. Every other .env under
+# /etc/sre-tab is read by systemd as an `EnvironmentFile=`, which is not
+# shell; sourcing this one would make it the single file in that directory
+# whose contents run as root, and would make `SRE_TAB_WEB_PORT=$(…)` mean
+# something. The last assignment wins, which is systemd's rule for a file of
+# this shape.
+#
+# Read from $config_dir rather than from /etc/sre-tab literally, so that a
+# DESTDIR stage reads the tree it is staging into and not the host's live
+# configuration.
+web_port=8080
+web_port_set=false
+install_env="$config_dir/install.env"
+
+if [ -f "$install_env" ]; then
+    # The `x` prefix distinguishes "assigned nothing" from "never mentioned".
+    # sed prints nothing for the second and a bare `x` for the first, and the
+    # two mean different things: an operator who wrote `SRE_TAB_WEB_PORT=`
+    # got it wrong and should be told so, while one who wrote no such line
+    # asked for the default and should be left alone.
+    web_port_raw=$(sed -n 's/^[[:space:]]*SRE_TAB_WEB_PORT=/x/p' "$install_env" | tail -n 1)
+    if [ -n "$web_port_raw" ]; then
+        web_port_set=true
+        web_port=${web_port_raw#x}
+        # One surrounding pair of quotes, because systemd's EnvironmentFile
+        # accepts them and fingers that have written a dozen of those files
+        # will write them here too. Anything else is left exactly as found
+        # and fails validation below with the value quoted back.
+        case $web_port in
+            '"'*'"')
+                web_port=${web_port#'"'}
+                web_port=${web_port%'"'}
+                ;;
+            "'"*"'")
+                web_port=${web_port#"'"}
+                web_port=${web_port%"'"}
+                ;;
+        esac
+    fi
+fi
+
+if [ "$web_port_set" = true ]; then
+    # Refused here rather than left to fail later, and the "later" is the
+    # whole point. Quadlet generates a perfectly well-formed unit for
+    # `--publish 127.0.0.1:70000:8080` and `podman-system-generator --dryrun`
+    # exits 0 over it; podman refuses it at container start with `parsing host
+    # port: port numbers must be between 1 and 65535 (inclusive), got 70000`,
+    # which is during a restart, with the old container already gone. A value
+    # this installer cannot make sense of is a value it should not install.
+    web_port_ok=true
+    case $web_port in
+        # Empty, non-numeric, or leading zero. The last is in the list
+        # because `08080` is digits and is not a port anybody means, and
+        # because `test -ge` has no obligation to read it as decimal.
+        '' | *[!0-9]* | 0*) web_port_ok=false ;;
+    esac
+    # Length before magnitude: `test -ge` on a thirty-digit string is
+    # undefined rather than false, so the range check has to be handed
+    # something that fits in a long first.
+    if [ "$web_port_ok" = true ] && [ "${#web_port}" -gt 5 ]; then
+        web_port_ok=false
+    fi
+    if [ "$web_port_ok" = true ] && [ "$web_port" -gt 65535 ]; then
+        web_port_ok=false
+    fi
+
+    if [ "$web_port_ok" != true ]; then
+        cat >&2 <<EOF
+error: SRE_TAB_WEB_PORT in $install_env is '$web_port', which is not a port.
+
+       It must be a whole number from 1 to 65535, with no leading zero, and
+       it names the HOST side of the front door only — the container still
+       listens on 8080 whatever this says.
+
+       Nothing has been installed and nothing has been changed. Fix the
+       file and run this again.
+EOF
+        exit 2
+    fi
+
+    # Warned about, deliberately not refused. Rootful podman may bind a
+    # privileged port and this unit publishes on 127.0.0.1 only, so nothing
+    # off-host can reach it whatever the number — there is no measurement
+    # here that would support a refusal, and inventing one would refuse a
+    # choice that works. It is still worth a second look, because below 1024
+    # is where the host's own listeners are, including the TLS proxy that on
+    # the documented topology forwards to this very port. That collision does
+    # not appear until a restart, when podman cannot bind and
+    # sre-tab-web.service fails.
+    if [ "$web_port" -lt 1024 ]; then
+        echo "warning: SRE_TAB_WEB_PORT=$web_port is a privileged port. It is" >&2
+        echo "         accepted — rootful podman can bind it and the unit" >&2
+        echo "         publishes on loopback — but below 1024 is where the" >&2
+        echo "         host's own listeners live, the TLS proxy that forwards" >&2
+        echo "         here included, and a collision only shows up at the" >&2
+        echo "         next restart. Check it:  ss -lntp | grep :$web_port" >&2
+    fi
+fi
+
 install -d -m 0755 "$quadlet_dir" "$systemd_dir" "$config_dir"
 
 # uid/gid 999 is `postgres` inside the pinned postgres image; the backup
@@ -92,9 +215,79 @@ install -m 0644 "$script_dir/scripts/backup-offsite-receive.sh" \
     "$config_dir/backup-offsite-receive.sh"
 install -m 0644 "$script_dir/backup-offsite.env.example" \
     "$config_dir/backup-offsite.env.example"
+# Staged like the two examples above and, like them, never turned into the
+# real file. Its absence is what means "the defaults", so creating it here
+# would replace an absent setting with a written-down one nobody chose.
+install -m 0644 "$script_dir/install.env.example" "$config_dir/install.env.example"
 install -m 0644 "$script_dir/quadlet/"*.network "$quadlet_dir/"
 install -m 0644 "$script_dir/quadlet/"*.volume "$quadlet_dir/"
 install -m 0644 "$script_dir/quadlet/"*.container "$quadlet_dir/"
+
+# The published host port, expressed as a Quadlet drop-in rather than as an
+# edit to the unit file installed on the line above.
+#
+# Quadlet merges `<unit>.container.d/*.conf` exactly as systemd merges a
+# `.service.d` drop-in — the same mechanism this installer already uses a few
+# lines down to give sre-tab-backup.service its `OnSuccess=`, one layer up.
+# So sre-tab-web.container is installed byte for byte from the repository and
+# the port arrives beside it, which is precisely the property the reference
+# host's local edit destroyed. `diff` between deploy/quadlet and
+# /etc/containers/systemd stays empty on a host that has moved its port.
+#
+# A .service.d drop-in cannot do this job, which is worth saying because it is
+# the obvious first idea: PublishPort= ends up inside the generated
+# `ExecStart=`, so overriding it there means restating podman's entire command
+# line and re-deriving it after every podman upgrade.
+#
+# Nor can the unit carry a variable. Measured on Debian 13 / podman 5.4.2:
+# Quadlet copies `PublishPort=127.0.0.1:${SRE_TAB_WEB_PORT}:8080` through to
+# `--publish 127.0.0.1:${SRE_TAB_WEB_PORT}:8080` verbatim, expanding nothing.
+# systemd *would* then expand it from an `EnvironmentFile=` in [Service], and
+# on a throwaway unit built that way it did — but an empty assignment expands
+# to `--publish 127.0.0.1::8080`, which podman accepts by publishing on a
+# random ephemeral port: measured as `8080/tcp -> 127.0.0.1:37341`, with
+# `systemctl start` exiting 0 and `systemctl --failed` empty. The unit is up,
+# nothing complains, and the front door is somewhere nobody is looking. It
+# would also put the value beyond this validation, since it is read at
+# container start rather than here. A mechanism whose failure mode is silent
+# is worse than the hardcoded line it replaces.
+#
+# The bare `PublishPort=` below is load-bearing and is easy to leave out.
+# Quadlet honours systemd's list semantics, so an assignment ADDS and an empty
+# assignment RESETS. Measured with `podman-system-generator --dryrun`: without
+# the reset the generated ExecStart carries `--publish 127.0.0.1:8080:8080
+# --publish 127.0.0.1:8081:8080` — the old port still open beside the new one,
+# which is the half of "move the port" that is easy to miss because the new
+# port does work.
+web_dropin_dir="$quadlet_dir/sre-tab-web.container.d"
+web_dropin="$web_dropin_dir/10-published-port.conf"
+if [ "$web_port_set" = true ]; then
+    install -d -m 0755 "$web_dropin_dir"
+    web_dropin_tmp=$(mktemp "${TMPDIR:-/tmp}/sre-tab-port.XXXXXX")
+    cat > "$web_dropin_tmp" <<EOF
+# Generated by deploy/install.sh from SRE_TAB_WEB_PORT in
+# /etc/sre-tab/install.env. Edit that file and re-run the installer; an edit
+# here is overwritten on the next run.
+#
+# The empty PublishPort= resets the list the unit file set. Without it this
+# would open a second port rather than move the one there is.
+[Container]
+PublishPort=
+PublishPort=127.0.0.1:$web_port:8080
+EOF
+    install -m 0644 "$web_dropin_tmp" "$web_dropin"
+    rm -f "$web_dropin_tmp"
+    echo "Front door published on 127.0.0.1:$web_port (container port 8080)"
+else
+    # An absent setting means the shipped default, and that has to include
+    # taking the port back from a host that used to have one. Removing the
+    # file is what makes this setting reversible rather than one-way: comment
+    # the line out, re-run, and the host is byte for byte what a host that
+    # never had the file is.
+    rm -f "$web_dropin"
+    rmdir "$web_dropin_dir" 2>/dev/null || true
+fi
+
 install -m 0644 "$script_dir/systemd/"*.timer "$systemd_dir/"
 # The alert template, which is a .service and would have been missed by the
 # .timer glob above — a template that is never installed makes every

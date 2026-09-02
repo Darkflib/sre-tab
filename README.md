@@ -210,7 +210,10 @@ A single Podman host with system Quadlets: PostgreSQL, a migration oneshot,
 the application, Caddy, and a nightly backup timer, each container running
 as an unprivileged numeric user with a read-only root filesystem and all
 capabilities dropped. Terminate TLS at your existing proxy and forward to
-`127.0.0.1:8080`.
+`127.0.0.1:8080` — or wherever `SRE_TAB_WEB_PORT` in `/etc/sre-tab/install.env`
+puts it, which is what a host with 8080 already taken wants. Only the host
+side moves; see
+[the published port](deploy/README.md#the-published-port).
 
 [deploy/README.md](deploy/README.md) is the operational manual — topology,
 secrets, migrations on deploy, backup and a **tested** restore, the
