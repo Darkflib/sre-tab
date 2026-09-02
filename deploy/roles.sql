@@ -13,11 +13,17 @@
 -- Installing this script does NOT change what DATABASE_URL, PGUSER, or any
 -- Quadlet unit points at. The three roles it creates are not referenced
 -- anywhere in deploy/quadlet until a later, deliberate cutover — see
--- deploy/ROLES.md for that procedure. Run through
--- deploy/scripts/create-roles.sh, never by hand: the script supplies the
--- `\set` variables this file reads (the three role passwords and the three
--- `set_password_*` flags) over psql's stdin, never as literals here and
--- never on a command line.
+-- deploy/ROLES.md for that procedure.
+--
+-- Run through one of the three scripts that know how to feed it, never by
+-- hand: create-roles.sh installs the roles and rotates their passwords,
+-- restore.sh re-applies the grants and default privileges that a
+-- DROP DATABASE takes with it, and smoke.sh installs them against its own
+-- throwaway PostgreSQL. Each supplies the `\set` variables this file reads
+-- (the three role passwords and the three `set_password_*` flags) over
+-- psql's stdin, never as literals here and never on a command line. The two
+-- that only re-apply grants pass `set_password_* false`, which is also the
+-- path create-roles.sh takes on a re-run against a role that already exists.
 --
 -- Run as: the existing cluster superuser (sretab, by default) against the
 -- sretab database. Idempotent — every statement below is either a genuine
