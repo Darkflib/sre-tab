@@ -334,14 +334,14 @@ pulls the new digest; later restarts do not touch the network, because a
 digest names immutable content and the local copy is by definition the right
 one.
 
-Two units are deliberately absent from that list, for opposite reasons.
+Three units are deliberately absent from that list, for opposite reasons.
 `sre-tab-web.service` is Caddy and does not run the application image, so a
-promotion never changes it. `sre-tab-prune-sessions.service` does run it, but
-it is timer-driven and not running, so there is nothing to restart — it
-adopts the new digest by itself at its next elapse, once `install.sh` has
-staged the rewritten unit. So the four units a promotion rewrites and the
-four services this command restarts are different sets of four, overlapping
-in three.
+promotion never changes it. `sre-tab-prune-sessions.service` and
+`sre-tab-status.service` do run it, but both are timer-driven and neither is
+running, so there is nothing to restart — each adopts the new digest by
+itself at its next elapse, once `install.sh` has staged the rewritten unit.
+So the five units a promotion rewrites and the four services this command
+restarts overlap in three, and neither set contains the other.
 
 Take a backup before any upgrade that carries a migration; `alembic
 downgrade` is not a substitute for a restore.
@@ -796,7 +796,7 @@ It is safe at any time and takes no locks worth the name: a live session is
 never a candidate, so the sweep cannot sign anybody out.
 
 **Unlike the backup, this unit runs the application image**, so its digest is
-one of the four `deploy/scripts/promote.sh` moves together and CI checks for
+one of the five `deploy/scripts/promote.sh` moves together and CI checks for
 agreement. It is not in the restart list after a promotion, and does not need
 to be: it is timer-driven rather than running, so it picks up the new digest at
 its next elapse once `install.sh` has staged the unit.
@@ -920,6 +920,183 @@ operator-managed configuration and this is scheduler-written runtime state.
 Keeping them apart means `sources.updated_at` still means "the operator
 changed the configuration", and the two writers never contend.
 
+<a id="alerting-on-a-failing-source"></a>
+## Alerting on a failing source
+
+`sre-tab-status.timer` runs `sre-tab status --failures-over 3` in the
+application image every hour at :48 with up to five minutes of jitter. When it
+exits non-zero, `OnFailure=` on `sre-tab-status.service` starts
+`sre-tab-alert@sre-tab-status.service.service`, which gathers the failed
+unit's journal and hands it to a transport the operator writes.
+
+The reason it exists: **`/api/v1/healthz` knows a source is failing and
+deliberately will not say so.** `app/scheduler/service.py` reports `ok=true`
+with the failure count in its detail string, because one broken feed must not
+take the instance out of rotation. Readiness and alerting want opposite
+answers to the same question, and until this timer existed only one of them
+was being asked — a source could stop fetching indefinitely and the only
+symptom would be stale items nobody was looking for.
+
+### Wire up a transport, or the alert reaches nobody
+
+**This is the one step that is not automatic.** `install.sh` never writes
+`/etc/sre-tab/alert.sh`, because reaching a person is a property of the host
+— mail, a webhook, a pager, an agent that is already installed — and picking
+one here would put a transport dependency in a project that has deliberately
+few. It installs `alert.sh.example` beside it instead, with two worked
+implementations:
+
+```bash
+sudo cp /etc/sre-tab/alert.sh.example /etc/sre-tab/alert.sh
+sudo $EDITOR /etc/sre-tab/alert.sh     # msmtp, or curl to a webhook
+sudo chmod 0755 /etc/sre-tab/alert.sh
+```
+
+The mail example posts through `msmtp` with an explicit envelope sender; the
+webhook example reads its URL from a mode-0600 file — the URL is a credential
+— and builds the JSON with `jq`, because the report contains newlines, quotes,
+and whatever a feed's error detail happened to say.
+
+**Without that file the alert is not silent, and that is on purpose.**
+`install.sh` warns at the end of every run while it is missing, the whole
+report still reaches this host's journal under the alert unit, and
+`alert-dispatch.sh` exits 1 so the alert unit lands in `systemctl --failed`
+naming the file it wanted. An alerting path that fails quietly is the exact
+defect this pair of units was written to remove, so its own misconfiguration
+was not allowed to be the one thing that fails quietly.
+
+Your script's exit status is the alert's exit status. Exit non-zero when the
+message did not go out, and a dead relay shows up in `systemctl --failed`
+rather than being believed. Do not add `|| true`.
+
+### What the transport is handed
+
+| | |
+| --- | --- |
+| `$1` | the failed unit, `sre-tab-status.service` |
+| stdin | the whole report: unit, systemd's `Result`, exit status, timestamps, and the unit's last 50 journal lines — which for `sre-tab-status.service` is the status table and the per-source error lines |
+| `$SRE_TAB_ALERT_UNIT` | the same as `$1` |
+| `$SRE_TAB_ALERT_RESULT` | systemd's `Result`, e.g. `exit-code`, `timeout` |
+| `$SRE_TAB_ALERT_STATUS` | the exit status, e.g. `1` |
+| `$SRE_TAB_ALERT_HOST` | this host's name |
+
+The journal is the alert body rather than a pointer to it, which is why
+`sre-tab-status.container` sets `LogDriver=none`: systemd's own capture of the
+container's stdout is then the single copy, and `journalctl -u` finds it.
+
+### `--failures-over 3` means over three, not three
+
+`sre-tab status` on its own still exits 1 for **any** enabled source with any
+consecutive failure — that has not changed, and it is right for somebody
+typing it. On an hourly timer it would page a human for one transient 502
+from one feed, and an alert that fires on noise is an alert somebody mutes.
+
+So the timer passes a threshold, and the threshold is strict:
+
+| Consecutive failures | `--failures-over 3` |
+| --- | --- |
+| 1, 2, 3 | reported in the output, exit 0, no alert |
+| 4 or more | reported, exit 1, alert |
+
+At the default 30-minute refresh interval each failure is another half hour
+with no successful fetch, so the fourth is roughly two hours of a source being
+down. Pass `--failures-over 2` to page on the third instead. The failing
+source is printed at every threshold, so the report the alert carries is the
+same either way; only the exit code moves.
+
+### A malformed slug alerts every hour until it is fixed
+
+`sre-tab status` also exits 1 when a source or topic slug predates the format
+check, and **`--failures-over` does not gate that half.** This is deliberate
+and it is the one behaviour here worth knowing before 03:00.
+
+The threshold counts consecutive *fetch* failures. A malformed slug never
+increments that counter — the source fetches perfectly and simply cannot be
+filtered to — so gating it behind the threshold would mean any value above
+zero suppressed a permanent configuration defect for ever, which is strictly
+worse than the noise. And unlike a fetch failure it never self-heals, so the
+alert repeats hourly until somebody acts:
+
+```bash
+podman exec sre-tab-app sre-tab status      # names the offending slug
+```
+
+Fix it by re-adding the source or topic under a valid slug; the existing row
+cannot be renamed in place without breaking every saved selection that names
+it. If your transport pages rather than files a ticket, put deduplication in
+whatever receives the alert — that is the piece that knows what a duplicate
+means to you.
+
+### Testing the alert path by hand
+
+A green check is not a passed check, and an alert path that has never fired
+is not an alert path. Fire it:
+
+```bash
+# 1. The transport alone, with a synthetic report.
+sudo systemctl start sre-tab-alert@sre-tab-status.service
+sudo journalctl -u 'sre-tab-alert@sre-tab-status.service.service' -n 50
+
+# 2. The whole chain — a unit that fails, an OnFailure=, an alert:
+sudo systemd-run --unit alert-probe \
+    --property=OnFailure=sre-tab-alert@alert-probe.service.service /bin/false
+sudo journalctl -u 'sre-tab-alert@alert-probe.service.service' -n 50
+sudo systemctl reset-failed alert-probe.service
+```
+
+The first proves the transport and the report. The second proves the
+`OnFailure=` wiring end to end, including that the failed unit's name reaches
+the template — the alert's journal names `alert-probe.service` throughout and
+quotes its last 50 lines.
+
+The instance name is written out in full there rather than as `%n`, and that
+is not a style choice: `systemd-run` does **not** expand specifiers inside
+`--property=`, and refuses the unit outright with `Invalid unit name
+sre-tab-alert@%n.service`. In `sre-tab-status.container`'s `OnFailure=` line
+the specifier is expanded normally, which is why that one is `%n` — `%n` is
+the full unit name, so the instance becomes `sre-tab-status.service` and
+`journalctl -u %i` inside the template needs no suffix appended. `%N` would
+drop the `.service` and leave the template re-deriving it.
+
+To confirm the threshold rather than assume it, set a source's counter
+directly and watch the exit code move between 3 and 4:
+
+```bash
+seed() {
+  podman exec sre-tab-db psql -U sretab -d sretab -c \
+    "INSERT INTO source_status (source_id, last_fetched_at, consecutive_failures)
+     SELECT id, now(), $1 FROM sources WHERE slug = 'lwn'
+     ON CONFLICT (source_id) DO UPDATE
+        SET consecutive_failures = EXCLUDED.consecutive_failures;"
+}
+
+seed 3 && sudo systemctl start sre-tab-status.service   # succeeds, no alert
+seed 4 && sudo systemctl start sre-tab-status.service   # fails, and alerts
+```
+
+An `INSERT ... ON CONFLICT` rather than an `UPDATE` because a source that has
+never fetched has no `source_status` row at all, and an `UPDATE` against it
+reports `UPDATE 0` and changes nothing — which then reads exactly like a
+threshold that is not working. The scheduler overwrites `consecutive_failures`
+on the source's next refresh, so this leaves nothing behind.
+
+### What this alert does not cover
+
+`OnFailure=` fires when a unit enters a failed state. It does **not** fire
+when the start job is cancelled because `Requires=sre-tab-db.service` failed:
+that path leaves `sre-tab-status.service` inactive rather than failed. A
+database that is down is therefore reported by `sre-tab-db.service`'s own
+failure and by `systemctl --failed`, not by this alert. A database that is up
+but unreachable — a wrong `DATABASE_URL`, a removed network — does fire it,
+because the check runs and fails.
+
+The timer is also **not** `Persistent=true`, unlike the backup and the session
+sweep. Those catch up because a missed run is work that did not happen; this
+is a question whose answer is about now, and the next run is at most an hour
+away. A catch-up run would fire seconds after boot, against counters that are
+whatever they were before the host went down, at the moment an operator is
+already dealing with a host that has just come back.
+
 ## Operations
 
 ```bash
@@ -946,14 +1123,15 @@ driver would write a second copy of every structured line. The long-running
 containers keep `LogDriver=journald` deliberately, because `podman logs` is
 worth having for them.
 
-There is no `OnFailure=` alert unit, unlike orbit-data — that project's alert
-path is a subcommand of its own application, and this one has no equivalent
-yet. Until it does, failures surface through `systemctl --failed` and the
-journal. Wiring an alert to the operator CLI is a reasonable Phase 2 follow-up.
+A failing source no longer waits for somebody to run the CLI: `sre-tab-status.timer`
+asks hourly and `OnFailure=` carries the answer to a person. See
+[Alerting on a failing source](#alerting-on-a-failing-source), and note that
+it needs one file written by hand before it can reach anybody.
 
 `systemctl --failed` is only worth watching if it is empty when nothing is
 wrong, so a clean `systemctl stop` has to leave it clean. That is what the
-`NoNewPrivileges` note below is protecting.
+`NoNewPrivileges` note below is protecting — and it matters more now that
+`systemctl --failed` is where an unconfigured alert path lands.
 
 ### Why two units do not set `NoNewPrivileges=true`
 

@@ -37,7 +37,6 @@ that.
     shared store.
 - [Operations](#operations)
   - Off-host backups.
-  - An `OnFailure=` alert unit.
   - Release hygiene: no Release against `v1.0.0`, and no versioned image tag
     a self-hoster can pull.
   - Frontend coverage for `src/api/client.ts`, and for the parts of
@@ -434,21 +433,53 @@ prerequisite for going past it.
   verify at the far end, and not a backup format, a checksum scheme, or a
   restore procedure. All three of those exist and `smoke.sh` runs them on
   every push.
-- **`OnFailure=` alert unit.** Deliberately not invented in v1 — orbit-data's
-  equivalent is a subcommand of its own application, and sre-tab had no CLI
-  at the time. It has one now, and `sre-tab status` already exits non-zero
-  when an enabled source is failing, so the alert path has something to call.
+- **`OnFailure=` alert unit** — **landed, and it needs one file from the
+  operator.** `sre-tab-status.timer` runs `sre-tab status --failures-over 3`
+  hourly at :48; `sre-tab-status.service` carries
+  `OnFailure=sre-tab-alert@%n.service`; that template gathers the failed
+  unit's journal and hands it to `/etc/sre-tab/alert.sh`, which this
+  repository deliberately does not ship. No new dependency: reaching a person
+  is a property of the host, so `alert.sh.example` carries two worked
+  transports — msmtp and a `curl` webhook — and the operator copies one.
 
-  The shape that needs no new dependency: a timer running `sre-tab status`,
-  and `OnFailure=` on that service pointing at whatever the host already
-  uses to reach a person. What it buys is the part worth stating, because it
-  is invisible from either piece on its own — a failing source is currently
-  visible only if somebody runs the CLI. The readiness probe knows and
-  deliberately does not say: `app/scheduler/service.py` returns `ok=True`
-  with the failure count in the detail string, because one broken feed must
-  not take the instance out of rotation. Readiness and alerting want
-  opposite answers to the same question, and only one of them is being
+  What it buys was invisible from either piece on its own. A failing source
+  was visible only if somebody ran the CLI: the readiness probe knows and
+  deliberately does not say, because `app/scheduler/service.py` returns
+  `ok=True` with the failure count in the detail string so that one broken
+  feed cannot take the instance out of rotation. Readiness and alerting want
+  opposite answers to the same question, and only one of them was being
   asked.
+
+  Three things the build settled by measurement rather than by reading:
+
+  - **`--failures-over` is strictly over.** The unthresholded command exits 1
+    on a single consecutive failure, which on an hourly timer pages a human
+    for one transient 502. `--failures-over 3` clears a source on its third
+    failure and fails on its fourth — roughly two hours without a successful
+    fetch at the default interval. It gates the refresh-failure half only: a
+    malformed slug never increments that counter, so any threshold above zero
+    would suppress a permanent configuration defect for ever. The cost is
+    that a malformed slug alerts hourly until it is fixed, which
+    `deploy/README.md` states rather than leaving to be discovered.
+  - **The absent-transport case is the failure this item existed to remove**,
+    so it is the loudest path in it: `install.sh` warns while
+    `/etc/sre-tab/alert.sh` is missing, the report still reaches the journal,
+    and `alert-dispatch.sh` exits 1 so the alert unit lands in
+    `systemctl --failed` naming the file it wanted.
+  - **`PrivateTmp=true` was in the alert template and was removed**, after a
+    test transport's output silently failed to appear on the reference host.
+    It gives the unit a private `/tmp` *and* `/var/tmp`, so a transport that
+    spools or keeps a deduplication marker writes into a namespace discarded
+    at exit, with a zero exit status — the same shape of quiet failure the
+    unit exists to prevent.
+
+  Proven on a Debian 13 host with podman 5.4.2 and systemd 257 rather than
+  asserted: the generator accepts the unit, the timer schedules, `OnFailure=`
+  fires with the failed unit's name substituted, the journal reaches the
+  transport, and the exit code moves between three and four consecutive
+  failures. `%n` versus `%N` was checked on the host too — and `systemd-run`
+  turns out not to expand specifiers in `--property=` at all, which the
+  by-hand test procedure in `deploy/README.md` now works around.
 - **Nothing here can be installed by version.** `v1.0.0` is a git tag and
   nothing more: no Release object against it, so the tag carries no notes
   and none of the artefacts the build already produces, the SBOM among them.
@@ -969,6 +1000,9 @@ difference between the two.
 - **A `/metrics` endpoint.** Prometheus exposition is among the commoner
   self-hosting asks, and it costs this project nothing it has promised:
   a scrape is a local pull, so "nothing phones home" survives it intact.
-  It ranks below the `OnFailure=` alert unit in
-  [Operations](#operations), which closes the same loop for the reference
-  deployment without a new dependency, a new route, or a scraper to run.
+  It ranked below the `OnFailure=` alert unit in
+  [Operations](#operations), which has since landed and closes the same loop
+  for the reference deployment without a new dependency, a new route, or a
+  scraper to run. What a `/metrics` endpoint would add over it is history and
+  a graph rather than a page at the moment of failure — worth having, and
+  worth less than it was a change ago.

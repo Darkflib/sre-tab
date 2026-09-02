@@ -226,11 +226,47 @@ exactly the failure mode this section is written to prevent.
 | `deploy/quadlet/sre-tab.container` | `Secret=sre-tab-database-url,type=env,target=DATABASE_URL` | `sre-tab-app-database-url` → `sretab_app` |
 | `deploy/quadlet/sre-tab-migrate.container` | `Secret=sre-tab-database-url,type=env,target=DATABASE_URL`, runs `alembic upgrade head` | `sre-tab-migrate-database-url` → `sretab_migrate` |
 | `deploy/quadlet/sre-tab-prune-sessions.container` | `Secret=sre-tab-database-url,type=env,target=DATABASE_URL`, runs `sre-tab sessions prune` (a `DELETE` on `sessions`) | `sre-tab-app-database-url` → `sretab_app` — it is a DML operation, the same role as the application |
+| `deploy/quadlet/sre-tab-status.container` | `Secret=sre-tab-database-url,type=env,target=DATABASE_URL`, runs `sre-tab status --failures-over 3` hourly | **`sretab_readonly`** — not `sretab_app`; see below. Needs a `DATABASE_URL` secret that does not exist yet |
 | `deploy/quadlet/sre-tab-backup.container` | `Environment=PGUSER=sretab` + `Secret=sre-tab-postgres-password,type=env,target=PGPASSWORD`, runs `pg_dump` | `Environment=PGUSER=sretab_readonly` + `Secret=sre-tab-readonly-password,type=env,target=PGPASSWORD` |
 | `deploy/scripts/create-secrets.sh` | builds `sre-tab-database-url` as `postgresql+psycopg://sretab:...@...`, `--user` defaults to `sretab` | not itself part of the cutover — it still needs to exist for the superuser's own secrets and for `--rotate-db` — but its defaults document the pre-cutover assumption and are worth re-reading when this file's own defaults change |
 | `deploy/scripts/restore.sh` | `--user` defaults to `sretab`; `PGUSER=$db_user` on its throwaway TCP client; `CREATE DATABASE "$database" OWNER "$db_user"`; `DROP DATABASE ... WITH (FORCE)` | **needs a decision, not a mechanical swap — see below** |
 | `deploy/scripts/smoke.sh` | starts its own throwaway `postgres:18` with only `POSTGRES_USER=sretab`; every container it launches (app, migrate, the `psql_db` helper) connects as `sretab` | **needs to actually exercise the new roles to remain meaningful — see below** |
 | `deploy/README.md` | its "Secrets" table lists `sre-tab-postgres-password` and `sre-tab-database-url` only | add the three new secrets to that table once they are live; note the two that stop being read by anything once the corresponding unit's `Secret=` line changes |
+
+### `sre-tab-status.service` is the one application unit that goes read-only
+
+Every other unit running the application image needs DML or DDL, so the
+cutover for them is a straight swap onto `sretab_app` or `sretab_migrate`.
+The hourly source health check is not: `sre-tab status` calls exactly two
+functions in `app/cli/operations.py`, `refresh_status` and
+`nonconforming_slugs`, and both are a single `select()` — the first an
+outer join of `sources` against `source_status`, the second a scan of
+`sources.slug` and `topics.slug`. `_cmd_status` in `app/cli/__init__.py`
+never calls `commit()`, and the session it is handed is closed by the
+context manager, which rolls back. There is nothing to widen the role for.
+
+Two consequences worth having on purpose. It is the least-privilege answer
+— a monitoring job that runs unattended every hour is the last thing that
+should hold write access — and it differs from `sre-tab-prune-sessions`,
+which runs from the same image and genuinely needs `DELETE`. The two are
+not interchangeable and the table above says so.
+
+**The secret it needs does not exist yet.** `create-roles.sh` writes
+`sre-tab-readonly-password` — just a password, for `PGPASSWORD`, because
+the only consumer planned for `sretab_readonly` was `pg_dump`, which takes
+its credential that way. `sre-tab status` takes a `DATABASE_URL`, like every
+other application unit, so cutting it over needs a fourth secret of the
+shape `sre-tab-app-database-url` already has:
+
+| Podman secret | Holds | For |
+| --- | --- | --- |
+| `sre-tab-readonly-database-url` | a `DATABASE_URL` for `sretab_readonly` | `sre-tab-status`, post-cutover |
+
+Adding it is a few lines in `create-roles.sh` beside the three it already
+writes — the same `\set` over stdin, the same exists/drift/rotate decision —
+and it is named here rather than done here for the reason this whole section
+exists: installing a credential and switching something onto it are two
+decisions, and the second one is the cutover.
 
 ### `restore.sh` needs a decision, not a mechanical swap
 
@@ -316,8 +352,13 @@ To roll back:
 2. `sudo deploy/install.sh` to regenerate the systemd units from the
    reverted Quadlet files.
 3. `sudo systemctl restart sre-tab.service sre-tab-migrate.service
-   sre-tab-prune-sessions.service sre-tab-backup.service` — every unit the
-   cutover touched.
+   sre-tab-prune-sessions.service sre-tab-status.service
+   sre-tab-backup.service` — every unit the cutover touched. Note what that
+   does to the three timer-driven ones: they are not running, so `restart`
+   *starts* them, taking a sweep, a status check, and a backup there and
+   then. All three are safe to run at any time, and running them is the
+   cheapest way to confirm the reverted credential works — but it is a run,
+   not a no-op, and on a large database the backup is the slow one.
 
 The three non-superuser roles and their secrets are harmless to leave in
 place after a rollback; nothing references them once the `Secret=` lines
