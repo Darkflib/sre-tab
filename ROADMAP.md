@@ -23,7 +23,8 @@ that.
   - The build path's dependency on `codeload.github.com` — vendor the
     actions, or replace `download-syft` with a registry pull.
 - [Security findings this deployment absorbs](#security-findings-this-deployment-absorbs)
-  - The OAuth state cookie can be overwritten from a sibling subdomain.
+  - No cookie carries a `__Host-` prefix, so a sibling subdomain can write
+    the OAuth state and CSRF cookies.
   - PostgreSQL traffic inside the deployment is cleartext.
 - [API surface](#api-surface)
   - Serve `/api/v1/openapi.json` from the committed file in
@@ -338,20 +339,61 @@ genuinely held by the three-operator assumption.
   change about *roles* — `sslmode=require` without verification would look
   like progress while authenticating nothing.
 
-- **The OAuth state cookie can be overwritten from a sibling subdomain.**
-  `set_state_cookie` scopes to `/api/v1/auth` with `HttpOnly`, `SameSite=Lax`,
-  and `Secure`, which is careful about everything except *which host* may
-  write it: any subdomain sharing the registrable domain can set a cookie
-  the browser will send here, so a cookie-toss overwrites the state and
-  turns the flow into login CSRF — the victim ends the flow authenticated
-  as the attacker. The exploit therefore needs the attacker's own GitHub ID
-  on `ALLOWED_GITHUB_IDS`, which at three operators means it needs an
-  operator, and an operator has better options. The fix is not free either:
-  `__Host-` is the prefix that buys domain integrity, and it mandates
-  `Path=/`, so taking it means giving up the path scoping that is currently
-  doing real work. Worth revisiting if the domain ever hosts anything else,
-  because that is the condition — a sibling subdomain existing at all — and
-  not the user count.
+- **No cookie carries a `__Host-` prefix, so a sibling subdomain can write
+  any of them.** `set_state_cookie` scopes the OAuth state to `/api/v1/auth`
+  with `HttpOnly`, `SameSite=Lax`, and `Secure`, which is careful about
+  everything except *which host* may write it: any subdomain sharing the
+  registrable domain can set a cookie the browser will send here, so a
+  cookie-toss overwrites the state and turns the flow into login CSRF — the
+  victim ends the flow authenticated as the attacker. The exploit therefore
+  needs the attacker's own GitHub ID on `ALLOWED_GITHUB_IDS`, which at three
+  operators means it needs an operator, and an operator has better options.
+
+  **The CSRF cookie is the same finding, and this entry now covers both.**
+  It was reported separately, as the reachability argument behind the
+  malformed-cookie defect, and keeping the two apart would have invited two
+  separate half-fixes. `issue_csrf_cookie` is deliberately not `HttpOnly` —
+  the frontend has to read it, which is the whole double-submit mechanism —
+  so a sibling can read it as well as write it. Neither gains an attacker a
+  forged request: the token commits to `sha256(session_token)`, so one minted
+  for another session is refused, and one invented outright is unsigned. What
+  a write *can* do is break the client, and until this release it did so
+  completely — an injected value containing a stray `%` made `readCookie`
+  throw and every write in the application report an offline error that was
+  not happening. That is now a 403 carrying the server's own message, which
+  is the correct blast radius for a cookie-toss: annoy a user who shares your
+  registrable domain, and nothing further.
+
+  **`__Host-` was weighed while fixing that and deliberately not taken.** It
+  is the prefix that buys domain integrity — only the exact host that set a
+  `__Host-` cookie may rewrite it — so it closes this at the source rather
+  than containing it downstream. Three costs, and only the third decided it:
+
+  - It mandates `Path=/`, so the state cookie gives up the `/api/v1/auth`
+    scoping it currently has. Real, and survivable.
+  - It renames all three cookies, so every live session is invalidated on
+    the deploy that takes it. At three operators that is a shrug, and it is
+    honest to say so rather than to dress it up as a migration problem.
+  - **It mandates `Secure`, and `COOKIE_SECURE` exists precisely to turn
+    `Secure` off.** That setting is not decoration: it is the documented path
+    for development against a host that is not `localhost` over plain http,
+    where browsers drop every cookie and a sign-in reads as broken rather
+    than as misconfigured (`tests/auth/test_cookie_flags.py` pins both
+    halves). A static prefix breaks that path silently. A prefix conditional
+    on `COOKIE_SECURE` is worse: it makes the cookie *name* depend on an
+    environment variable, and the frontend's copy of that name is a
+    different variable — `VITE_CSRF_COOKIE_NAME`, read at module scope and
+    baked into the bundle by an `npm run build` the `Containerfile` passes
+    nothing to. The two would then disagree exactly when someone sets
+    `COOKIE_SECURE=false`, and every write in the application would 403 with
+    nothing anywhere saying why.
+
+  So the prerequisite is not the prefix but a single source of truth for the
+  cookie names across `app/settings.py` and the frontend build — the shape
+  `check-env-example.sh` and `check-header-parity.sh` already have for their
+  own pairs of surfaces, and which this pair does not have. Worth doing when
+  the domain hosts anything else, because that is the condition — a sibling
+  subdomain existing at all — and not the user count.
 - **Feed image URLs are validated more weakly than item URLs** — **landed,
   and closing it turned up a live hole in the *item* path.** The two
   functions now share one host rule (`_feed_url_host`), so they can no
@@ -724,9 +766,12 @@ prerequisite for going past it.
   error, before any request is sent. The server never writes such a value,
   but the cookie is not `HttpOnly` by design and has no `__Host-` prefix, so
   the sibling-subdomain write recorded above for the OAuth state cookie
-  reaches this too. Held with two `it.fails` markers rather than fixed here,
-  on the same reasoning as the comma-in-a-slug case: the fix is a change to
-  `client.ts`, and this was a testing change.
+  reaches this too. Held with two `it.fails` markers rather than fixed in
+  that pass, on the same reasoning as the comma-in-a-slug case: the fix is a
+  change to `client.ts`, and that was a testing change. **Both markers have
+  since gone**, and the `__Host-` half of the entry above was settled at the
+  same time — the client now hands the raw value to the server, which is the
+  only party able to judge it.
 
   A second thing worth knowing before someone reads the mutation score as a
   gap. Six mutations survived and none is a missing test. Two are equivalent
