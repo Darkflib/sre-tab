@@ -36,7 +36,6 @@ that.
   - Rate limiting keyed on a trusted client address — fragile pending a
     shared store.
 - [Operations](#operations)
-  - Off-host backups.
   - An `OnFailure=` alert unit.
   - Release hygiene: no Release against `v1.0.0`, and no versioned image tag
     a self-hoster can pull.
@@ -44,6 +43,8 @@ that.
     `usePagedResource` that need a DOM — its decision logic is covered now,
     its effects are not.
 - [Things that are true but unproven](#things-that-are-true-but-unproven)
+  - The off-host copier against AWS proper rather than MinIO, and its ssh
+    transport across a real network rather than a second sshd on one host.
   - The backup timer's `Persistent=true` catch-up, demonstrated rather than
     assumed.
   - The fetcher's accept-a-redirect branch, against a live server.
@@ -427,13 +428,42 @@ prerequisite for going past it.
 <a id="operations"></a>
 ## Operations
 
-- **Off-host backups.** `/srv/sre-tab/backups` sits on the same host as the
-  database. That is a backup, not disaster recovery. The integrity half is
-  already built — `backup.sh` writes a `.sha256` sidecar beside every dump,
-  under the same mask — so what is missing is a copy to another host and a
-  verify at the far end, and not a backup format, a checksum scheme, or a
-  restore procedure. All three of those exist and `smoke.sh` runs them on
-  every push.
+- **Off-host backups** — **landed.** `deploy/scripts/backup-offsite.sh` copies
+  the newest dump and its sidecar to an `ssh://` target, an `s3://` target, or
+  both, and verifies each where it landed. The original entry was right that
+  the missing half was the copy and the verify rather than a format, a
+  checksum scheme, or a restore procedure — see
+  [deploy/README.md](deploy/README.md#off-host-backups) for the configuration
+  and the operator procedures.
+
+  Three things were worth more than the copying. The verification is a
+  comparison of values and not an exit status, because "the upload command
+  returned 0" is a claim about the transfer: ssh re-derives the checksum on
+  the far end's disk, and S3 is asked for the SHA-256 it recorded against the
+  stored object rather than for an ETag, which is an MD5 of part MD5s on a
+  multipart upload and would silently stop meaning anything once a dump grew.
+  Both rejections were demonstrated rather than assumed.
+
+  Neither credential can destroy what it has already sent, which is the
+  difference between a second copy and a second thing to lose in the same
+  incident. The ssh far end runs a forced command with four verbs, none of
+  which deletes, refuses to overwrite a published name, and takes its own
+  retention decision only after verifying the new dump; the S3 recommendation
+  is a policy limited to `PutObject` and `GetObject` on one prefix, with
+  versioning and Object Lock in compliance mode, and a lifecycle rule doing
+  the expiry so the host never needs `DeleteObject` at all.
+
+  And the schedule is not a schedule. A second timer placed after the backup's
+  jitter window encodes the backup's timing in a second place and copies
+  yesterday's dump on a night the backup failed; `OnSuccess=` on the backup
+  unit says the thing that is true. `Requisite=`, which is how one would first
+  write "only when the backup ran", turns out never to fire: a oneshot without
+  `RemainAfterExit` is inactive the moment it succeeds.
+
+  Deliberately not closed by this: the copier has been exercised against MinIO
+  and not against AWS proper, and its ssh tests ran against a second sshd on
+  the same host rather than across a network. Both are listed under
+  [Things that are true but unproven](#things-that-are-true-but-unproven).
 - **`OnFailure=` alert unit.** Deliberately not invented in v1 — orbit-data's
   equivalent is a subcommand of its own application, and sre-tab had no CLI
   at the time. It has one now, and `sre-tab status` already exits non-zero
@@ -614,6 +644,18 @@ Not deferred work so much as deferred *evidence*. Each is believed correct
 and has not been demonstrated, and saying so is cheaper than discovering it
 during an incident.
 
+- **The off-host copier against AWS proper, and across a real network.**
+  `deploy/scripts/backup-offsite.sh` signs its own SigV4 requests with `curl`
+  and `openssl`, and every S3 run behind it was against MinIO — path-style
+  addressing throughout, because that is what a self-hosted store serves. The
+  virtual-hosted path AWS prefers is implemented and has never been executed,
+  and neither has Object Lock on anything but MinIO. The failure mode is at
+  least the safe one: a wrong signature is refused, so a signing bug fails the
+  run rather than producing a copy that is believed verified. Separately, the
+  ssh transport was exercised against a second sshd and a second account on
+  the *same* host — a real ssh connection, a real forced command, a real
+  restricted key, and not a real network, so nothing there has met a link that
+  drops halfway through a 2.5MB transfer.
 - **The backup timer's `Persistent=true` catch-up.** Demonstrating it needs
   the host down across 03:22 UTC and then brought back. The backup *script* is
   well covered without it: `deploy/scripts/smoke.sh` runs the real `backup.sh`
