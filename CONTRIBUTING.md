@@ -99,7 +99,13 @@ verbatim rather than against a renamed copy.
 
 Both workflows run on every pull request, on every push to `main`, on demand
 via `workflow_dispatch`, and weekly — `CI` at 06:17 UTC on Mondays, `Docs` at
-06:41.
+06:41. `CI` also runs on a push of any `v*` tag, which is how a release is
+built; `Docs` does not, because a tag names a commit that has already been
+through it on the way to `main`.
+
+A tag build runs the identical `needs:` chain — `python`, `postgres`,
+`audit`, `sast`, `frontend`, `container` — so a release is gated by the same
+six jobs as a merge, not by a shorter path of its own.
 
 The schedule is not belt-and-braces. Several of these jobs answer questions
 whose answer changes with no commit behind it: `audit` fails when a CVE is
@@ -112,10 +118,21 @@ silent about the world, and the first news of the drift arrives when someone
 needs to ship.
 
 A scheduled run does everything a push to `main` does except publish: the
-three `if: github.event_name == 'push'` guards in the `container` and
+three `if: github.event_name == 'push' && (github.ref == 'refs/heads/main' ||
+startsWith(github.ref, 'refs/tags/v'))` guards in the `container` and
 `publish` jobs mean a Monday run builds the image and smoke-tests it without
-signing or pushing anything. The concurrency group is keyed on the event as
-well as the ref so that a scheduled run cannot cancel a publish in flight.
+signing or pushing anything. They are one decision written three times, and
+have to stay identical: the two in `container` export the tested image, and
+the one on `publish` consumes it, so a build that satisfies one pair and not
+the other runs the whole gate and then fails at `download-artifact`.
+
+The concurrency group is keyed on the event as well as the ref, so a
+scheduled run cannot cancel a publish in flight — and neither can a push to
+`main` cancel a tag build, or the reverse, because `refs/heads/main` and
+`refs/tags/v1.1.0` are different groups. That matters more than it sounds:
+tagging a release and merging the next change are often minutes apart, and
+`cancel-in-progress` would otherwise kill a release build that had already
+pushed an image.
 
 One caveat that is worth knowing precisely because it fires under exactly the
 conditions the schedule exists for: **GitHub disables scheduled workflows on
@@ -321,9 +338,9 @@ set-differencing the required contexts against the check-runs the repository
 actually reports — empty in the direction that matters — rather than by
 reading the rule back and trusting it looked right.
 
-`Publish, sign, and attest image` is deliberately excluded. It carries
-`if: github.event_name == 'push' && github.ref == 'refs/heads/main'`, so it
-never runs on a pull request. It is excluded on an asymmetry rather than on a
+`Publish, sign, and attest image` is deliberately excluded. Its `if:` admits
+a push to `main` and a push of a `v*` tag and nothing else, so it never runs
+on a pull request. It is excluded on an asymmetry rather than on a
 known deadlock, and the first pull request here (#4) measured half of that
 asymmetry away:
 
