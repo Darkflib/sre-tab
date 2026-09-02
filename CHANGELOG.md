@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`actions/attest-sbom` is deprecated; the SBOM attestation now uses
+  `actions/attest`.** The old action still works — it is currently a wrapper
+  around the new one, which is why the inputs are unchanged — but a
+  deprecated action in the one workflow that publishes signed artefacts is a
+  thing that stops working on somebody else's schedule. Renovate would have
+  kept bumping its version and never told us it was going away.
+  `actions/attest-build-provenance` is *not* deprecated and is untouched.
+
+  Worth noting that this migration verifies itself, which is why it was safe
+  to make with no way to rehearse it: `verify-image.sh --require-attestations`
+  runs later in the same job and asserts an attestation with predicate type
+  `https://spdx.dev/Document` against the image just pushed. If the new action
+  emitted anything else, the publish job fails rather than leaving a release
+  whose SBOM attestation nothing can find.
+
 ## [1.1.0] - 2026-09-02
 
 ### Added

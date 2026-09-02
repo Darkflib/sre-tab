@@ -802,8 +802,23 @@ jobs:
           DIGEST: ${{ steps.publish.outputs.digest }}
         run: syft "registry:${IMAGE}@${DIGEST}" -o "spdx-json=$RUNNER_TEMP/sbom.spdx.json"
 
+      # actions/attest rather than actions/attest-sbom: the latter is
+      # deprecated in favour of this one and is now implemented as a wrapper
+      # around it, which is also why the inputs are unchanged — `sbom-path`
+      # is a first-class input here and still produces an SBOM attestation.
+      #
+      # The migration checks itself, which is the only reason it is safe to
+      # make without a way to rehearse it. `deploy/scripts/verify-image.sh
+      # --require-attestations` runs later in *this* job and asserts an
+      # attestation with predicate type https://spdx.dev/Document against the
+      # image just pushed. If this action emitted a different predicate type,
+      # that step fails the job rather than leaving a release whose SBOM
+      # attestation nothing can find.
+      #
+      # actions/attest-build-provenance above is NOT deprecated and stays as
+      # it is; only the SBOM action was.
       - name: Attest the SBOM
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ steps.publish.outputs.image }}
           subject-digest: ${{ steps.publish.outputs.digest }}
