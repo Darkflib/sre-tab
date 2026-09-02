@@ -147,32 +147,35 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
+          cache: npm
+          cache-dependency-path: .github/scripts/package-lock.json
 
-      # An ephemeral install rather than a dependency of anything, on the same
-      # reasoning as `uvx semgrep==` in ci.yml: this is a linter for the
-      # documentation, and it has no business in the client's dependency tree
-      # or in the image. Both versions are exact, and renovate.json5 carries a
-      # custom manager that tracks them here — Renovate reads package.json
-      # files, and there deliberately is not one.
+      # `npm ci`, not `npm install`: the whole dependency graph is committed
+      # in .github/scripts/package-lock.json, so the parser this gate imports
+      # and runs is the same 122 packages on every run rather than whatever
+      # resolved that morning. `ci` also refuses outright when the manifest
+      # and the lockfile disagree — verified by desynchronising them, which
+      # exits 1 naming the package.
       #
-      # happy-dom, not jsdom, because frontend/package.json already pins
-      # happy-dom at this version for the two Vitest files that need a
-      # document. Mermaid does need one: DOMPurify is loaded at parse time and
-      # throws without a window — though only for some diagram types, so an
-      # absent DOM fails partially rather than cleanly. That is what the
-      # script's self-test is for.
+      # This is a second npm project in the repository and that is the cost of
+      # the pin. It is deliberately not part of the client's: a documentation
+      # linter has no business in frontend/package-lock.json, in uv.lock, or
+      # in the image, and .github/scripts/node_modules is gitignored.
+      #
+      # happy-dom, not jsdom, because the frontend already vets happy-dom for
+      # the two Vitest files that need a document, and one DOM implementation
+      # in a repository is enough. The two manifests pin it independently and
+      # Renovate moves both in the same weekly group; they are not required to
+      # agree, and nothing breaks if they drift. Mermaid does need a DOM:
+      # DOMPurify is loaded at parse time and throws without a window — though
+      # only for some diagram types, so an absent DOM fails partially rather
+      # than cleanly. That is what the script's self-test is for.
       #
       # --ignore-scripts because neither package needs a lifecycle script to
-      # work — verified by installing with it and running the gate green — so
-      # nothing is gained by letting 122 packages run arbitrary code at
-      # install time. What this does not remove is that the parser itself is
-      # third-party code that gets imported and executed; only a committed
-      # lockfile would pin the tree that reaches it, and this deliberately
-      # follows `uvx semgrep==`'s trade instead. See CONTRIBUTING.md.
-      - name: Install the parser
-        run: >
-          npm install --prefix .github/scripts --no-save --no-audit --no-fund
-          --ignore-scripts mermaid@11.17.2 happy-dom@20.12.2
+      # work, verified by installing with it and running the gate green.
+      - name: Install the parser from the lockfile
+        working-directory: .github/scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       # Parses every ```mermaid block in the tracked Markdown. GitHub renders
       # one it cannot parse as a red "Unable to render rich display" box in

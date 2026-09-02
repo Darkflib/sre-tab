@@ -181,6 +181,24 @@ The only published way to ask is to put a fenced block containing the single
 word `info` in any Markdown on github.com and read what it renders. Worth
 doing if a diagram is rejected there and accepted here.
 
+**The parser is a second npm project, and that is deliberate.**
+`.github/scripts/package.json` and its committed lockfile exist so the gate
+runs `npm ci` against the same 122 packages every time rather than whatever
+resolved that morning — the script imports and executes that code, so an
+unpinned transitive graph is a real gap and not a theoretical one. To change
+the parser version, edit the manifest and run `npm install` in that directory;
+`npm ci` refuses a manifest and lockfile that disagree, which is what makes
+forgetting the second step loud. It is kept out of `frontend/package-lock.json`
+and out of `uv.lock` on purpose: a documentation linter has no business in the
+client's dependency tree or in the image, and Renovate manages it through its
+ordinary npm manager with no custom rule needed.
+
+happy-dom appears in two manifests — here and in the frontend, which vets it
+for the two Vitest files that need a document. They pin it independently,
+Renovate moves both in the same weekly group, and they are not required to
+agree; reusing it is about not vetting a second DOM implementation, not about
+the versions matching.
+
 Two things the script does that are not obvious, both from the rule in
 [AGENTS.md](AGENTS.md) about what a green check is worth. **Zero blocks is a
 failure**, because a repository with no diagrams and an extractor that has
