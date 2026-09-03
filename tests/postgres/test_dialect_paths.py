@@ -310,3 +310,41 @@ def test_the_scope_column_refuses_an_unknown_value_on_postgres(
 
     with pg_clean.connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM api_tokens")).scalar_one() == 1
+
+
+def test_an_overlong_muted_term_is_refused_before_it_reaches_the_column(
+    pg_clean: Engine, pg_session: Session
+) -> None:
+    """``user_muted_terms.term`` is ``VARCHAR(64)``, and PostgreSQL is the
+    engine that means it.
+
+    SQLite does not enforce a VARCHAR width, so the whole class of bug this
+    guards was invisible in the ordinary suite: a term that grows past the
+    column during ``casefold`` — sixty-four ``ß`` become a hundred and
+    twenty-eight ``s`` — was stored there and only failed later, building
+    the response. Here it reaches the column and raises ``DataError``,
+    which is not a ``ValueError``, so the route's 422 mapping does not
+    catch it and the reader gets a 500.
+
+    Two assertions, because either alone would be misleading. The first is
+    that the column really does refuse the value, so the second is about
+    something that could actually happen. The second is that the service
+    never gets there.
+    """
+    from sqlalchemy.exc import DataError
+
+    from app.api.v1.schemas import PreferencesPatch
+    from app.db.models import MuteKind, UserMutedTerm
+    from app.services.preferences import apply_patch, ensure_profile
+
+    user = User(github_id=101405, github_login="darkflib")
+    pg_session.add(user)
+    pg_session.flush()
+
+    with pytest.raises(DataError), pg_session.begin_nested():
+        pg_session.add(UserMutedTerm(user_id=user.id, kind=MuteKind.WORD, term="s" * 128))
+        pg_session.flush()
+
+    ensure_profile(pg_session, user)
+    with pytest.raises(ValueError, match="64 characters"):
+        apply_patch(pg_session, user, PreferencesPatch(muted_words=["ß" * 64]))

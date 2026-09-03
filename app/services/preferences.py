@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.schemas import PreferencesOut, PreferencesPatch
 from app.db.models import (
+    MAX_MUTED_TERM_LENGTH,
     MuteKind,
     Source,
     Topic,
@@ -127,10 +128,10 @@ def apply_patch(db: Session, user: User, patch: PreferencesPatch) -> Preferences
         )
 
     if patch.muted_words is not None:
-        _replace_mutes(db, user, MuteKind.WORD, normalise_terms(patch.muted_words))
+        _replace_mutes(db, user, MuteKind.WORD, _mute_terms(patch.muted_words))
 
     if patch.muted_tags is not None:
-        terms = normalise_terms(patch.muted_tags)
+        terms = _mute_terms(patch.muted_tags)
         # Validated against the catalogue, unlike words. A muted word the
         # catalogue has never heard of is the point; a muted *tag* that
         # matches no topic is a typo that would silently mute nothing, and
@@ -138,7 +139,17 @@ def apply_patch(db: Session, user: User, patch: PreferencesPatch) -> Preferences
         # a 422. `_resolve` is reused for the error it raises, not for the
         # ids — mutes store slugs, so a topic renamed out from under one
         # stops applying rather than silently muting something else.
-        known = _slug_ids(db, select(Topic.slug, Topic.id).where(Topic.enabled.is_(True)))
+        #
+        # Every topic, not only the enabled ones, and that is the fix for a
+        # trap rather than a loosening. The feed's mute predicate matches
+        # slugs and never consults `topics.enabled`, so a topic an operator
+        # retires goes on hiding items. Validating against enabled topics
+        # then made every patch carrying that slug a 422 — and since the
+        # field is replace-the-whole-list, that is every patch changing any
+        # *other* mute. The mute kept working and could not be removed.
+        # Accepting the retired slug is what makes the state the API
+        # already stores a state the API will still take back.
+        known = _slug_ids(db, select(Topic.slug, Topic.id))
         _resolve(known, terms, "topic")
         _replace_mutes(db, user, MuteKind.TAG, terms)
 
@@ -165,6 +176,35 @@ def normalise_terms(terms: Iterable[str]) -> list[str]:
     """
     seen = {" ".join(term.split()).casefold() for term in terms}
     return sorted(term for term in seen if term)
+
+
+def _mute_terms(terms: Iterable[str]) -> list[str]:
+    """Normalised, and re-checked against the column the result must fit.
+
+    The re-check is not belt and braces. ``casefold`` is not
+    length-preserving — ``"ß"`` becomes ``"ss"`` — so sixty-four characters
+    of it satisfy the schema's ``max_length`` on the way in and are a
+    hundred and twenty-eight by the time anything stores them. Past
+    ``VARCHAR(64)``: PostgreSQL raises ``DataError``, which is not a
+    ``ValueError`` and is therefore a 500, and SQLite (which does not
+    enforce the width) takes the row and fails building the *response*
+    instead. That failure happened to surface as a 422, because
+    ``pydantic.ValidationError`` subclasses ``ValueError`` and the route
+    maps that — a right answer for a wrong reason, with a body naming
+    ``PreferencesOut`` at a client that never mentioned it.
+
+    Refused rather than truncated: a shortened mute matches more than the
+    reader asked for, and does so silently, which is the failure mode this
+    whole feature is written against.
+    """
+    normalised = normalise_terms(terms)
+    over = [term for term in normalised if len(term) > MAX_MUTED_TERM_LENGTH]
+    if over:
+        raise ValueError(
+            f"muted term is longer than {MAX_MUTED_TERM_LENGTH} characters once "
+            f"case-folded: {over[0][:32]!r}…"
+        )
+    return normalised
 
 
 def _replace_mutes(db: Session, user: User, kind: MuteKind, terms: Sequence[str]) -> None:

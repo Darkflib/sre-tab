@@ -54,6 +54,14 @@ export const QUERY_PARAM = 'q';
 export const MAX_QUERY_LENGTH = 200;
 
 /**
+ * Matches `MAX_SEARCH_TERMS` in `app/services/feed.py`. The server takes
+ * the first this many words of a query and ignores the rest, so anything
+ * here reasoning about what a search *will* return has to stop where the
+ * search does.
+ */
+export const MAX_SEARCH_TERMS = 8;
+
+/**
  * A `Record` keyed by the union rather than a list of strings: adding a
  * member to `ReadFilter` server-side then fails the typecheck here, which
  * is the whole reason the type is generated from `openapi.json`. A plain
@@ -191,7 +199,16 @@ export function filterKey(filters: FeedFilters, limit: number): string {
  * before storing them.
  */
 export function mutesBlocking(query: string, mutedWords: string[]): string[] {
-  const asked = new Set(query.toLowerCase().split(/\s+/).filter(Boolean));
+  // Capped at what the server searches. Without this the analysis is of a
+  // different query from the one the request makes: a muted word sitting
+  // past the cutoff is never searched for, so items matching the first
+  // eight terms and not carrying that word come back, and a page
+  // announcing "nothing can match" is simply wrong. Found in review, and
+  // it is the shape AGENTS.md names — a guard answering the question next
+  // to the one it is relied on for.
+  const asked = new Set(
+    query.toLowerCase().split(/\s+/).filter(Boolean).slice(0, MAX_SEARCH_TERMS),
+  );
   // No early return for an empty query. `every` over a term's words is
   // already false when none of them were asked for, and `words.length > 0`
   // covers the vacuous case — a guard was written here, removing it broke
@@ -200,6 +217,21 @@ export function mutesBlocking(query: string, mutedWords: string[]): string[] {
     const words = term.toLowerCase().split(/\s+/).filter(Boolean);
     return words.length > 0 && words.every((word) => asked.has(word));
   });
+}
+
+/**
+ * Whether a search change should replace the current history entry rather
+ * than push a new one.
+ *
+ * Editing replaces; entering and leaving push. The debounce commits every
+ * few hundred milliseconds, so pushing each one would make Back walk the
+ * reader backwards through their own keystrokes — but replacing *all* of
+ * them, which is what this did first, throws away the entry the reader
+ * started from: begin typing on an unfiltered feed and Back no longer
+ * returns to the unfiltered feed, it leaves the page.
+ */
+export function shouldReplaceHistory(previous: string, next: string): boolean {
+  return previous !== '' && next !== '';
 }
 
 /**

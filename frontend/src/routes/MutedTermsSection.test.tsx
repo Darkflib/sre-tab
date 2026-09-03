@@ -208,3 +208,48 @@ describe('MutedTermsSection', () => {
     expect(host.textContent).toContain('Bookmarks are never muted');
   });
 });
+
+describe('MutedTermsSection and a retired topic', () => {
+  // From the Codex review on PR #34. The catalogue returns only enabled
+  // topics; the feed's mute predicate matches slugs and never consults
+  // `topics.enabled`. So a topic an operator disables goes on hiding items
+  // for anyone who had muted it, and the control that would turn it off
+  // disappears with the topic.
+  const RETIRED = 'retired-topic';
+
+  it('lists a muted topic the catalogue no longer returns', () => {
+    render(preferences({ muted_tags: [RETIRED] }), vi.fn());
+
+    const labels = [...host.querySelectorAll('.option__label')].map((node) => node.textContent);
+
+    expect(labels).toContain(RETIRED);
+  });
+
+  it('marks it as retired rather than passing it off as a topic', () => {
+    render(preferences({ muted_tags: [RETIRED] }), vi.fn());
+
+    expect(host.textContent).toContain('retired');
+  });
+
+  it('lets it be unmuted, which is the half that was broken', () => {
+    const onSave = vi.fn();
+    render(preferences({ muted_tags: ['uk-news', RETIRED] }), onSave);
+
+    const boxes = [...host.querySelectorAll<HTMLInputElement>('.option input')];
+    const retired = boxes.at(-1);
+    expect(retired?.checked).toBe(true);
+    act(() => {
+      retired?.click();
+    });
+
+    expect(onSave.mock.calls).toEqual([[{ muted_tags: ['uk-news'] }]]);
+  });
+
+  it('does not invent a row for a topic nobody muted', () => {
+    render(preferences(), vi.fn());
+
+    const labels = [...host.querySelectorAll('.option__label')].map((node) => node.textContent);
+
+    expect(labels).toEqual(['UK news', 'Web development']);
+  });
+});

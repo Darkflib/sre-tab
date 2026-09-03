@@ -39,6 +39,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   stronger, because that page is provably empty before the request is
   made — the reader is told rather than left to wonder.
 
+  Four defects found in review before this shipped, all of them the same
+  kind — a guard, or a claim, that was true of something adjacent to what
+  it described. A term can grow past its column while being normalised,
+  because `casefold` is not length-preserving and sixty-four `ß` become a
+  hundred and twenty-eight `s`; the length is now re-checked after
+  normalising rather than only before, which on PostgreSQL is the
+  difference between a 422 and a 500. The "nothing can match" notice
+  analysed every word of a query when the server searches only the first
+  eight. The first committed search replaced the history entry it started
+  from, so Back left the feed instead of returning to it unsearched. And a
+  topic an operator disabled kept hiding items for anyone who had muted
+  it, with no control left anywhere to turn it off — muted topics are now
+  listed and removable whether the catalogue still carries them or not.
+
 - **Search over the retained items — `GET /api/v1/feed?q=`, and a box in the
   filter bar.** `feed_retention_days` defaults to 90, so there has always
   been a real corpus behind the feed and no way to reach anything in it but

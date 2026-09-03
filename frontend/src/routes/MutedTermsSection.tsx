@@ -141,10 +141,27 @@ function TagList({
 }) {
   // Checkboxes rather than the add-a-term form above, because the
   // vocabulary is closed: every mutable tag is already on screen, so there
-  // is nothing to type and nothing to get wrong. The server refuses a tag
-  // naming no topic, and this is the control that means a reader never
-  // meets that refusal.
-  const enabled = topics.filter((topic) => topic.enabled);
+  // is nothing to type and nothing to get wrong.
+  //
+  // "Every" has to include the retired ones, and that is a fix rather than
+  // a nicety. The catalogue returns only enabled topics; the feed's mute
+  // predicate matches slugs and never consults `topics.enabled`. So an
+  // operator disabling a topic somebody had muted left the mute working
+  // and its checkbox gone — a setting still hiding items with no control
+  // anywhere to turn it off. Anything muted is listed whether the
+  // catalogue still knows it or not, named by its slug when that is all
+  // there is left of it.
+  const known = new Set(topics.map((topic) => topic.slug));
+  const rows = [
+    ...topics.filter((topic) => topic.enabled).map(({ slug, name }) => ({ slug, name })),
+    ...muted.filter((slug) => !known.has(slug)).map((slug) => ({ slug, name: slug })),
+  ];
+
+  const toggleTag = (slug: string) => {
+    onChange(
+      muted.includes(slug) ? muted.filter((entry) => entry !== slug) : [...muted, slug],
+    );
+  };
 
   return (
     <fieldset className="settings__field">
@@ -154,21 +171,22 @@ function TagList({
         that source publishes under it. Muting words is usually the narrower tool.
       </p>
       <ul className="option-grid">
-        {enabled.map((topic) => (
+        {rows.map((topic) => (
           <li key={topic.slug}>
             <label className="option">
               <input
                 type="checkbox"
                 checked={muted.includes(topic.slug)}
                 onChange={() => {
-                  onChange(
-                    muted.includes(topic.slug)
-                      ? muted.filter((slug) => slug !== topic.slug)
-                      : [...muted, topic.slug],
-                  );
+                  toggleTag(topic.slug);
                 }}
               />
               <span className="option__label">{topic.name}</span>
+              {known.has(topic.slug) ? null : (
+                <span className="option__hint" title="No longer in the catalogue">
+                  retired
+                </span>
+              )}
             </label>
           </li>
         ))}

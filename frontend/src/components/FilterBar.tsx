@@ -15,6 +15,7 @@ import {
   hasSavableOverride,
   mutesBlocking,
   selectsNothing,
+  shouldReplaceHistory,
   toggle,
 } from '../feed/filters';
 import { isHighVolume, type SourceShare } from '../feed/volume';
@@ -98,7 +99,7 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
     onChange({ ...filters, readState: next });
   };
   const setQuery = (next: string) => {
-    onChange({ ...filters, query: next }, { replace: true });
+    onChange({ ...filters, query: next }, { replace: shouldReplaceHistory(filters.query, next) });
   };
 
   // Nothing selected is a step, not a destination: it exists so you can

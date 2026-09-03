@@ -353,3 +353,78 @@ def test_muting_costs_one_statement_whatever_the_page_size(
 
     assert len(large) == len(small)
     assert sum("user_muted_terms" in sql for sql in large) == 1
+
+
+# --- what the Codex review on PR #34 found -------------------------------
+
+
+def test_a_term_that_grows_past_the_column_under_case_folding_is_refused(
+    authed_client: TestClient,
+) -> None:
+    """``casefold`` is not length-preserving. Sixty-four ``ß`` satisfy the
+    schema's ``max_length`` and become a hundred and twenty-eight ``s``
+    before anything stores them — past ``VARCHAR(64)``, so PostgreSQL
+    raises and SQLite quietly accepts a row that then fails validation on
+    the way back out. Either way a valid-looking request is a 500.
+
+    The bound is therefore checked again *after* normalising, where the
+    value that will actually be stored exists. Refused rather than
+    truncated: a shortened mute matches more than the reader asked for,
+    and silently.
+
+    **The status alone is not the assertion**, because on SQLite this
+    returned 422 before the check existed and did so for a reason that
+    had nothing to do with the input: ``_to_out`` failed validating its
+    own *response*, and ``pydantic.ValidationError`` subclasses
+    ``ValueError``, which the route maps to 422. The body said "1
+    validation error for PreferencesOut" — an internal name, about the
+    wrong model, describing a value the client never sent. And on
+    PostgreSQL the write reaches ``VARCHAR(64)`` first and raises
+    ``DataError``, which is not a ``ValueError`` and is therefore a 500.
+    So the message is asserted too.
+    """
+    response = authed_client.patch("/api/v1/me/preferences", json={"muted_words": ["ß" * 64]})
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "64" in detail
+    assert "PreferencesOut" not in detail
+
+
+def test_a_term_that_stays_inside_the_column_after_folding_is_kept(
+    authed_client: TestClient,
+) -> None:
+    """The other side of the bound, so the check above cannot pass by
+    refusing everything."""
+    saved = _mute(authed_client, muted_words=["ß" * 30])
+
+    assert saved["muted_words"] == ["ss" * 30]
+
+
+def test_a_muted_topic_survives_the_topic_being_disabled(
+    authed_client: TestClient, corpus: dict[str, int], db_session: Session
+) -> None:
+    """An operator retiring a topic must not strand a mute.
+
+    The predicate matches slugs and does not consult ``topics.enabled``, so
+    a disabled topic goes on hiding items. The catalogue stops returning
+    it, so the client cannot show a control for it. Validating a patch
+    against *enabled* topics then completes the trap: the mute keeps
+    working, and any patch carrying it — which is every patch that changes
+    a different mute, since the field is replace-the-whole-list — is a 422.
+    """
+    _mute(authed_client, muted_tags=["uk-news", "webdev"])
+    topic = db_session.scalars(select(Topic).where(Topic.slug == "uk-news")).one()
+    topic.enabled = False
+    db_session.commit()
+
+    # Still hidden: the mute did not stop working.
+    assert "Late winner settles the derby" not in _titles(_feed(authed_client))
+
+    # And still changeable, which is the half that was broken.
+    saved = _mute(authed_client, muted_tags=["uk-news"])
+    assert saved["muted_tags"] == ["uk-news"]
+
+    unmuted = _mute(authed_client, muted_tags=[])
+    assert unmuted["muted_tags"] == []
+    assert "Late winner settles the derby" in _titles(_feed(authed_client))

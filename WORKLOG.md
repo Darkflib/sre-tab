@@ -3,6 +3,62 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+<a id="what-the-review-of-the-mutes-found"></a>
+## 2026-09-03 — What the review of the mutes found
+
+Four findings on [PR #34](https://github.com/Darkflib/sre-tab/pull/34),
+all P2, all real, and all the same shape: a guard or a claim that was true
+of something *next to* what it described. That is the failure AGENTS.md
+names, and it is worth recording that it survived a change in which every
+guard had already been made to fail on purpose. Breaking a guard proves it
+can fail. It does not prove its subject is the thing you care about.
+
+**`casefold` is not length-preserving.** Sixty-four `ß` satisfy the
+schema's `max_length` and become a hundred and twenty-eight `s` before
+anything stores them. On PostgreSQL that reaches `VARCHAR(64)` and raises
+`DataError`, which is not a `ValueError`, so the route's 422 mapping does
+not catch it and the reader gets a 500. On SQLite, which does not enforce
+the width, the row was stored and the *response* failed validating —
+which surfaced as a 422 only because `pydantic.ValidationError` subclasses
+`ValueError`, with a body reading "1 validation error for PreferencesOut"
+at a client that had never heard of `PreferencesOut`.
+
+The first test written for this asserted the status code, and passed
+before the fix existed. It now asserts the message too. The PostgreSQL
+suite carries the other half: that the column really does refuse the
+value, so the guard is about something that can happen, and that the
+service never gets there.
+
+**A topic an operator disables strands the mutes on it.** The catalogue
+returns only enabled topics; the feed's mute predicate matches slugs and
+never consults `topics.enabled`. So the mute went on hiding items and its
+checkbox disappeared with the topic. Validating a patch against *enabled*
+topics completed the trap: since the field is replace-the-whole-list,
+every patch changing any other mute carried the retired slug and was
+refused. Fixed at both ends — the patch validates against every topic, and
+Settings lists a muted slug the catalogue no longer knows, named by the
+slug and marked retired.
+
+Two candidate fixes, and the one not taken is worth naming: making the
+predicate skip disabled topics would have *unmuted* something the reader
+asked to hide, with no action from them. The items really do carry that
+topic and the reader really did mute it; what was broken was the control,
+not the behaviour.
+
+**`mutesBlocking` analysed a different query from the one the request
+makes.** It built its word set from the whole query while the server
+searches the first `MAX_SEARCH_TERMS` and no more, so a muted word past
+the cutoff produced a definitive "nothing can match" over a page that
+could return rows. The client now applies the same cap. This one is the
+purest example of the pattern: the function was correct, its tests passed,
+and it was answering about a query nobody would run.
+
+**Every committed search replaced its history entry, including the
+first.** So a reader who started typing on an unfiltered feed lost the
+unfiltered feed, and Back left the page — contradicting the resynchronising
+behaviour `SearchBox` documents. Editing replaces, entering and leaving
+push; `shouldReplaceHistory` is that rule with its own tests.
+
 <a id="muted-words-and-tags"></a>
 ## 2026-09-03 — Muted words and tags
 

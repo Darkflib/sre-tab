@@ -11,6 +11,7 @@ import {
   hasSavableOverride,
   MAX_QUERY_LENGTH,
   mutesBlocking,
+  shouldReplaceHistory,
   parseFilters,
   selectsNothing,
   toggle,
@@ -290,6 +291,57 @@ describe('mutesBlocking', () => {
       'football',
       'derby',
     ]);
+  });
+});
+
+describe('mutesBlocking and the server\'s term cap', () => {
+  // Found by the Codex review on PR #34, and it is the exact shape
+  // AGENTS.md names: a guard answering the question next to the one it is
+  // relied on for. The claim is "every result would contain this muted
+  // word", which is only true of words the server actually searched —
+  // and it searches the first `MAX_SEARCH_TERMS` and no more.
+  it('ignores query words past the cap the server applies', () => {
+    const query = `${Array.from({ length: 8 }, (_, n) => `w${String(n)}`).join(' ')} football`;
+
+    // "football" is the ninth word, so the server never searches for it.
+    // Items matching the first eight and not saying "football" can still
+    // come back, and a page announcing "nothing can match" would be wrong.
+    expect(mutesBlocking(query, ['football'])).toEqual([]);
+  });
+
+  it('still names a mute inside the cap', () => {
+    const query = `football ${Array.from({ length: 8 }, (_, n) => `w${String(n)}`).join(' ')}`;
+
+    expect(mutesBlocking(query, ['football'])).toEqual(['football']);
+  });
+
+  it('ignores a multi-word mute straddling the cap', () => {
+    // "premier" is searched and "league" is not, so an item can match the
+    // query while never carrying both words the mute needs.
+    const filler = Array.from({ length: 7 }, (_, n) => `w${String(n)}`).join(' ');
+
+    expect(mutesBlocking(`premier ${filler} league`, ['premier league'])).toEqual([]);
+  });
+});
+
+describe('shouldReplaceHistory', () => {
+  // Also from the Codex review. Every committed search replaced the
+  // current history entry, including the first — so a reader who started
+  // typing on an unfiltered feed lost the unfiltered feed, and Back left
+  // the page entirely.
+  it('pushes the first search, so Back returns to the unsearched feed', () => {
+    expect(shouldReplaceHistory('', 'postgres')).toBe(false);
+  });
+
+  it('replaces while the search is being edited', () => {
+    // The debounce commits every few hundred milliseconds. Pushing each
+    // one would make Back walk the reader backwards through their own
+    // keystrokes.
+    expect(shouldReplaceHistory('postgre', 'postgres')).toBe(true);
+  });
+
+  it('pushes when the search is cleared, so Back returns to it', () => {
+    expect(shouldReplaceHistory('postgres', '')).toBe(false);
   });
 });
 
