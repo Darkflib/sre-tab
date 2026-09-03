@@ -30,6 +30,10 @@ pytestmark = _pytestmark
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PRE_PHASE_2 = "d25a61924953"
+#: The revision before ``api_tokens``, so the token migration can be
+#: stepped over on its own rather than only as half of a two-revision
+#: downgrade, where a mistake in either could be masked by the other.
+PRE_API_TOKENS = "29038199b328"
 NOW = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
 
 
@@ -220,7 +224,9 @@ def test_migrations_round_trip_on_a_populated_postgres(
             connection.execute(text("INSERT INTO bookmarks (user_id, feed_item_id) VALUES (1, 1)"))
 
         command.upgrade(pg_alembic_config, "head")
-        assert "source_status" in inspect(pg_engine).get_table_names()
+        tables = inspect(pg_engine).get_table_names()
+        assert "source_status" in tables
+        assert "api_tokens" in tables
         with pg_engine.connect() as connection:
             assert connection.execute(text("SELECT count(*) FROM bookmarks")).scalar_one() == 1
 
@@ -231,6 +237,22 @@ def test_migrations_round_trip_on_a_populated_postgres(
                     "consecutive_failures) VALUES (1, now(), 0)"
                 )
             )
+            connection.execute(
+                text(
+                    "INSERT INTO api_tokens "
+                    "(user_id, label, token_hash, display_prefix, scope) "
+                    f"VALUES (1, 'laptop', '{'a' * 64}', 'sretab_pat_aaaaaa', 'read')"
+                )
+            )
+        with pg_engine.connect() as connection:
+            assert connection.execute(text("SELECT count(*) FROM api_tokens")).scalar_one() == 1
+
+        # One revision at a time on the way down, so a defect in either
+        # downgrade cannot be hidden by the other having worked.
+        command.downgrade(pg_alembic_config, PRE_API_TOKENS)
+        tables = inspect(pg_engine).get_table_names()
+        assert "api_tokens" not in tables
+        assert "source_status" in tables
 
         command.downgrade(pg_alembic_config, PRE_PHASE_2)
         assert "source_status" not in inspect(pg_engine).get_table_names()

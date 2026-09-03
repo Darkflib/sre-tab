@@ -1,7 +1,12 @@
-"""ORM models for all twelve PRD entities.
+"""ORM models for the twelve PRD entities, plus ``api_tokens``.
 
-Phase 0 property — frozen. No Phase 1 agent edits this file; a schema gap
-is escalated, not patched (AGENTS.md).
+Phase 0 property. The parallel build's rule was that no Phase 1 agent
+edits this file and a schema gap is escalated rather than patched
+(AGENTS.md); what survives that build is the narrower rule the same
+paragraph gives, which is that a revision is never generated *without
+meaning to*. ``api_tokens`` is the one addition since — one class, one
+enum, one revision, added deliberately for a feature that genuinely
+needs a table.
 
 Contract decisions encoded here:
 
@@ -11,8 +16,9 @@ Contract decisions encoded here:
   or joins).
 - Join/state tables use composite primary keys — the compound unique
   constraints that make repeated client requests idempotent.
-- ``sessions.token_hash`` stores a SHA-256 hex digest only (see
-  ``app.security.tokens``); the raw token never reaches the database.
+- ``sessions.token_hash`` and ``api_tokens.token_hash`` store a SHA-256
+  hex digest only (see ``app.security.tokens``); no raw credential ever
+  reaches the database.
 - Many-to-many convenience relationships are ``viewonly``: writes go
   through the association classes so idempotent upserts stay explicit.
 """
@@ -73,6 +79,24 @@ class Layout(enum.StrEnum):
     LIST = "list"
 
 
+class ApiTokenScope(enum.StrEnum):
+    """What a long-lived API token may do.
+
+    Two values rather than a boolean, and not a free string: the same
+    ``Enum(..., native_enum=False)`` treatment ``Theme`` and ``Layout``
+    get, so the database refuses a value the application does not know
+    and adding a third scope is a migration rather than a typo.
+
+    The split is about blast radius. A leaked ``READ`` token discloses
+    one user's feed, preferences, and reading history; a leaked ``FULL``
+    token is that account. Most of what "call it from another app" means
+    in practice is reading.
+    """
+
+    READ = "read"
+    FULL = "full"
+
+
 def _values(enum_cls: type[enum.Enum]) -> list[str]:
     return [str(member.value) for member in enum_cls]
 
@@ -118,6 +142,60 @@ class UserSession(TimestampMixin, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     user: Mapped[User] = relationship(back_populates="sessions", lazy="raise")
+
+
+class ApiToken(TimestampMixin, Base):
+    """A long-lived per-user credential for calling the API from elsewhere.
+
+    Stored the way ``sessions.token_hash`` is stored, and for the same
+    reason: only the SHA-256 hex digest of the raw token is here (see
+    ``app.security.tokens``), so a database leak yields nothing that can
+    be presented. The raw value exists once, in the creation response.
+
+    ``display_prefix`` is the deliberate exception — a short, non-secret
+    leading slice of the token, kept so the owner can tell two tokens
+    apart in a list without the server being able to reconstruct either.
+
+    Three timestamps rather than one, because "this token should not be
+    here any more" has three different shapes: ``expires_at`` is
+    optional, since long-lived is the point; ``revoked_at`` is the user
+    saying so; and ``last_used_at`` is what makes a forgotten token
+    *visible* rather than merely present. Nothing reads
+    ``last_used_at`` to make a decision — it exists so a stale row can
+    be recognised as stale.
+
+    No relationship back to :class:`User` is declared. Nothing needs to
+    navigate from a token to its owner through the ORM — the resolver
+    loads the user by primary key — and the row is removed with the
+    account by ``ondelete="CASCADE"``, which is what ``DELETE /me``'s
+    single statement relies on.
+    """
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    #: The owner's own name for it. Never a credential, so it is logged
+    #: and displayed freely.
+    label: Mapped[str] = mapped_column(String(100), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    display_prefix: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope: Mapped[ApiTokenScope] = mapped_column(
+        Enum(
+            ApiTokenScope,
+            name="api_token_scope",
+            native_enum=False,
+            length=16,
+            values_callable=_values,
+        ),
+        nullable=False,
+    )
+    #: Optional: a token with no expiry is the ordinary case.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class UserPreferences(TimestampMixin, Base):
