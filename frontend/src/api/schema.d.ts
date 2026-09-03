@@ -220,6 +220,10 @@ export interface paths {
         /**
          * Get Feed
          * @description Deduplicated feed ordered by publication time, newest first.
+         *
+         *     ``q`` narrows inside the same statement as every other filter, so it
+         *     composes with them and pages stay full. Results stay in publication
+         *     order rather than relevance order — see ``app.services.feed``.
          */
         get: operations["get_feed_api_v1_feed_get"];
         put?: never;
@@ -1029,6 +1033,8 @@ export interface operations {
                 sources?: string[] | null;
                 /** @description Narrow by the caller's read state; omit or 'all' for every item */
                 read_state?: components["schemas"]["ReadFilter"];
+                /** @description Full-text search over title and summary; omit for no narrowing */
+                q?: string | null;
                 /** @description Opaque cursor from a previous page */
                 cursor?: string | null;
                 limit?: number;

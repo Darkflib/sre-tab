@@ -503,7 +503,7 @@
           "feed"
         ],
         "summary": "Get Feed",
-        "description": "Deduplicated feed ordered by publication time, newest first.",
+        "description": "Deduplicated feed ordered by publication time, newest first.\n\n``q`` narrows inside the same statement as every other filter, so it\ncomposes with them and pages stay full. Results stay in publication\norder rather than relevance order \u2014 see ``app.services.feed``.",
         "operationId": "get_feed_api_v1_feed_get",
         "parameters": [
           {
@@ -558,6 +558,25 @@
               "default": "all"
             },
             "description": "Narrow by the caller's read state; omit or 'all' for every item"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Full-text search over title and summary; omit for no narrowing",
+              "title": "Q"
+            },
+            "description": "Full-text search over title and summary; omit for no narrowing"
           },
           {
             "name": "cursor",

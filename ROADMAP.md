@@ -69,7 +69,7 @@ that.
     and the quadlets.
   - A denied sign-in should land on the page, not on a JSON 403.
   - An admin surface for `is_admin`, which nothing sets and nothing reads.
-  - Search over the retained items.
+  - Search over the retained items — landed.
   - A data export, and OPML in the CLI.
   - First-screen polish: source icons, mark-all-read, per-source freshness,
     and a second mobile breakpoint.
@@ -78,8 +78,8 @@ that.
   - The order the next seven land in, and the reason it is that order.
   - Wide screens wasted space at a 1180px cap — landed; the page size stays
     coupled to the column count, which is noted rather than fixed.
-  - Search first, as the text predicate the two below reuse — the design
-    itself stays under [Product](#product).
+  - Search first, as the text predicate the two below reuse — landed; the
+    design and what building it settled are under [Product](#product).
   - Muted words, and muted tags, which wait on the topic entry.
   - Channel images as the fallback when an item carries none; caching them
     here is the larger, separate item.
@@ -1383,16 +1383,35 @@ difference between the two.
   adds a feed. This is that route. Each of those findings changes severity
   the day it merges, and the route being admin-only is not a detail of the
   design but the thing that decides how far each one moves.
-- **Ninety days of retained items and no way to search them.**
-  `feed_retention_days` defaults to 90, so there is a real corpus behind the
-  feed and the only way to reach anything in it is to scroll. The shape that
-  fits what is already here is a `tsvector` over title and summary with a
-  GIN index on PostgreSQL, and FTS5 or a `LIKE` on SQLite for development,
-  applied as one more predicate inside the existing keyset query rather than
-  as a second endpoint beside it. That is how the read-state filter went in
-  and for the same reason: a predicate in the `WHERE` of the statement that
-  already runs keeps pages full and cursors honest, where filtering the
-  page after it comes back does neither.
+- **Ninety days of retained items and no way to search them** — **landed,
+  as specified.** `feed_retention_days` defaults to 90, so there was a real
+  corpus behind the feed and the only way to reach anything in it was to
+  scroll. `GET /feed?q=` is a `tsvector` over title and summary with a GIN
+  index on PostgreSQL and a case-folded `LIKE` per term on SQLite, applied
+  as one more predicate inside the existing keyset query rather than as a
+  second endpoint beside it — the read-state filter's shape and, for the
+  same reason: a predicate in the `WHERE` of the statement that already
+  runs keeps pages full and cursors honest, where filtering the page after
+  it comes back does neither.
+
+  Two things settled while building it that the entry above did not
+  anticipate. `plainto_tsquery` rather than `websearch_to_tsquery`, because
+  the latter's quoted phrases and `-` exclusions have no honest counterpart
+  in the SQLite branch, and an engine divergence in *semantics* is worse
+  than the one in recall that stemming already costs. And the ordering
+  stays `published_at` descending rather than becoming relevance: the cursor
+  *is* `(published_at, id)`, so ranking needs a different key and
+  invalidates every cursor already issued.
+
+  The index is the part that needed a guard rather than a test.
+  PostgreSQL uses an expression index only when the indexed expression
+  matches the query's character for character, and a divergence between the
+  two produces no error anywhere — the index builds, `CREATE INDEX` reports
+  success, and every query is a sequential scan. `tests/postgres/test_search.py`
+  therefore asserts the *plan*, with `enable_seqscan` off so the question is
+  "can this index serve this query" rather than "does the planner prefer it
+  on a small table". Confirmed by diverging the expression on purpose and
+  watching it go red.
 - **The pitch is that the data lives on your own server, and there is no way
   to get it out.** `DELETE /api/v1/me` exists, so an account can be
   destroyed, and nothing exports it first. `GET /api/v1/me/export` returning
@@ -1482,16 +1501,18 @@ gets for nothing.
   coupled and only one of them is visible to the reader — which is the
   argument, when someone wants to make it.
 
-- **Search is the keystone, not the first feature.** The design is already
-  specified under [Product](#product) — a `tsvector` and a GIN index on
-  PostgreSQL, FTS5 or a `LIKE` on SQLite, applied as one more predicate
-  inside the existing keyset query. What is new here is its position. Built
-  as a reusable text predicate rather than as a search feature that happens
-  to contain one, it is most of the muted-words work as well, and the two
-  differ by a negation. Built the other way round — muting first, search
-  second — the same expression gets written twice, and the second one has to
-  agree with the first about stemming, case folding, and what a word
-  boundary is on two engines.
+- **Search is the keystone, not the first feature** — **landed.** The
+  design was already specified under [Product](#product), and that entry now
+  carries what building it settled. What this one claimed was its
+  *position*: built as a reusable text predicate rather than as a search
+  feature that happens to contain one, it is most of the muted-words work as
+  well, and the two differ by a negation. Built the other way round — muting
+  first, search second — the same expression gets written twice, and the
+  second copy has to agree with the first about stemming, case folding, and
+  what a word boundary is on two engines.
+
+  `search_predicate` is that shared piece, and muting is now the smaller
+  half of the entry below rather than the whole of it.
 
 - **Muted words, which is that predicate negated.** The store is the new
   part: a list per user, so `user_muted_terms(user_id, term, kind)`

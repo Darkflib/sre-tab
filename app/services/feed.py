@@ -18,14 +18,23 @@ to the caller (at most one row each, so no row multiplication under
 LIMIT), ``source`` rides the join it already needs via ``contains_eager``,
 and ``topics`` is a single ``selectinload`` over the page's ids. Two
 statements per page, independent of page size.
+
+*Search is a predicate, not a second endpoint.* ``q`` narrows inside the
+same statement, so the ``LIMIT`` is taken after the narrowing and pages
+stay full — the argument :func:`_apply_filters` already makes for the
+read-state filter. Ordering stays ``published_at`` descending rather than
+becoming relevance: the cursor *is* ``(published_at, id)``, so ranking
+would need a different key and would invalidate every cursor already
+issued, to reorder a corpus a reader is searching by recency anyway.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
+from typing import cast
 
-from sqlalchemy import Select, and_, select, tuple_
+from sqlalchemy import ColumnElement, Select, and_, func, select, text, tuple_
 from sqlalchemy.orm import Session, contains_eager, selectinload
 
 from app.api.v1.schemas import FeedItemOut, FeedPage, FeedSourceRef
@@ -51,6 +60,7 @@ def get_feed_page(
     topics: Sequence[str] | None = None,
     sources: Sequence[str] | None = None,
     read_state: ReadFilter = ReadFilter.ALL,
+    query: str | None = None,
     cursor: str | None = None,
     limit: int = 25,
 ) -> FeedPage:
@@ -58,13 +68,13 @@ def get_feed_page(
 
     ``topics``/``sources`` absent means "use the caller's saved
     selection"; present means "narrow to exactly these", including the
-    case where nothing matches. ``read_state`` has no saved counterpart —
-    it defaults to :attr:`ReadFilter.ALL` and narrows nothing. Raises
+    case where nothing matches. ``read_state`` and ``query`` have no saved
+    counterpart — both default to narrowing nothing. Raises
     :class:`app.services.errors.InvalidCursorError` for a cursor we did
     not issue.
     """
     statement = _base_query(user)
-    statement = _apply_filters(db, statement, user, topics, sources, read_state)
+    statement = _apply_filters(db, statement, user, topics, sources, read_state, query)
 
     if cursor is not None:
         position = decode_cursor(cursor)
@@ -117,6 +127,7 @@ def _apply_filters(
     topics: Sequence[str] | None,
     sources: Sequence[str] | None,
     read_state: ReadFilter,
+    query: str | None,
 ) -> Select[tuple[FeedItem, datetime, datetime]]:
     # A predicate over the read join the base query already carries, in
     # the WHERE of the same statement rather than a filter applied to the
@@ -133,6 +144,10 @@ def _apply_filters(
     source_filter = _effective_sources(db, user, sources)
     if source_filter is not None:
         statement = statement.where(Source.slug.in_(source_filter))
+
+    match = search_predicate(db, query)
+    if match is not None:
+        statement = statement.where(match)
 
     topic_filter = _effective_topics(db, user, topics)
     if topic_filter is not None:
@@ -188,6 +203,78 @@ def _effective_topics(db: Session, user: User, requested: Sequence[str] | None) 
     if not selected or len(selected) == len(rows):
         return None
     return selected
+
+
+#: Bound on the terms taken from one query. Past this the extra words
+#: narrow nothing a reader would notice and each one is another predicate;
+#: on SQLite that is another ``LIKE`` over the same scan.
+MAX_SEARCH_TERMS = 8
+
+#: The text a query is matched against, spelled once. The PostgreSQL index
+#: in revision ``b7c1e0a94f6d`` declares this same expression, and the
+#: planner only uses an expression index when the two match exactly — so
+#: this constant and that migration are a pair, and the PostgreSQL suite
+#: asserts the plan rather than trusting the resemblance.
+SEARCH_DOCUMENT_SQL = "feed_items.title || ' ' || coalesce(feed_items.summary, '')"
+
+_POSTGRES_MATCH = text(
+    f"to_tsvector('english', {SEARCH_DOCUMENT_SQL}) @@ plainto_tsquery('english', :search_query)"
+)
+
+
+def search_terms(query: str | None) -> list[str]:
+    """The words a query narrows on, or ``[]`` for one that narrows nothing.
+
+    Whitespace-only and absent are the same answer deliberately: a search
+    box the reader has cleared must return the unnarrowed feed rather than
+    an empty one.
+    """
+    if query is None:
+        return []
+    return query.split()[:MAX_SEARCH_TERMS]
+
+
+def search_predicate(db: Session, query: str | None) -> ColumnElement[bool] | None:
+    """Full-text narrowing for *query*, or ``None`` when it narrows nothing.
+
+    Two implementations, because the two engines are not interchangeable
+    here and pretending otherwise would hide the difference rather than
+    remove it.
+
+    *PostgreSQL* matches ``plainto_tsquery`` against a ``to_tsvector`` of
+    title and summary. ``plainto_tsquery`` rather than ``to_tsquery``
+    because it takes the reader's words as words — no operator syntax to
+    get wrong, and no malformed-input branch — and rather than
+    ``websearch_to_tsquery`` because that one's quoted phrases and ``-``
+    exclusions have no honest counterpart below, and an engine divergence
+    in *semantics* is worse than one in recall. It ANDs the terms, which
+    is what a reader typing two words means.
+
+    *SQLite* requires every term as a case-folded substring. This is the
+    development engine (``app/db/engine.py``), and the roadmap entry that
+    specified this work sanctioned ``LIKE`` for it. The divergence is real
+    and is stated rather than papered over. PostgreSQL matches stemmed
+    words: ``bookmarks`` finds a title saying "bookmark", and ``cat``
+    finds nothing that only says "catalogue". SQLite matches substrings,
+    so ``cat`` finds the catalogue. Recall differs between the engine a
+    developer runs and the one that serves anybody, which is a thing to
+    know before reading a search result on a laptop as evidence.
+
+    ``autoescape`` is not decoration: ``%`` and ``_`` are wildcards, so a
+    reader searching for ``100%`` would otherwise match everything.
+    """
+    terms = search_terms(query)
+    if not terms:
+        return None
+
+    if db.get_bind().dialect.name == "postgresql":
+        # `text()` is a `TextClause`, which is what `.where()` wants and
+        # not what it is annotated to want. The cast is the annotation
+        # catching up, not a claim about the SQL.
+        return cast("ColumnElement[bool]", _POSTGRES_MATCH.bindparams(search_query=" ".join(terms)))
+
+    document = func.lower(FeedItem.title + " " + func.coalesce(FeedItem.summary, ""))
+    return and_(*(document.contains(term.lower(), autoescape=True) for term in terms))
 
 
 def build_item_out(item: FeedItem, *, read: bool, bookmarked: bool) -> FeedItemOut:

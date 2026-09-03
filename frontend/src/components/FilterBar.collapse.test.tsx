@@ -88,7 +88,7 @@ const SESSION: SessionValue = {
   removeAccount: () => Promise.resolve(),
 };
 
-const NO_FILTERS: FeedFilters = { topics: null, sources: null, readState: 'all' };
+const NO_FILTERS: FeedFilters = { topics: null, sources: null, readState: 'all', query: '' };
 
 // --- the renderer -------------------------------------------------------
 
@@ -473,7 +473,7 @@ describe('a collapsed bar that is still filtering', () => {
   });
 
   it('separates the dimensions it is narrowed by', async () => {
-    const harness = await mount({ ...NO_FILTERS, sources: ['hn'], readState: 'unread' });
+    const harness = await mount({ ...NO_FILTERS, sources: ['hn'], readState: 'unread', query: '' });
     await settle(() => {
       disclosure(harness.container).click();
     });
@@ -497,7 +497,7 @@ describe('a collapsed bar that is still filtering', () => {
   });
 
   it('names a read-state narrowing, which no count could show', async () => {
-    const harness = await mount({ ...NO_FILTERS, readState: 'unread' });
+    const harness = await mount({ ...NO_FILTERS, readState: 'unread', query: '' });
     await settle(() => {
       disclosure(harness.container).click();
     });

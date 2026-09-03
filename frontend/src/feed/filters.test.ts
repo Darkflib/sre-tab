@@ -9,6 +9,7 @@ import {
   filterKey,
   hasOverride,
   hasSavableOverride,
+  MAX_QUERY_LENGTH,
   parseFilters,
   selectsNothing,
   toggle,
@@ -86,6 +87,7 @@ describe('parseFilters', () => {
       topics: [],
       sources: null,
       readState: 'all',
+      query: '',
     });
   });
 
@@ -94,11 +96,13 @@ describe('parseFilters', () => {
       topics: ['kernel'],
       sources: null,
       readState: 'all',
+      query: '',
     });
     expect(parseFilters(new URLSearchParams('sources=lwn'))).toEqual({
       topics: null,
       sources: ['lwn'],
       readState: 'all',
+      query: '',
     });
   });
 
@@ -107,6 +111,7 @@ describe('parseFilters', () => {
       topics: ['kernel', 'security'],
       sources: null,
       readState: 'all',
+      query: '',
     });
   });
 
@@ -117,6 +122,7 @@ describe('parseFilters', () => {
       topics: null,
       sources: [],
       readState: 'all',
+      query: '',
     });
   });
 
@@ -145,6 +151,7 @@ describe('parseFilters', () => {
       topics: ['kernel'],
       sources: null,
       readState: 'unread',
+      query: '',
     });
   });
 
@@ -172,6 +179,7 @@ describe('applyFiltersToParams', () => {
       topics: [],
       sources: null,
       readState: 'all',
+      query: '',
     });
     expect(next.get('topics')).toBe('');
     expect(next.toString()).toBe('topics=');
@@ -182,6 +190,7 @@ describe('applyFiltersToParams', () => {
       topics: ['kernel'],
       sources: null,
       readState: 'all',
+      query: '',
     });
     expect(next.get('view')).toBe('compact');
     expect(next.get('topics')).toBe('kernel');
@@ -189,7 +198,7 @@ describe('applyFiltersToParams', () => {
 
   it('does not mutate the parameters it is given', () => {
     const original = new URLSearchParams('topics=kernel');
-    applyFiltersToParams(original, { topics: [], sources: ['lwn'], readState: 'all' });
+    applyFiltersToParams(original, { topics: [], sources: ['lwn'], readState: 'all', query: '' });
     expect(original.toString()).toBe('topics=kernel');
   });
 
@@ -199,6 +208,7 @@ describe('applyFiltersToParams', () => {
     const filtered = applyFiltersToParams(new URLSearchParams(''), {
       ...EMPTY_FILTERS,
       readState: 'unread',
+      query: '',
     });
     expect(filtered.toString()).toBe('read_state=unread');
     expect(applyFiltersToParams(new URLSearchParams(''), EMPTY_FILTERS).has('read_state')).toBe(
@@ -210,26 +220,76 @@ describe('applyFiltersToParams', () => {
     const next = applyFiltersToParams(new URLSearchParams('read_state=read'), EMPTY_FILTERS);
     expect(next.has('read_state')).toBe(false);
   });
+
+  it('writes q only when there is a search', () => {
+    const searching = applyFiltersToParams(new URLSearchParams(''), {
+      ...EMPTY_FILTERS,
+      query: 'postgres',
+    });
+    expect(searching.get('q')).toBe('postgres');
+    expect(applyFiltersToParams(new URLSearchParams(''), EMPTY_FILTERS).has('q')).toBe(false);
+  });
+
+  it('clears a q already in the URL when the search is emptied', () => {
+    // "Clear filters" and the box's own clear button both arrive here. A
+    // `q` left behind would be a search the feed is no longer running and
+    // the URL still claims.
+    const next = applyFiltersToParams(new URLSearchParams('q=postgres'), EMPTY_FILTERS);
+    expect(next.has('q')).toBe(false);
+  });
+});
+
+describe('parsing a hand-edited q', () => {
+  // The server answers whitespace with the whole feed and over-long input
+  // with a 422. Both are settled here instead, so a shared or hand-typed
+  // URL cannot put an error banner over the feed.
+  it('reads a whitespace-only q as no search at all', () => {
+    expect(parseFilters(new URLSearchParams('q=%20%20')).query).toBe('');
+  });
+
+  it('trims the surrounding whitespace off a real one', () => {
+    expect(parseFilters(new URLSearchParams('q=%20postgres%20')).query).toBe('postgres');
+  });
+
+  it('truncates a q past the length the server accepts', () => {
+    const parsed = parseFilters(new URLSearchParams(`q=${'x'.repeat(500)}`));
+    expect(parsed.query).toBe('x'.repeat(MAX_QUERY_LENGTH));
+  });
+
+  it('reads an absent q as no search', () => {
+    expect(parseFilters(new URLSearchParams('topics=kernel')).query).toBe('');
+  });
 });
 
 // --- the round trip -----------------------------------------------------
 
 const ROUND_TRIPS: [string, FeedFilters][] = [
-  ['no override at all', { topics: null, sources: null, readState: 'all' }],
-  ['a topic override only', { topics: ['kernel'], sources: null, readState: 'all' }],
-  ['a source override only', { topics: null, sources: ['lwn'], readState: 'all' }],
+  ['no override at all', { topics: null, sources: null, readState: 'all', query: '' }],
+  ['a topic override only', { topics: ['kernel'], sources: null, readState: 'all', query: '' }],
+  ['a source override only', { topics: null, sources: ['lwn'], readState: 'all', query: '' }],
   [
     'both dimensions overridden',
-    { topics: ['kernel', 'security'], sources: ['lwn', 'hn'], readState: 'all' },
+    { topics: ['kernel', 'security'], sources: ['lwn', 'hn'], readState: 'all', query: '' },
   ],
-  ['everything deselected', { topics: [], sources: [], readState: 'all' }],
-  ['one dimension deselected, the other untouched', { topics: [], sources: null, readState: 'all' }],
-  ['one dimension deselected, the other narrowed', { topics: [], sources: ['lwn'], readState: 'all' }],
-  ['unread only', { topics: null, sources: null, readState: 'unread' }],
-  ['read only', { topics: null, sources: null, readState: 'read' }],
-  ['unread only within a narrowed source', { topics: null, sources: ['lwn'], readState: 'unread' }],
-  ['all three dimensions at once', { topics: ['kernel'], sources: ['lwn'], readState: 'read' }],
-  ['read state set while everything is deselected', { topics: [], sources: [], readState: 'read' }],
+  ['everything deselected', { topics: [], sources: [], readState: 'all', query: '' }],
+  ['one dimension deselected, the other untouched', { topics: [], sources: null, readState: 'all', query: '' }],
+  ['one dimension deselected, the other narrowed', { topics: [], sources: ['lwn'], readState: 'all', query: '' }],
+  ['unread only', { topics: null, sources: null, readState: 'unread', query: '' }],
+  ['read only', { topics: null, sources: null, readState: 'read', query: '' }],
+  ['unread only within a narrowed source', { topics: null, sources: ['lwn'], readState: 'unread', query: '' }],
+  ['all three dimensions at once', { topics: ['kernel'], sources: ['lwn'], readState: 'read', query: '' }],
+  ['read state set while everything is deselected', { topics: [], sources: [], readState: 'read', query: '' }],
+  ['a search only', { topics: null, sources: null, readState: 'all', query: 'postgres' }],
+  ['a multi-word search', { topics: null, sources: null, readState: 'all', query: 'keyset pagination' }],
+  // The characters a URL argues with, and the ones LIKE does. Both have to
+  // come back out of the round trip exactly as they went in, or the reader
+  // shares a link that searches for something else.
+  ['a search with URL punctuation', { topics: null, sources: null, readState: 'all', query: 'a&b=c#d+e' }],
+  ['a search with LIKE metacharacters', { topics: null, sources: null, readState: 'all', query: '100% snake_case' }],
+  [
+    'a search alongside every other dimension',
+    { topics: ['kernel'], sources: ['lwn'], readState: 'unread', query: 'postgres' },
+  ],
 ];
 
 describe('the URL round trip', () => {
@@ -246,8 +306,9 @@ describe('the URL round trip', () => {
       topics: null,
       sources: [],
       readState: 'all',
+      query: '',
     });
-    expect(parseFilters(params)).toEqual({ topics: null, sources: [], readState: 'all' });
+    expect(parseFilters(params)).toEqual({ topics: null, sources: [], readState: 'all', query: '' });
   });
 
   // Marked `.fails`: this asserts the behaviour we want and records that
@@ -272,6 +333,7 @@ describe('the URL round trip', () => {
       topics: null,
       sources: ['a,b'],
       readState: 'all',
+      query: '',
     });
     expect(parseFilters(params).sources).toEqual(['a,b']);
   });
@@ -280,19 +342,19 @@ describe('the URL round trip', () => {
 // --- hasOverride / selectsNothing ---------------------------------------
 
 const OVERRIDE_CASES: [string, FeedFilters, boolean][] = [
-  ['neither dimension set', { topics: null, sources: null, readState: 'all' }, false],
-  ['topics narrowed', { topics: ['kernel'], sources: null, readState: 'all' }, true],
-  ['sources narrowed', { topics: null, sources: ['lwn'], readState: 'all' }, true],
-  ['topics deselected entirely', { topics: [], sources: null, readState: 'all' }, true],
-  ['both set', { topics: [], sources: ['lwn'], readState: 'all' }, true],
+  ['neither dimension set', { topics: null, sources: null, readState: 'all', query: '' }, false],
+  ['topics narrowed', { topics: ['kernel'], sources: null, readState: 'all', query: '' }, true],
+  ['sources narrowed', { topics: null, sources: ['lwn'], readState: 'all', query: '' }, true],
+  ['topics deselected entirely', { topics: [], sources: null, readState: 'all', query: '' }, true],
+  ['both set', { topics: [], sources: ['lwn'], readState: 'all', query: '' }, true],
   // Read state counts as an override on its own: it is the only thing
   // putting "Clear filters" on screen, and a user who narrowed to unread
   // and saw no badge would have a short feed and no way back.
-  ['read state narrowed on its own', { topics: null, sources: null, readState: 'unread' }, true],
-  ['read state narrowed to read', { topics: null, sources: null, readState: 'read' }, true],
+  ['read state narrowed on its own', { topics: null, sources: null, readState: 'unread', query: '' }, true],
+  ['read state narrowed to read', { topics: null, sources: null, readState: 'read', query: '' }, true],
   [
     'read state alongside a narrowed source',
-    { topics: null, sources: ['lwn'], readState: 'read' },
+    { topics: null, sources: ['lwn'], readState: 'read', query: '' },
     true,
   ],
 ];
@@ -307,23 +369,23 @@ describe('hasOverride', () => {
 });
 
 const NOTHING_CASES: [string, FeedFilters, boolean][] = [
-  ['no override', { topics: null, sources: null, readState: 'all' }, false],
-  ['both narrowed to something', { topics: ['kernel'], sources: ['lwn'], readState: 'all' }, false],
-  ['topics deselected', { topics: [], sources: null, readState: 'all' }, true],
-  ['sources deselected', { topics: null, sources: [], readState: 'all' }, true],
+  ['no override', { topics: null, sources: null, readState: 'all', query: '' }, false],
+  ['both narrowed to something', { topics: ['kernel'], sources: ['lwn'], readState: 'all', query: '' }, false],
+  ['topics deselected', { topics: [], sources: null, readState: 'all', query: '' }, true],
+  ['sources deselected', { topics: null, sources: [], readState: 'all', query: '' }, true],
   [
     'sources deselected while topics are narrowed',
-    { topics: ['kernel'], sources: [], readState: 'all' },
+    { topics: ['kernel'], sources: [], readState: 'all', query: '' },
     true,
   ],
-  ['both deselected', { topics: [], sources: [], readState: 'all' }, true],
+  ['both deselected', { topics: [], sources: [], readState: 'all', query: '' }, true],
   // Read state is deliberately absent from this predicate. "Unread only"
   // can return nothing, but whether it does is a fact about the database,
   // and claiming it here would render an empty state over a feed that has
   // items — and skip the request that would have proved otherwise.
-  ['unread only, nothing else set', { topics: null, sources: null, readState: 'unread' }, false],
-  ['read only, nothing else set', { topics: null, sources: null, readState: 'read' }, false],
-  ['unread only with sources deselected', { topics: null, sources: [], readState: 'unread' }, true],
+  ['unread only, nothing else set', { topics: null, sources: null, readState: 'unread', query: '' }, false],
+  ['read only, nothing else set', { topics: null, sources: null, readState: 'read', query: '' }, false],
+  ['unread only with sources deselected', { topics: null, sources: [], readState: 'unread', query: '' }, true],
 ];
 
 describe('selectsNothing', () => {
@@ -348,26 +410,26 @@ describe('filterKey', () => {
   it('is stable under selection order', () => {
     // The cache key has to be identity, not sequence: toggling a chip off
     // and on again reorders the array and must not refetch.
-    expect(filterKey({ topics: ['a', 'b'], sources: null, readState: 'all' }, 50)).toBe(
-      filterKey({ topics: ['b', 'a'], sources: null, readState: 'all' }, 50),
+    expect(filterKey({ topics: ['a', 'b'], sources: null, readState: 'all', query: '' }, 50)).toBe(
+      filterKey({ topics: ['b', 'a'], sources: null, readState: 'all', query: '' }, 50),
     );
   });
 
   it('does not mutate the arrays it is given', () => {
     const topics = ['b', 'a'];
-    filterKey({ topics, sources: null, readState: 'all' }, 50);
+    filterKey({ topics, sources: null, readState: 'all', query: '' }, 50);
     expect(topics).toEqual(['b', 'a']);
   });
 
   it('separates no override from an empty selection', () => {
-    expect(filterKey({ topics: null, sources: null, readState: 'all' }, 50)).not.toBe(
-      filterKey({ topics: [], sources: [], readState: 'all' }, 50),
+    expect(filterKey({ topics: null, sources: null, readState: 'all', query: '' }, 50)).not.toBe(
+      filterKey({ topics: [], sources: [], readState: 'all', query: '' }, 50),
     );
   });
 
   it('separates the two dimensions', () => {
-    expect(filterKey({ topics: ['lwn'], sources: null, readState: 'all' }, 50)).not.toBe(
-      filterKey({ topics: null, sources: ['lwn'], readState: 'all' }, 50),
+    expect(filterKey({ topics: ['lwn'], sources: null, readState: 'all', query: '' }, 50)).not.toBe(
+      filterKey({ topics: null, sources: ['lwn'], readState: 'all', query: '' }, 50),
     );
   });
 
@@ -385,17 +447,17 @@ describe('filterKey', () => {
     // This was reachable, not theoretical: no creation path constrains a
     // slug's shape — `add_source` and `add_topic` check uniqueness, and
     // the columns are plain `String(64)`.
-    expect(filterKey({ topics: ['*'], sources: null, readState: 'all' }, 50)).not.toBe(
-      filterKey({ topics: null, sources: null, readState: 'all' }, 50),
+    expect(filterKey({ topics: ['*'], sources: null, readState: 'all', query: '' }, 50)).not.toBe(
+      filterKey({ topics: null, sources: null, readState: 'all', query: '' }, 50),
     );
-    expect(filterKey({ topics: ['a+b'], sources: null, readState: 'all' }, 50)).not.toBe(
-      filterKey({ topics: ['a', 'b'], sources: null, readState: 'all' }, 50),
+    expect(filterKey({ topics: ['a+b'], sources: null, readState: 'all', query: '' }, 50)).not.toBe(
+      filterKey({ topics: ['a', 'b'], sources: null, readState: 'all', query: '' }, 50),
     );
   });
 
   it('separates an empty selection from a slug that encodes as empty', () => {
-    expect(filterKey({ topics: [], sources: null, readState: 'all' }, 50)).not.toBe(
-      filterKey({ topics: [''], sources: null, readState: 'all' }, 50),
+    expect(filterKey({ topics: [], sources: null, readState: 'all', query: '' }, 50)).not.toBe(
+      filterKey({ topics: [''], sources: null, readState: 'all', query: '' }, 50),
     );
   });
 
@@ -421,8 +483,8 @@ describe('filterKey', () => {
   });
 
   it('changes with read state while the other dimensions are narrowed', () => {
-    const base: FeedFilters = { topics: ['kernel'], sources: ['lwn'], readState: 'all' };
-    expect(filterKey(base, 50)).not.toBe(filterKey({ ...base, readState: 'unread' }, 50));
+    const base: FeedFilters = { topics: ['kernel'], sources: ['lwn'], readState: 'all', query: '' };
+    expect(filterKey(base, 50)).not.toBe(filterKey({ ...base, readState: 'unread', query: '' }, 50));
   });
 
   it('does not alias read state onto a slug of the same name', () => {
@@ -431,14 +493,14 @@ describe('filterKey', () => {
     // must not produce one cache entry. JSON encoding is what holds it —
     // `readState` is its own element rather than text concatenated with
     // its neighbours.
-    expect(filterKey({ topics: ['unread'], sources: null, readState: 'all' }, 50)).not.toBe(
-      filterKey({ topics: null, sources: null, readState: 'unread' }, 50),
+    expect(filterKey({ topics: ['unread'], sources: null, readState: 'all', query: '' }, 50)).not.toBe(
+      filterKey({ topics: null, sources: null, readState: 'unread', query: '' }, 50),
     );
   });
 
   it('is still stable under selection order once read state is in the key', () => {
-    expect(filterKey({ topics: ['a', 'b'], sources: null, readState: 'unread' }, 50)).toBe(
-      filterKey({ topics: ['b', 'a'], sources: null, readState: 'unread' }, 50),
+    expect(filterKey({ topics: ['a', 'b'], sources: null, readState: 'unread', query: '' }, 50)).toBe(
+      filterKey({ topics: ['b', 'a'], sources: null, readState: 'unread', query: '' }, 50),
     );
   });
 
@@ -446,12 +508,24 @@ describe('filterKey', () => {
     // The property the delimiter version lost. Asserted rather than
     // assumed, because "encode it as JSON" is a claim about the output,
     // not about which function was called.
-    expect(JSON.parse(filterKey({ topics: ['a'], sources: [], readState: 'read' }, 25))).toEqual([
-      ['a'],
-      [],
-      'read',
-      25,
-    ]);
+    expect(
+      JSON.parse(filterKey({ topics: ['a'], sources: [], readState: 'read', query: 'pg' }, 25)),
+    ).toEqual([['a'], [], 'read', 'pg', 25]);
+  });
+
+  it('changes when only the search changes', () => {
+    // The reason every dimension has to be in this key, and the one that
+    // would be quietest to get wrong: `usePagedResource` refetches only on
+    // a key change, so a query left out of it is a search box that types
+    // into the URL and never narrows anything.
+    const base = { topics: null, sources: null, readState: 'all' } as const;
+
+    expect(filterKey({ ...base, query: 'postgres' }, 25)).not.toBe(
+      filterKey({ ...base, query: '' }, 25),
+    );
+    expect(filterKey({ ...base, query: 'postgres' }, 25)).not.toBe(
+      filterKey({ ...base, query: 'postgre' }, 25),
+    );
   });
 });
 
@@ -465,15 +539,15 @@ describe('hasSavableOverride', () => {
   // nothing. This is what keeps that button disabled.
   const CASES: [string, FeedFilters, boolean][] = [
     ['nothing set', EMPTY_FILTERS, false],
-    ['read state only', { topics: null, sources: null, readState: 'unread' }, false],
-    ['topics narrowed', { topics: ['kernel'], sources: null, readState: 'all' }, true],
-    ['sources narrowed', { topics: null, sources: ['lwn'], readState: 'all' }, true],
+    ['read state only', { topics: null, sources: null, readState: 'unread', query: '' }, false],
+    ['topics narrowed', { topics: ['kernel'], sources: null, readState: 'all', query: '' }, true],
+    ['sources narrowed', { topics: null, sources: ['lwn'], readState: 'all', query: '' }, true],
     [
       'topics narrowed and read state set',
-      { topics: ['kernel'], sources: null, readState: 'read' },
+      { topics: ['kernel'], sources: null, readState: 'read', query: '' },
       true,
     ],
-    ['everything deselected', { topics: [], sources: [], readState: 'all' }, true],
+    ['everything deselected', { topics: [], sources: [], readState: 'all', query: '' }, true],
   ];
 
   it.each(CASES)('%s', (_label, filters, expected) => {
@@ -483,7 +557,7 @@ describe('hasSavableOverride', () => {
   it('is not the same question as hasOverride', () => {
     // The two diverge on exactly one shape, and that divergence is the
     // reason the function exists rather than reusing `hasOverride`.
-    const readOnly: FeedFilters = { topics: null, sources: null, readState: 'unread' };
+    const readOnly: FeedFilters = { topics: null, sources: null, readState: 'unread', query: '' };
     expect(hasOverride(readOnly)).toBe(true);
     expect(hasSavableOverride(readOnly)).toBe(false);
   });
@@ -514,7 +588,7 @@ describe('effectiveSelection', () => {
 
   it('lets an override win over the saved selection', () => {
     const result = effectiveSelection(
-      { topics: null, sources: ['phoronix'], readState: 'all' },
+      { topics: null, sources: ['phoronix'], readState: 'all', query: '' },
       preferences({ sources: ['lwn'], topics: ['kernel'] }),
       CATALOGUE,
     );
@@ -532,7 +606,7 @@ describe('effectiveSelection', () => {
     // flips meaning — the user's "show me nothing" is stored as "show me
     // everything". The function is right; the caller needs a guard.
     const result = effectiveSelection(
-      { topics: null, sources: [], readState: 'all' },
+      { topics: null, sources: [], readState: 'all', query: '' },
       preferences({ sources: ['lwn'], topics: ['kernel'] }),
       CATALOGUE,
     );
@@ -541,7 +615,7 @@ describe('effectiveSelection', () => {
 
   it('falls back per dimension, not for the pair', () => {
     const result = effectiveSelection(
-      { topics: ['security'], sources: null, readState: 'all' },
+      { topics: ['security'], sources: null, readState: 'all', query: '' },
       preferences({ sources: [], topics: ['kernel'] }),
       CATALOGUE,
     );

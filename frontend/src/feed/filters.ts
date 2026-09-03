@@ -18,12 +18,40 @@ export interface FeedFilters {
   topics: string[] | null;
   sources: string[] | null;
   readState: ReadFilter;
+  /**
+   * Two states behind one representation, for the same reason `readState`
+   * has: there is no saved counterpart to fall back to, so "not searching"
+   * is a value this can hold — the empty string — rather than an absence it
+   * has to signal. A `null` here would mean what `''` means while looking
+   * like it meant something else.
+   */
+  query: string;
 }
 
-export const EMPTY_FILTERS: FeedFilters = { topics: null, sources: null, readState: 'all' };
+export const EMPTY_FILTERS: FeedFilters = {
+  topics: null,
+  sources: null,
+  readState: 'all',
+  query: '',
+};
 
 /** The URL and API spelling of `readState`; the two agree on purpose. */
 export const READ_STATE_PARAM = 'read_state';
+
+/**
+ * The URL and API spelling of `query`. Short because a reader sees it and
+ * may well type it, and `q` is what every other search box in the world
+ * puts there.
+ */
+export const QUERY_PARAM = 'q';
+
+/**
+ * Matches `FEED_MAX_QUERY_LENGTH` on the server, which answers anything
+ * longer with a 422. Enforced here as a `maxLength` on the input so the
+ * reader meets a text box that stops rather than an error banner over the
+ * whole feed.
+ */
+export const MAX_QUERY_LENGTH = 200;
 
 /**
  * A `Record` keyed by the union rather than a list of strings: adding a
@@ -55,6 +83,10 @@ export function parseFilters(params: URLSearchParams): FeedFilters {
     topics: parseList(params.get('topics')),
     sources: parseList(params.get('sources')),
     readState: parseReadState(params.get(READ_STATE_PARAM)),
+    // Trimmed and bounded on the way in, so a hand-edited or shared URL
+    // carrying whitespace or 4KB of text becomes a query the server will
+    // answer rather than a 422 the reader has to decode.
+    query: (params.get(QUERY_PARAM) ?? '').trim().slice(0, MAX_QUERY_LENGTH),
   };
 }
 
@@ -70,6 +102,11 @@ export function applyFiltersToParams(params: URLSearchParams, filters: FeedFilte
   // link that says nothing.
   if (filters.readState === 'all') next.delete(READ_STATE_PARAM);
   else next.set(READ_STATE_PARAM, filters.readState);
+  // Same reasoning again: an empty search is the default on both sides, so
+  // writing `q=` would put a parameter in every shared link that says
+  // nothing.
+  if (filters.query === '') next.delete(QUERY_PARAM);
+  else next.set(QUERY_PARAM, filters.query);
   return next;
 }
 
@@ -77,7 +114,12 @@ export function hasOverride(filters: FeedFilters): boolean {
   // Read state counts: it drives the "Filtered" badge, and the badge is
   // what puts "Clear filters" on screen. Leave it out and a user who has
   // narrowed to unread sees an unexplained short feed with no way back.
-  return filters.topics !== null || filters.sources !== null || filters.readState !== 'all';
+  return (
+    filters.topics !== null ||
+    filters.sources !== null ||
+    filters.readState !== 'all' ||
+    filters.query !== ''
+  );
 }
 
 /**
@@ -122,7 +164,13 @@ export function hasSavableOverride(filters: FeedFilters): boolean {
  */
 export function filterKey(filters: FeedFilters, limit: number): string {
   const part = (value: string[] | null) => (value === null ? null : [...value].sort());
-  return JSON.stringify([part(filters.topics), part(filters.sources), filters.readState, limit]);
+  return JSON.stringify([
+    part(filters.topics),
+    part(filters.sources),
+    filters.readState,
+    filters.query,
+    limit,
+  ]);
 }
 
 /**

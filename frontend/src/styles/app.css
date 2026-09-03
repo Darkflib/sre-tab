@@ -366,6 +366,63 @@
   margin-left: auto;
 }
 
+/* --- Search --------------------------------------------------------- */
+
+/* In the filter head, and sized to take the slack the head has rather than
+   a fixed width: the head wraps, so a rigid box would either crowd the
+   badge on a laptop or sit stranded beside it on a wide screen. The floor
+   is roughly the length of a two-word search plus its affordances. */
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 14rem;
+  min-width: 12rem;
+  max-width: 26rem;
+}
+
+.search__input {
+  width: 100%;
+  /* Room for the icon on the left and the clear button on the right, both
+     of which are positioned over the field rather than laid out beside it
+     — so the text never runs under either. */
+  padding-left: 2rem;
+  padding-right: 2rem;
+}
+
+.search__icon {
+  position: absolute;
+  left: 0.6rem;
+  color: var(--text-muted);
+  /* Decoration over an input: it must not eat the click that focuses it. */
+  pointer-events: none;
+}
+
+/* WebKit draws its own clear button, which sits exactly where ours does,
+   appears in one engine only, and cannot be reached from the keyboard. One
+   affordance, ours, everywhere. */
+.search__input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.search__clear {
+  position: absolute;
+  right: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.search__clear:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
 /* Why "Save as my default" is unavailable. A disabled control with no
    stated reason is its own small surprise, and this one is not obvious:
    an empty selection is a step towards a filter, not a filter. */

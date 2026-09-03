@@ -21,10 +21,18 @@ import { cssVars } from '../lib/css';
 import { percent } from '../lib/format';
 import { useAuthenticatedSession } from '../session/useSession';
 import { ChevronIcon, CrossIcon } from './icons';
+import { SearchBox } from './SearchBox';
 
 interface FilterBarProps {
   filters: FeedFilters;
-  onChange: (next: FeedFilters) => void;
+  /**
+   * `replace` asks the router to replace the current history entry rather
+   * than push one. Typing is the reason it exists: a debounced search
+   * commits every few hundred milliseconds, and each commit pushing an
+   * entry would make Back walk the reader backwards through their own
+   * keystrokes instead of out of the search.
+   */
+  onChange: (next: FeedFilters, options?: { replace?: boolean }) => void;
   /** Measured from the items actually loaded, not assumed. */
   shares: SourceShare[];
   loadedCount: number;
@@ -79,6 +87,9 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
   const setReadState = (next: ReadFilter) => {
     onChange({ ...filters, readState: next });
   };
+  const setQuery = (next: string) => {
+    onChange({ ...filters, query: next }, { replace: true });
+  };
 
   // Nothing selected is a step, not a destination: it exists so you can
   // clear the chips and pick two, rather than deselecting sixteen. It also
@@ -132,6 +143,16 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
           Filters
         </button>
 
+        {/*
+          In the head, which never collapses, rather than in the body with
+          the chips. A search is the narrowing a reader is most likely to
+          have forgotten they left on — it is a few words in a box rather
+          than a chip they can see — so hiding it behind the disclosure
+          would be the failure this file is written against, in its worst
+          form.
+        */}
+        <SearchBox value={filters.query} onChange={setQuery} />
+
         <p className="filters__state" role="status">
           {overridden ? (
             <>
@@ -142,6 +163,11 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
                   to unread leaves every source and topic selected, and a
                   "Filtered" badge over "3 of 3 sources" reads as a bug. */}
               {filters.readState === 'all' ? null : `, ${filters.readState} only`}
+              {/* Same reasoning as the line above, and the stronger case
+                  for it: a search narrows without touching a single chip,
+                  so "8 of 8 sources, 4 of 4 topics" over three results is
+                  a badge actively disagreeing with the screen. */}
+              {filters.query === '' ? null : `, matching “${filters.query}”`}
             </>
           ) : (
             <>
