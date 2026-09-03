@@ -74,6 +74,19 @@ that.
   - First-screen polish: source icons, mark-all-read, per-source freshness,
     and a second mobile breakpoint.
   - A `/metrics` endpoint.
+- [Reading experience](#reading-experience)
+  - The order the next seven land in, and the reason it is that order.
+  - Wide screens waste space at a 1180px cap, and the page size has to move
+    with the column count.
+  - Search first, as the text predicate the two below reuse — the design
+    itself stays under [Product](#product).
+  - Muted words, and muted tags, which wait on the topic entry.
+  - Channel images as the fallback when an item carries none; caching them
+    here is the larger, separate item.
+  - Non-English items — a language column and a predicate, with translation
+    proper left as a positioning decision.
+  - Topics that describe the article rather than its publisher.
+  - Telling the reader that new items have arrived.
 
 <a id="supply-chain-hygiene"></a>
 ## Supply-chain hygiene
@@ -1419,3 +1432,146 @@ difference between the two.
   scraper to run. What a `/metrics` endpoint would add over it is history and
   a graph rather than a page at the moment of failure — worth having, and
   worth less than it was a change ago.
+
+<a id="reading-experience"></a>
+## Reading experience
+
+Seven asks from 3 September 2026, recorded with the order they should land
+in rather than as seven independent entries, because the order is the part
+that took thinking and most of the items are obvious once placed.
+
+One structural fact decides it. Six of the seven are the same shape:
+[`_apply_filters`](app/services/feed.py) is the only place the feed narrows,
+it is private with exactly one caller, and search, muted words, muted tags,
+and a language filter all belong inside it — predicates in the `WHERE` of the
+statement that already runs, which is how the read-state filter went in and
+for the reason given there. So the question is not which of these is most
+wanted. It is which predicate to build first, and what the next one then
+gets for nothing.
+
+- **Wide screens waste space, and it is not a layout problem.**
+  [app.css](frontend/src/styles/app.css) caps `.shell__main` at 1180px and
+  lays the grid out as `repeat(auto-fill, minmax(20rem, 1fr))`. Eleven
+  hundred and eighty over three hundred and twenty is three. The columns are
+  not the constraint and the empty margin is not a gap in the design — both
+  are that one cap, so the change is one declaration plus a decision about
+  whether the ceiling is a constant, a second breakpoint, or a preference
+  beside `layout`.
+
+  Worth naming rather than simply doing, because of what it collides with.
+  `max_visible_cards` doubles as the page size
+  ([FeedPage.tsx](frontend/src/routes/FeedPage.tsx)), and the sentinel that
+  triggers `loadMore` carries a 400px root margin. Twenty-five cards in six
+  columns is four rows: the sentinel is inside the viewport the moment the
+  page settles, and the feed pages itself again, and again, without the
+  reader scrolling at all. Raising the column ceiling without raising the
+  page size with it turns infinite scroll into a loop. This is first because
+  it is cheap and because everything below is built while looking at it.
+
+- **Search is the keystone, not the first feature.** The design is already
+  specified under [Product](#product) — a `tsvector` and a GIN index on
+  PostgreSQL, FTS5 or a `LIKE` on SQLite, applied as one more predicate
+  inside the existing keyset query. What is new here is its position. Built
+  as a reusable text predicate rather than as a search feature that happens
+  to contain one, it is most of the muted-words work as well, and the two
+  differ by a negation. Built the other way round — muting first, search
+  second — the same expression gets written twice, and the second one has to
+  agree with the first about stemming, case folding, and what a word
+  boundary is on two engines.
+
+- **Muted words, which is that predicate negated.** The store is the new
+  part: a list per user, so `user_muted_terms(user_id, term, kind)`
+  following the shape `user_preference_topics` already sets, and exposed
+  through `PreferencesPatch` as a replace-the-whole-list field beside
+  `topics` and `sources`, which is the contract those two already have.
+
+  **Muting by tag ships with it and is nearly useless until the tag entry
+  below lands.** Topic links come from the *source*, asserted onto every
+  item of every batch by
+  [`upsert_items`](app/ingest/store.py), so `uk-news` is on everything the
+  Guardian publishes including the ones about Nvidia. The first tag anybody
+  mutes is therefore a tag that mutes an entire publication — which the
+  source filter has always done — and the honest conclusion a reader draws
+  from that is that muting does not work. Words first. Tags become the
+  durable answer to "no football, ever" only after topics describe the item
+  rather than its publisher.
+
+- **Feeds carry a channel image and nothing reads it.** `ParsedFeed` holds a
+  version, a title, and entries ([parse.py](app/ingest/parse.py)); `_image`
+  is per-entry only. feedparser exposes the channel's own artwork, and
+  `sources.icon_url` is already on the model, already in `FeedSourceRef`,
+  already rendered by `SourceIcon`, and set by nothing at all — so capturing
+  it at parse time closes the source-icon half of the first-screen entry
+  under [Product](#product) in the same change, and the card-level fallback
+  for an item with no image of its own is then a couple of lines in
+  [ItemCard.tsx](frontend/src/components/ItemCard.tsx).
+
+  **Caching those images on this server is a separate item and a larger
+  one.** It would be the first write path that stores third-party bytes:
+  a volume, hash-addressed retrieval, magic-byte validation, a size cap, and
+  an explicit declaration that the store is disposable — which it is, being
+  re-fetchable, and which is what keeps it out of backup scope. It should
+  not be bundled with the fallback, which needs none of that.
+
+  The payoff, when it does come, is not the missing thumbnails. `img-src`
+  is `'self' https:` in both [middleware.py](app/middleware.py) and
+  [deploy/Caddyfile](deploy/Caddyfile), so every card on the page currently
+  fires a request at the publisher's CDN and every reader's address reaches
+  a third party as the price of a picture. Serving the images from here is
+  what allows `https:` to come *out* of that directive. For a project whose
+  pitch is that the data lives on your own server, that is the argument.
+
+- **Non-English items, where the ask is translation and the answer is
+  probably detection.** An occasional Portuguese post in a developer feed is
+  unwanted rather than untranslated: a `feed_items.language` column set at
+  ingest, plus one more predicate, removes it, and costs a fraction of what
+  the alternative costs.
+
+  Translation proper is a positioning decision and should be taken as one
+  rather than discovered halfway through building it. An external
+  translation API is the first thing in this system that would send a
+  reader's content off the host, which contradicts the pitch unless it is
+  operator-keyed, documented, and off by default. A local model — Argos,
+  CTranslate2 — keeps the promise and is a large dependency to weigh against
+  a unit capped at `MemoryMax=768M`. Neither is ruled out. Both are more
+  than "occasionally there is a German headline" is asking for.
+
+- **Topics describe the publisher, not the article.**
+  [`upsert_items`](app/ingest/store.py) re-asserts the source's topics onto
+  every item in every batch, which is why a story about a chip company
+  carries `uk-news`. The cheapest credible fix is a keyword ruleset over
+  title and summary at ingest, additive to the source's topics:
+  deterministic, testable, no new dependency, and nothing leaves the host.
+
+  Two things need deciding before any of it is written. Nothing in the store
+  ever *removes* a topic link, so reclassification — a rule corrected, a
+  ruleset extended — has no path today and needs one, and the ninety days of
+  retained items behind the feed are a backfill rather than a migration.
+  And `_effective_topics` skips narrowing whenever a selection covers every
+  enabled topic, on the stated grounds that an unclassified item vanishing
+  from a source the reader explicitly enabled "would read as data loss
+  rather than as a filter" ([feed.py](app/services/feed.py)). Under
+  source-derived topics that comment is defensive. Under content-derived
+  ones it is load-bearing, because items that match no rule become ordinary
+  rather than hypothetical.
+
+  This entry also gets a large assist from the ingest work below, and that is
+  a reason to sequence the two together rather than a reason to defer this.
+
+- **The page never says that anything new has arrived.** It should, and it
+  is last of the seven for a structural reason rather than a priority one: a
+  count that does not apply the reader's filters will announce forty new
+  items when thirty-eight of them are muted football, and every predicate
+  above changes the answer.
+
+  That is a sequencing hazard rather than a hard dependency, and naming the
+  mitigation is the point of writing it down: built as a count that calls
+  `_apply_filters` rather than growing a second copy of the narrowing, it
+  inherits each predicate above as that predicate lands, and can be built at
+  any point after the first of them. The query itself is cheap — items newer
+  than the newest one held is the same `(published_at, id)` seek the feed
+  already makes, in the other direction. The banner has a precedent in the
+  volume notice, and `reload` and the `r` shortcut already exist to act on
+  it. Nothing should poll faster than a few minutes:
+  `source_default_refresh_minutes` is thirty, so a tighter interval asks a
+  question whose answer cannot have changed.
