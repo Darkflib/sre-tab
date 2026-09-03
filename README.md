@@ -210,6 +210,58 @@ feed URL by hand and read the `Location` header before concluding the feed
 is down. There is more on this, and on the rest of the operator CLI, in
 [deploy/README.md](deploy/README.md#seeding-the-catalogue-and-the-operator-cli).
 
+<a id="calling-the-api-from-another-application"></a>
+## Calling the API from another application
+
+Every route under `/api/v1` accepts a per-user API token as well as the
+browser's session cookie, so a script, a status board, or a terminal can read
+your feed without holding your GitHub session.
+
+Create one under **Settings → API tokens**. You choose a label, an expiry if
+you want one, and — the part worth pausing on — a scope:
+
+| Scope | What it can do | When to use it |
+| --- | --- | --- |
+| **Read only** | `GET` and nothing else | Anything that displays your feed. Almost everything. |
+| **Full access** | Everything your account can do, including deleting it | Only when the other application genuinely writes. |
+
+The difference is the whole blast radius of a leak. A read-only token that
+gets into a log file discloses what you read; a full-access one is your
+account. Pick read-only unless you know you are writing.
+
+**The token is shown once, at creation, and never again.** Only a SHA-256
+digest of it is stored, the way session tokens already are, so the server
+cannot show it to you a second time — if you lose it, revoke it and make
+another. Every token starts `sretab_pat_`, which is there so it is greppable
+and so a secret scanner can recognise one in a repository.
+
+Send it as an ordinary bearer credential:
+
+```sh
+curl --silent --header "Authorization: Bearer $SRE_TAB_TOKEN" \
+  https://news.example.com/api/v1/feed?limit=5
+```
+
+No CSRF header is needed, because there is no cookie: CSRF is enforced on
+requests carrying the session cookie, and a bearer request has none.
+
+Four things to expect, none of which is a fault:
+
+- **A refused token is always `401 {"detail": "Not signed in"}`.** Unknown,
+  malformed, revoked, expired, and "the owner is no longer on
+  `ALLOWED_GITHUB_IDS`" all answer identically, on purpose — which of the
+  five it was is not information a caller is entitled to.
+- **A read-only token gets `403` on any `POST`, `PUT`, `PATCH`, or `DELETE`,**
+  with a message saying so. This is decided before the route runs, so it
+  applies to every endpoint, including ones added after you read this.
+- **Removing an account from the allow-list kills its tokens immediately.**
+  The list is consulted on every request, not only at sign-in, so revoking
+  someone's access does not leave a credential behind that outlives it.
+- **Tokens cannot be managed with a token.** `/api/v1/me/tokens` requires the
+  browser session and answers `403` to a bearer credential, however
+  privileged. That is what makes revoking a leaked token mean something: its
+  holder could otherwise have issued themselves a replacement.
+
 ## Deploying
 
 A single Podman host with system Quadlets: PostgreSQL, a migration oneshot,
@@ -281,11 +333,14 @@ not been demonstrated, which is a different thing from being tested.
   `frontend/` is gated in CI and covers the theme layer thoroughly —
   resolution and its storage fallbacks, the anti-flash script executed in a
   VM context, and WCAG contrast recomputed from `tokens.css` for both themes
-  — the feed's filter model and volume signals, and now the fetch layer
-  (`src/api/client.ts`) and the pagination hook's effects
+  — the feed's filter model and volume signals, the fetch layer
+  (`src/api/client.ts`), and the pagination hook's effects
   (`src/data/usePagedResource.ts`), the last two under a per-file
-  `happy-dom` environment. What remains uncovered is `src/components/` and
-  `src/routes/`: nothing renders a screen and asserts what a user would see.
+  `happy-dom` environment. Exactly one screen is now mounted and asserted
+  against the DOM: `src/routes/ApiTokensSection.tsx`, because it is the only
+  one that handles a credential. The rest of `src/routes/` and all of
+  `src/components/` remain uncovered — nothing else renders a screen and
+  asserts what a user would see.
 - **Backups sit on the same host as the database.** That is a backup, not
   disaster recovery. The `.sha256` sidecars exist so a copy taken off-host
   can be verified at the far end.
