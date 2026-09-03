@@ -194,7 +194,7 @@ client's dependency tree or in the image, and Renovate manages it through its
 ordinary npm manager with no custom rule needed.
 
 happy-dom appears in two manifests — here and in the frontend, which vets it
-for the two Vitest files that need a document. They pin it independently,
+for the four Vitest files that need a document. They pin it independently,
 Renovate moves both in the same weekly group, and they are not required to
 agree; reusing it is about not vetting a second DOM implementation, not about
 the versions matching.

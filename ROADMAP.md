@@ -1401,6 +1401,16 @@ difference between the two.
   [app.css](frontend/src/styles/app.css) holds exactly one media query, at
   42rem, which makes the chip bar on a phone unverified rather than
   known-bad.
+
+  **The filter bar now collapses, and that closes none of the four.** It is
+  a disclosure over the chips whose state is kept per device, so a reader can
+  make the first screen small; the icons, mark-all-read, and per-source
+  freshness are untouched, and the second breakpoint is still one media query
+  away — collapsing is a control the reader operates, not a layout that
+  responds. What it does settle is the smaller claim in the sentence above:
+  the expanded chip bar has now been looked at at 375px, at 42rem, and above,
+  so it is neither unverified nor known-bad. It is legible and it is large,
+  which is why the collapse is worth having and why the breakpoint still is.
 - **A `/metrics` endpoint.** Prometheus exposition is among the commoner
   self-hosting asks, and it costs this project nothing it has promised:
   a scrape is a local pull, so "nothing phones home" survives it intact.

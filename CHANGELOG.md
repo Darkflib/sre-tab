@@ -223,6 +223,54 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   set-differencing the required contexts against the check-runs the repository
   actually reports, which came back empty.
 
+- **The filter bar collapses, and says what it is still filtering while it
+  is collapsed.** Filtering is the primary control on the feed screen and the
+  chips are in the page flow deliberately — that argument decided where the
+  control lives, and was never an argument about how much of the viewport it
+  keeps afterwards. On a phone the chip bar is most of the first screen
+  before a single article is visible, and on any screen it is noise once the
+  selection is settled. The bar is now a disclosure: a real `<button>`
+  carrying `aria-expanded` and `aria-controls`, over a region toggled with
+  `hidden` so the chips leave the tab order and the accessibility tree
+  together rather than only leaving the paint.
+
+  **The failure this had to avoid is a collapsed bar that filters silently.**
+  A reader with three sources selected and no chips on screen reads a short
+  feed as a broken one. So the head never collapses — the "Filtered" badge,
+  the counts, and "Clear filters" stay put — and a summary line underneath
+  names what the counts cannot: "3 of 8 sources" does not say *which* three,
+  and the chips that would are exactly what is hidden.
+
+  That summary keeps the three states of a filter dimension apart, which is
+  the distinction the whole filter model turns on. `null` means "no override,
+  use my saved selection", so it contributes no phrase at all and an
+  unfiltered bar summarises to nothing — a phrase there would report a filter
+  that does not exist. `[]` means the user deselected everything, which is
+  the loudest case rather than the quietest, so it is named outright: "No
+  sources selected". A list is named up to three and counted past that. A
+  selection that happens to contain the whole catalogue is still an override
+  and still says so, because it is pinned and a source added tomorrow will
+  not appear in it.
+
+  **The collapsed state is per device, in `localStorage`, and deliberately
+  not in the database.** The same account on a phone and on a desktop wants
+  different answers and `user_preferences` has no row that can hold two;
+  `ROADMAP.md` puts per-device preferences at v2. So no column, no migration,
+  and no API change. Expanded is the default and the *absence* of a stored
+  value is what says so, which means storage that throws — Safari in private
+  mode, blocked cookies — lands on the same answer as storage that is empty:
+  the bar a reader had before this existed, not a hidden one nobody asked
+  for. The `try`/`catch` discipline `theme.ts` already had is now a shared
+  `lib/storage.ts` that both callers go through, rather than a second copy of
+  it.
+
+  Nothing animates, so there is nothing here for `prefers-reduced-motion` to
+  reduce; the chevron's direction comes from the button's own
+  `aria-expanded` rather than from a class the component would have to keep
+  in step with it. No keyboard shortcut was added — see the pull request for
+  why the shared shortcut table is the wrong place for a control only one of
+  the two pages that render it has.
+
 ### Fixed
 
 - **`restore.sh` polled a hardcoded 8080 for its post-restore health check.**
