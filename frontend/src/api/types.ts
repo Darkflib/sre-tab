@@ -24,3 +24,9 @@ export type ReadState = Schemas['ReadStateOut'];
 export type ReadFilter = Schemas['ReadFilter'];
 export type Theme = Schemas['Theme'];
 export type Layout = Schemas['Layout'];
+export type ApiToken = Schemas['ApiTokenOut'];
+export type ApiTokenList = Schemas['ApiTokenList'];
+export type ApiTokenCreate = Schemas['ApiTokenCreate'];
+/** The only response that ever carries a raw token; `value` is shown once. */
+export type ApiTokenCreated = Schemas['ApiTokenCreated'];
+export type ApiTokenScope = Schemas['ApiTokenScope'];
