@@ -27,6 +27,7 @@ that.
     the OAuth state and CSRF cookies.
   - PostgreSQL traffic inside the deployment is cleartext.
 - [API surface](#api-surface)
+  - `user_preferences.theme` and `.layout` carry no CHECK constraint.
   - Serve `/api/v1/openapi.json` from the committed file in
     `deploy/Caddyfile`, not from the running application.
   - Token scopes finer than read and full.
@@ -543,6 +544,26 @@ genuinely held by the three-operator assumption.
 
 <a id="api-surface"></a>
 ## API surface
+
+- **`user_preferences.theme` and `.layout` are unconstrained in the
+  database.** Found while adding the API token scope column, and left as it
+  was rather than widened into that change. `Enum(..., native_enum=False)`
+  reads as though it constrains the column and does not: `create_constraint`
+  has defaulted to `False` since SQLAlchemy 1.4, so both are a bare
+  `VARCHAR(16)` on either engine. Nothing in `app/` can write a bad value —
+  Pydantic validates the patch and the enum is the only writer — so this is
+  reachable only from outside the application: a maintenance script, a
+  hand-written `UPDATE`, or a restore from a dump somebody edited. The
+  consequence is a `LookupError` materialising the row, which is a 500 rather
+  than a validation error, on a request that has done nothing wrong.
+
+  The token scope column carries `create_constraint=True` for the same reason
+  stated one severity higher — it decides what a credential may do, so
+  "the enum documents the values" is not enough. These two decide what colour
+  the page is, which is why they are recorded here rather than fixed in a
+  change about authentication. Closing it is a migration adding two CHECK
+  constraints, and the migration has to cope with rows that already violate
+  them.
 
 - **`docs_enabled` should default to `False`** — **landed.** A deployment that
   inherits only the defaults — a container run by hand, a second instance,
