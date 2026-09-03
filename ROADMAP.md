@@ -76,8 +76,8 @@ that.
   - A `/metrics` endpoint.
 - [Reading experience](#reading-experience)
   - The order the next seven land in, and the reason it is that order.
-  - Wide screens waste space at a 1180px cap, and the page size has to move
-    with the column count.
+  - Wide screens wasted space at a 1180px cap — landed; the page size stays
+    coupled to the column count, which is noted rather than fixed.
   - Search first, as the text predicate the two below reuse — the design
     itself stays under [Product](#product).
   - Muted words, and muted tags, which wait on the topic entry.
@@ -1449,8 +1449,8 @@ for the reason given there. So the question is not which of these is most
 wanted. It is which predicate to build first, and what the next one then
 gets for nothing.
 
-- **Wide screens waste space, and it is not a layout problem.**
-  [app.css](frontend/src/styles/app.css) caps `.shell__main` at 1180px and
+- **Wide screens waste space, and it is not a layout problem** — **landed.**
+  [app.css](frontend/src/styles/app.css) capped `.shell__main` at 1180px and
   lays the grid out as `repeat(auto-fill, minmax(20rem, 1fr))`. Eleven
   hundred and eighty over three hundred and twenty is three. The columns are
   not the constraint and the empty margin is not a gap in the design — both
@@ -1458,15 +1458,29 @@ gets for nothing.
   whether the ceiling is a constant, a second breakpoint, or a preference
   beside `layout`.
 
-  Worth naming rather than simply doing, because of what it collides with.
-  `max_visible_cards` doubles as the page size
+  The cap is now `--shell-max`, at 106rem — five columns and the shell's own
+  padding — so the bar and the grid still share an edge and a 2560px display
+  gets five columns rather than seven. Measured against the real stylesheet
+  at 1920×1080: 1180px was three columns, 106rem is five, and the shell goes
+  from 61% of the viewport to 88%.
+
+  **What it collides with is real, smaller than it first looked, and left as
+  it is.** `max_visible_cards` doubles as the page size
   ([FeedPage.tsx](frontend/src/routes/FeedPage.tsx)), and the sentinel that
-  triggers `loadMore` carries a 400px root margin. Twenty-five cards in six
-  columns is four rows: the sentinel is inside the viewport the moment the
-  page settles, and the feed pages itself again, and again, without the
-  reader scrolling at all. Raising the column ceiling without raising the
-  page size with it turns infinite scroll into a loop. This is first because
-  it is cheap and because everything below is built while looking at it.
+  triggers `loadMore` carries a 400px root margin — so shortening a page by
+  widening it moves the sentinel up. Measured rather than reasoned about,
+  because the first estimate here was wrong in both directions: at 1920×1080
+  a 25-item page is five rows and 1361px, which leaves the sentinel 54px
+  *inside* the trigger zone, so the second page is fetched on arrival with no
+  scrolling at all. It is not the runaway that suggests. Fifty items is
+  2739px and puts the next trigger 1324px below the fold, so it fires exactly
+  once and settles.
+
+  One extra request on arrival, for a viewport that genuinely holds more than
+  five rows, is close enough to correct that changing it needs its own
+  argument. What it does mean is that the preference and the column count are
+  coupled and only one of them is visible to the reader — which is the
+  argument, when someone wants to make it.
 
 - **Search is the keystone, not the first feature.** The design is already
   specified under [Product](#product) — a `tsvector` and a GIN index on
