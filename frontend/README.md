@@ -31,8 +31,9 @@ shows up as a failure instead of being supplied silently by an ambient DOM.
 and `tokens.test.ts` parses `tokens.css` and recomputes WCAG contrast ratios.
 None of that wants a browser.
 
-Three files do. `src/api/client.test.ts`,
-`src/data/usePagedResource.effects.test.ts`, and
+Four files do. `src/api/client.test.ts`,
+`src/data/usePagedResource.effects.test.ts`,
+`src/routes/ApiTokensSection.test.tsx`, and
 `src/components/FilterBar.collapse.test.tsx` each opt in with a docblock:
 
 ```ts
