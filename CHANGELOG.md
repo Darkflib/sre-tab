@@ -53,6 +53,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it, with no control left anywhere to turn it off — muted topics are now
   listed and removable whether the catalogue still carries them or not.
 
+  Two more from a second reviewer. A whitespace-only term normalised to
+  nothing and was dropped, which turned `["  "]` into the wire form of
+  "unmute everything" — so a request that looked like adding one mute
+  removed every mute the reader had; such terms are refused now. And the
+  topic list had no equivalent of the hundred-term limit the word list
+  carries, so checking one more topic at the limit produced a failed save
+  and a checkbox that sprang back.
+
 - **Search over the retained items — `GET /api/v1/feed?q=`, and a box in the
   filter bar.** `feed_retention_days` defaults to 90, so there has always
   been a real corpus behind the feed and no way to reach anything in it but

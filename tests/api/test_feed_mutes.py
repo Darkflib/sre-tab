@@ -157,17 +157,40 @@ def test_muting_matches_the_summary_as_well_as_the_title(
 
 
 @pytest.mark.parametrize("term", ["   ", "\t", " \n "])
-def test_a_whitespace_term_is_dropped_rather_than_stored(
+def test_a_whitespace_term_is_refused_rather_than_stored(
     authed_client: TestClient, corpus: dict[str, int], term: str
 ) -> None:
-    """The worst available bug in this feature. An empty term is a
-    substring of every item, so storing one would empty the feed with
-    nothing on screen to say why — and it survives the schema, which
-    bounds length and runs before normalisation."""
-    saved = _mute(authed_client, muted_words=[term])
+    """An empty term is a substring of every item, so storing one would
+    empty the feed with nothing on screen to say why — and it survives the
+    schema, which bounds length and runs before normalisation."""
+    response = authed_client.patch("/api/v1/me/preferences", json={"muted_words": [term]})
 
-    assert saved["muted_words"] == []
+    assert response.status_code == 422
     assert len(_titles(_feed(authed_client))) == len(CORPUS)
+
+
+@pytest.mark.parametrize("field", ["muted_words", "muted_tags"])
+def test_a_whitespace_term_does_not_clear_the_list_it_arrived_in(
+    authed_client: TestClient, corpus: dict[str, int], field: str
+) -> None:
+    """Refused rather than dropped, and this is the difference.
+
+    Dropping made ``["  "]`` normalise to ``[]``, which is the wire form of
+    "unmute everything" — so a request that looks like adding one mute
+    silently removed every mute the reader had. The test above could not
+    see it, because it starts from an empty list where dropping and
+    clearing produce the same answer: a guard passing for a reason
+    unrelated to its subject, which is what the rest of this file exists
+    to catch. Found in review rather than here.
+    """
+    _mute(authed_client, muted_words=["derby"], muted_tags=["uk-news"])
+
+    response = authed_client.patch("/api/v1/me/preferences", json={field: ["   "]})
+    assert response.status_code == 422
+
+    still = authed_client.get("/api/v1/me").json()["preferences"]
+    assert still["muted_words"] == ["derby"]
+    assert still["muted_tags"] == ["uk-news"]
 
 
 def test_a_metacharacter_in_a_mute_is_a_literal(

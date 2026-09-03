@@ -157,10 +157,17 @@ function TagList({
     ...muted.filter((slug) => !known.has(slug)).map((slug) => ({ slug, name: slug })),
   ];
 
+  // The same cap `WordList` carries, and it was missing here: at a hundred
+  // muted topics, checking one more sent a hundred and one, the API
+  // answered 422, and the reader got a failed save and a checkbox that
+  // sprang back — for a limit this screen had never mentioned. Only the
+  // *unchecked* controls go dead, so the way back out stays open; a cap
+  // that also blocks removal is a trap rather than a limit.
+  const full = muted.length >= MAX_TERMS;
+
   const toggleTag = (slug: string) => {
-    onChange(
-      muted.includes(slug) ? muted.filter((entry) => entry !== slug) : [...muted, slug],
-    );
+    if (full && !muted.includes(slug)) return;
+    onChange(muted.includes(slug) ? muted.filter((entry) => entry !== slug) : [...muted, slug]);
   };
 
   return (
@@ -170,6 +177,11 @@ function TagList({
         Topics come from the source rather than from the article, so muting one hides everything
         that source publishes under it. Muting words is usually the narrower tool.
       </p>
+      {full ? (
+        <p className="settings__hint" id="mute-tag-problem" role="status">
+          That is {MAX_TERMS} muted topics, which is the limit. Remove one to add another.
+        </p>
+      ) : null}
       <ul className="option-grid">
         {rows.map((topic) => (
           <li key={topic.slug}>
@@ -177,6 +189,8 @@ function TagList({
               <input
                 type="checkbox"
                 checked={muted.includes(topic.slug)}
+                disabled={full && !muted.includes(topic.slug)}
+                aria-describedby={full ? 'mute-tag-problem' : undefined}
                 onChange={() => {
                   toggleTag(topic.slug);
                 }}

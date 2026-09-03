@@ -253,3 +253,49 @@ describe('MutedTermsSection and a retired topic', () => {
     expect(labels).toEqual(['UK news', 'Web development']);
   });
 });
+
+describe('MutedTermsSection at the topic cap', () => {
+  // Also from review. `WordList` stops at MAX_TERMS; `TagList` did not, so
+  // checking one more topic sent 101 and the API answered 422 — a failed
+  // save and a rolled-back checkbox, for a limit the screen never
+  // mentioned.
+  const AT_CAP = Array.from({ length: MAX_TERMS }, (_, n) => `t${String(n)}`);
+
+  it('refuses to add a topic past the limit', () => {
+    const onSave = vi.fn();
+    render(preferences({ muted_tags: AT_CAP }), onSave);
+
+    const unchecked = [...host.querySelectorAll<HTMLInputElement>('.option input')].filter(
+      (box) => !box.checked,
+    );
+    expect(unchecked.length).toBeGreaterThan(0);
+    expect(unchecked.every((box) => box.disabled)).toBe(true);
+
+    act(() => {
+      unchecked[0].click();
+    });
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('says why, rather than leaving a dead control unexplained', () => {
+    render(preferences({ muted_tags: AT_CAP }), vi.fn());
+
+    expect(host.textContent).toContain('which is the limit');
+  });
+
+  it('still lets a muted topic be removed at the limit', () => {
+    // The way back out has to stay open, or the cap is a trap.
+    const onSave = vi.fn();
+    render(preferences({ muted_tags: [...AT_CAP.slice(1), 'uk-news'] }), onSave);
+
+    const checked = [...host.querySelectorAll<HTMLInputElement>('.option input')].filter(
+      (box) => box.checked,
+    );
+    expect(checked.every((box) => box.disabled)).toBe(false);
+    act(() => {
+      checked[0].click();
+    });
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+});

@@ -59,6 +59,31 @@ unfiltered feed, and Back left the page — contradicting the resynchronising
 behaviour `SearchBox` documents. Editing replaces, entering and leaving
 push; `shouldReplaceHistory` is that rule with its own tests.
 
+**A second reviewer found two more, and one of them is the same lesson
+again.** A whitespace-only term normalised to nothing and was *dropped*,
+which is safe in the sense that mattered — an empty term is a substring of
+every item and must never be stored — and unsafe in a way its own test
+could not see. Dropping turns `["  "]` into `[]`, which is the wire form
+of "unmute everything": a request that looks like adding one mute removed
+every mute the reader had. The test started from an empty list, where
+dropping and clearing give the same answer. It now starts from a populated
+one, and terms that normalise to nothing are refused rather than dropped.
+
+Twice in one change, then, a test passed for a reason unrelated to its
+subject, and neither was caught by the discipline of breaking the guard:
+both broke correctly, and both were about the wrong thing. What catches
+this is asking what the assertion would say if the subject were *absent*
+rather than wrong — an empty starting list, a status code with no message,
+a query word past a cap. That is already the second question AGENTS.md
+asks, and it is the harder one to remember.
+
+The other was smaller: `TagList` had no equivalent of the `MAX_TERMS`
+guard `WordList` carries, so at a hundred muted topics checking one more
+sent a hundred and one and the API answered 422 — a failed save and a
+checkbox springing back, for a limit the screen never mentioned. Only the
+unchecked controls go dead now; a cap that also blocked removal would be a
+trap rather than a limit.
+
 <a id="muted-words-and-tags"></a>
 ## 2026-09-03 — Muted words and tags
 

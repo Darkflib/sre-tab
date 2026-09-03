@@ -167,15 +167,10 @@ def normalise_terms(terms: Iterable[str]) -> list[str]:
     expect: muting "Football" and then "football" is one mute, not two,
     and neither is a second row that does the same job.
 
-    Terms that normalise to nothing are dropped here rather than rejected.
-    The schema bounds length and cannot see this — it validates before
-    this runs — so ``"   "`` arrives as a valid string and leaves as
-    nothing. Dropping it is the safe direction: an empty term stored as a
-    mute is a substring of every item, so a stray space in a saved list
-    would empty the reader's feed with no visible cause.
+    Purely a normaliser: it can return the empty string, and deciding what
+    that means belongs to :func:`_mute_terms`.
     """
-    seen = {" ".join(term.split()).casefold() for term in terms}
-    return sorted(term for term in seen if term)
+    return sorted({" ".join(term.split()).casefold() for term in terms})
 
 
 def _mute_terms(terms: Iterable[str]) -> list[str]:
@@ -196,8 +191,19 @@ def _mute_terms(terms: Iterable[str]) -> list[str]:
     Refused rather than truncated: a shortened mute matches more than the
     reader asked for, and does so silently, which is the failure mode this
     whole feature is written against.
+
+    A term that normalises to *nothing* is refused for the same reason and
+    a sharper one. It was dropped at first, which is safe in the sense
+    that matters — an empty term is a substring of every item and must
+    never be stored — and unsafe in a way the test for it could not see:
+    dropping turns ``["  "]`` into ``[]``, which is the wire form of
+    "unmute everything". A request that looks like adding one mute removed
+    every mute the reader had. Refusing keeps the list untouched, which is
+    what a reader who typed a space by accident would expect of it.
     """
     normalised = normalise_terms(terms)
+    if "" in normalised:
+        raise ValueError("a muted term cannot be empty; send an empty list to unmute everything")
     over = [term for term in normalised if len(term) > MAX_MUTED_TERM_LENGTH]
     if over:
         raise ValueError(
