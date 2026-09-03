@@ -86,6 +86,31 @@ restating here, because it will happen again: `createClient` destructures
 beside a static import arrives too late and every request goes to the real
 one. `vi.resetModules()` and a dynamic import are what fix it.
 
+**Review caught a claim that was false, and it was mine.** The model said
+the database refused a scope it did not know. It did not:
+`Enum(native_enum=False)` emits no CHECK constraint of its own —
+`create_constraint` has defaulted to False since SQLAlchemy 1.4 — so the
+column was a bare `VARCHAR(16)` on both engines, and a restore or a
+hand-written `UPDATE` storing `'admin'` would have surfaced as a
+`LookupError` out of the authentication path on the next request that
+presented the token. This is the shape the "green check" rule warns
+about arriving through a different door: not a guard that could not
+fail, but a property asserted in prose with nothing enforcing it, next
+to a test that looked like it covered the case and was testing Pydantic.
+Three tests now, because there are three schemas that can drift — the
+migration, `create_all`, and PostgreSQL — each doing a valid insert
+first, and all three watched failing with the constraint removed.
+
+**Regenerating the contract after that fix turned up a second one.**
+Pydantic publishes a class docstring as the component's `description`,
+so the reasoning about SQLAlchemy's `create_constraint` default was
+being served to API clients as the documentation of `ApiTokenScope`.
+`app/api/v1/schemas/feed.py` already records the precedent for
+`ReadFilter` and I had not applied it to an enum in `models.py`:
+reasoning in comments, and a docstring written for whoever reads the
+schema. Worth knowing that `openapi.json` is a place internal prose can
+escape to, and that nothing would have said so.
+
 **Verified.** The full gate; the PostgreSQL suite against a throwaway
 `postgres:18`, with the migration stepped one revision at a time in both
 directions so a defect in either `downgrade` could not be masked by the
