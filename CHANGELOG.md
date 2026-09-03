@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A social preview image, which closes the last of the discoverability items
+  and the whole Repository section of `ROADMAP.md`. Its source is committed
+  at `docs/images/github-social-preview.png`, and the reason that is worth
+  saying is that committing the file is *not* what sets the preview —
+  uploading it under Settings → General is. GitHub exposes no API for it, so
+  the two can drift and nothing in this repository can detect it. Presence
+  was therefore established rather than assumed: `og:image` on the
+  repository page resolves to `repository-images.githubusercontent.com`,
+  where an uploaded preview is served, rather than the
+  `opengraph.githubassets.com` default.
+
 - **Per-user API tokens, so the API can be called from somewhere other than
   the browser.** Everything under `/api/v1` was reachable only with the
   session cookie, which meant a script, a status board, or a terminal had no
