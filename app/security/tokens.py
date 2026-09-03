@@ -44,7 +44,13 @@ _TOKEN_BYTES = 32
 #: any secret scanner's ruleset. Suppressed rather than renamed around,
 #: because ``API_CREDENTIAL_PREFIX`` would be a worse name chosen to
 #: please a linter.
-API_TOKEN_PREFIX = "sretab_pat_"  # nosec B105 - a public prefix, not a secret
+#:
+#: The reason goes after a second ``#``: bandit reads everything following
+#: ``nosec`` as a list of test ids, so a prose reason on the same run of
+#: text is parsed as five test names it cannot find and warned about, one
+#: line each, on every run. It still suppresses — which is the point, and
+#: why the noise would have been easy to leave in place.
+API_TOKEN_PREFIX = "sretab_pat_"  # nosec B105 # a public prefix, not a secret
 
 #: Characters of the random part kept alongside the prefix as a
 #: non-secret display prefix, so a user can tell two tokens apart in a
