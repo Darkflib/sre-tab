@@ -1051,7 +1051,7 @@
           "full"
         ],
         "title": "ApiTokenScope",
-        "description": "What a long-lived API token may do.\n\nTwo values rather than a boolean, and not a free string: the same\n``Enum(..., native_enum=False)`` treatment ``Theme`` and ``Layout``\nget, so the database refuses a value the application does not know\nand adding a third scope is a migration rather than a typo.\n\nThe split is about blast radius. A leaked ``READ`` token discloses\none user's feed, preferences, and reading history; a leaked ``FULL``\ntoken is that account. Most of what \"call it from another app\" means\nin practice is reading."
+        "description": "What an API token may do. `read` permits safe methods only;\n`full` permits everything the owner's account can do."
       },
       "BookmarkOut": {
         "properties": {

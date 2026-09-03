@@ -247,6 +247,7 @@ erDiagram
     api_tokens {
         int id PK
         int user_id FK
+        string label "the owner's own name for it"
         string token_hash UK "SHA-256 hex, never the token"
         string display_prefix "non-secret, for telling two apart"
         enum scope "read or full"
@@ -310,7 +311,8 @@ erDiagram
     topics ||--o{ user_preference_topics : chosen
 ```
 
-Thirteen tables: the PRD's twelve entities, plus `source_status`.
+Fourteen tables: the PRD's twelve entities, plus `source_status` and
+`api_tokens`.
 
 **`source_status` is separate from `sources` on purpose.** `sources` is
 operator-managed configuration; `source_status` is runtime state written by
@@ -598,11 +600,13 @@ enforced only in prose is not enforced.
 | A database copy yields no usable session | `sessions.token_hash` holds a SHA-256 digest; `app/security/tokens.py` |
 | A database copy yields no usable API token | `api_tokens.token_hash` holds a SHA-256 digest; the raw value exists once, in the creation response |
 | Every mutating request is CSRF-checked | `CSRFMiddleware`, structurally, not `Depends` per route |
+| An unknown token scope cannot reach the database | `CHECK (scope IN ('read', 'full'))` on `api_tokens`; `Enum(native_enum=False)` alone emits none |
 | A bearer request is exempt from CSRF, and a cookie request never is | One condition in two files: `CSRFMiddleware` fires on the session cookie, and `ApiTokenMiddleware` refuses to bearer-authenticate a request that carries it |
 | A read-only token cannot reach a mutating route | `ApiTokenMiddleware`, structurally; the route is never asked |
 | Sign-in is allow-list only | Numeric-id check at the callback, before any user row is created |
 | A token does not outlive its owner's place on the allow-list | `allowlist.is_authorised` re-checked on every bearer request, not only at sign-in |
-| Revoking a token ends the access it granted | `/api/v1/me/tokens` refuses a bearer credential, so a leaked token cannot mint a replacement |
+| A revoked or expired token cannot authenticate | `resolve_token`'s `WHERE`: `revoked_at IS NULL` and the expiry predicate, evaluated in SQL rather than after the load |
+| Revocation cannot be undone by the token it revoked | `/api/v1/me/tokens` refuses a bearer credential, so a leaked token cannot mint a replacement first |
 | No route opens a database session | The `get_db` dependency; routes commit, nothing below them does |
 | No implicit lazy load in a request path | `lazy="raise"` on every relationship in `app/db/models.py` |
 | No URL outside the catalogue is fetched as an entry point | The allow-list is the source's own `feed_url`, read from the database each refresh. A redirect destination is not in the catalogue and is reached — see the next row, which is what covers it |

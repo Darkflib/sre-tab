@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, inspect, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
@@ -266,3 +267,46 @@ def test_migrations_round_trip_on_a_populated_postgres(
         with pg_engine.begin() as connection:
             connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
         Base.metadata.create_all(pg_engine)
+
+
+def test_the_scope_column_refuses_an_unknown_value_on_postgres(
+    pg_clean: Engine, pg_session: Session
+) -> None:
+    """The CHECK constraint on ``api_tokens.scope``, on the engine that
+    will meet the restore.
+
+    ``Enum(native_enum=False)`` emits no constraint of its own —
+    ``create_constraint`` has defaulted to False since SQLAlchemy 1.4 —
+    so without it this column is a bare ``VARCHAR(16)`` and an unknown
+    scope reaching the table would surface as a ``LookupError`` on the
+    next request that presented the token. SQLite is checked the same way
+    in ``tests/test_migrations.py``; the two dialects render CHECK
+    differently often enough to be worth asking both.
+
+    The valid insert first, so a table that refused every write could not
+    pass this.
+    """
+    user = User(github_id=101405, github_login="darkflib")
+    pg_session.add(user)
+    pg_session.commit()
+
+    with pg_clean.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO api_tokens "
+                "(user_id, label, token_hash, display_prefix, scope) "
+                f"VALUES ({user.id}, 'laptop', '{'a' * 64}', 'sretab_pat_aaaaaa', 'read')"
+            )
+        )
+
+    with pytest.raises(IntegrityError), pg_clean.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO api_tokens "
+                "(user_id, label, token_hash, display_prefix, scope) "
+                f"VALUES ({user.id}, 'escalation', '{'b' * 64}', 'sretab_pat_bbbbbb', 'admin')"
+            )
+        )
+
+    with pg_clean.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM api_tokens")).scalar_one() == 1

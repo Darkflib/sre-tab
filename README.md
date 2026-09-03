@@ -223,7 +223,7 @@ you want one, and — the part worth pausing on — a scope:
 | Scope | What it can do | When to use it |
 | --- | --- | --- |
 | **Read only** | `GET` and nothing else | Anything that displays your feed. Almost everything. |
-| **Full access** | Everything your account can do, including deleting it | Only when the other application genuinely writes. |
+| **Full access** | Everything your account can do through the API, including deleting it — but *not* managing tokens, which needs the browser session | Only when the other application genuinely writes. |
 
 The difference is the whole blast radius of a leak. A read-only token that
 gets into a log file discloses what you read; a full-access one is your

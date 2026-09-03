@@ -79,19 +79,33 @@ class Layout(enum.StrEnum):
     LIST = "list"
 
 
+# Two values rather than a boolean, and not a free string: the
+# `Enum(..., native_enum=False)` treatment `Theme` and `Layout` get, plus
+# one thing they do not have — `create_constraint=True` on the column, so
+# the database itself refuses a value the application does not know and
+# adding a third scope is a migration rather than a typo.
+#
+# That addition is not consistency for its own sake. `create_constraint`
+# has defaulted to False since SQLAlchemy 1.4, so `native_enum=False`
+# alone yields a bare VARCHAR(16) on both engines: a maintenance script,
+# a restore, or a hand-written UPDATE could store 'admin', and the first
+# request presenting that token would fail materialising the row with
+# `LookupError` — a 500 out of the authentication path, from a column the
+# application believed was constrained. On a column that decides what a
+# credential may do, "the enum documents the values" is not enough.
+#
+# `theme` and `layout` do not carry it. They predate this, and adding it
+# is a second revision on tables this change has no other reason to
+# touch, so it is deliberately not bundled here.
+#
+# Comments rather than a docstring below the reasoning line, on the
+# precedent `app/api/v1/schemas/feed.py` sets for `ReadFilter`: a class
+# docstring becomes the component's `description` in the published
+# contract, and none of the above is anything a client should be reading.
+# The short docstring that remains is written for that audience.
 class ApiTokenScope(enum.StrEnum):
-    """What a long-lived API token may do.
-
-    Two values rather than a boolean, and not a free string: the same
-    ``Enum(..., native_enum=False)`` treatment ``Theme`` and ``Layout``
-    get, so the database refuses a value the application does not know
-    and adding a third scope is a migration rather than a typo.
-
-    The split is about blast radius. A leaked ``READ`` token discloses
-    one user's feed, preferences, and reading history; a leaked ``FULL``
-    token is that account. Most of what "call it from another app" means
-    in practice is reading.
-    """
+    """What an API token may do. `read` permits safe methods only;
+    `full` permits everything the owner's account can do."""
 
     READ = "read"
     FULL = "full"
@@ -189,6 +203,11 @@ class ApiToken(TimestampMixin, Base):
             native_enum=False,
             length=16,
             values_callable=_values,
+            # Not the default, and see ApiTokenScope for why it is set
+            # here. The constraint's name comes from the convention above
+            # — ck_api_tokens_api_token_scope — so the migration can name
+            # the same one on the way back down.
+            create_constraint=True,
         ),
         nullable=False,
     )

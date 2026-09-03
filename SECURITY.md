@@ -56,9 +56,10 @@ the feed as that user sees it, their topic and source selections, their
 bookmarks, and their reading history. It cannot change anything, cannot
 delete the account, and cannot see another user's state.
 
-A **full-access** token is that account. Everything the signed-in user could
-do through the browser, including `DELETE /api/v1/me`. Treat a leaked one as
-a session compromise.
+A **full-access** token is that account, with one exception. Everything the
+signed-in user could do through the API, including `DELETE /api/v1/me` —
+everything except managing tokens, which is the exception the next paragraph
+is about. Treat a leaked one as a session compromise.
 
 Neither can mint or revoke tokens. `/api/v1/me/tokens` requires the browser
 session and answers 403 to a bearer credential however privileged, which is

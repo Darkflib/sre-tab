@@ -24,6 +24,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not know, and a request that omits the field is a 422 rather than the
   convenient scope.
 
+  **The scope column carries a CHECK constraint**, which `theme` and
+  `layout` do not. `Enum(native_enum=False)` renders as `VARCHAR` and emits
+  no constraint of its own — `create_constraint` has defaulted to `False`
+  since SQLAlchemy 1.4 — so without it a restore or a hand-written `UPDATE`
+  could store a scope the application does not know, and the first request
+  presenting that token would fail materialising the row with `LookupError`:
+  a 500 out of the authentication path, from a column believed to be
+  constrained. Asserted against the migrated schema, the `create_all` schema,
+  and PostgreSQL, each with a valid insert first so a table that refused
+  every write could not pass.
+
   **The value is shown once and stored as a SHA-256 digest**, the same
   discipline `sessions.token_hash` already uses, so the server cannot produce
   it again and a database leak yields nothing presentable. The row keeps a

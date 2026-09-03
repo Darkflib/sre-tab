@@ -16,7 +16,8 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth import api_tokens
@@ -379,3 +380,28 @@ def test_a_scope_refusal_still_counts_as_a_use(
 
     db_session.expire_all()
     assert _row(db_session, token).last_used_at is not None
+
+
+def test_the_models_also_constrain_the_scope_column(db_session: Session) -> None:
+    """``tests/test_migrations.py`` asks the migration; this asks the models.
+
+    They are two artefacts describing one table and they can drift — the
+    naming convention makes them agree on the constraint's *name*, and
+    nothing but a test makes them agree on its existence. `create_all` is
+    what the test suite and a developer's SQLite file are built from, so
+    a constraint present only in the revision would be absent from every
+    database anybody actually develops against.
+    """
+    db_session.add(User(github_id=999001, github_login="constrained"))
+    db_session.commit()
+    user_id = db_session.scalars(select(User.id).where(User.github_id == 999001)).one()
+
+    with pytest.raises(IntegrityError):
+        db_session.execute(
+            text(
+                "INSERT INTO api_tokens "
+                "(user_id, label, token_hash, display_prefix, scope) "
+                f"VALUES ({user_id}, 'escalation', '{'c' * 64}', 'sretab_pat_cccccc', 'admin')"
+            )
+        )
+    db_session.rollback()

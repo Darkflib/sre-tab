@@ -363,17 +363,8 @@ export interface components {
         };
         /**
          * ApiTokenScope
-         * @description What a long-lived API token may do.
-         *
-         *     Two values rather than a boolean, and not a free string: the same
-         *     ``Enum(..., native_enum=False)`` treatment ``Theme`` and ``Layout``
-         *     get, so the database refuses a value the application does not know
-         *     and adding a third scope is a migration rather than a typo.
-         *
-         *     The split is about blast radius. A leaked ``READ`` token discloses
-         *     one user's feed, preferences, and reading history; a leaked ``FULL``
-         *     token is that account. Most of what "call it from another app" means
-         *     in practice is reading.
+         * @description What an API token may do. `read` permits safe methods only;
+         *     `full` permits everything the owner's account can do.
          * @enum {string}
          */
         ApiTokenScope: "read" | "full";

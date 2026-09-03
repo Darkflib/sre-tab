@@ -17,6 +17,7 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import Engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from alembic import command
 from app.db.engine import create_db_engine
@@ -198,6 +199,42 @@ def _seed_api_token(engine: Engine) -> None:
                 f"VALUES (1, 1, 'laptop', '{'a' * 64}', 'sretab_pat_aaaaaa', 'read')"
             )
         )
+
+
+def test_the_scope_column_refuses_a_value_the_application_does_not_know(
+    alembic_config: Config, migrate_engine: Engine
+) -> None:
+    """``Enum(native_enum=False)`` emits no CHECK constraint on its own.
+
+    ``create_constraint`` has defaulted to False since SQLAlchemy 1.4, so
+    the obvious spelling leaves a bare ``VARCHAR(16)`` and "the database
+    refuses an unknown scope" would be prose rather than a property. This
+    asks the *migrated* schema, not the models: a restore or a
+    hand-written ``UPDATE`` meets the database, and an unknown value
+    stored there fails when SQLAlchemy materialises the row — a
+    ``LookupError`` out of the authentication path, which is a 500 rather
+    than a refusal.
+
+    The valid insert above it is not decoration. Without it the refusal
+    would pass just as happily against a table that rejects every write.
+    """
+    command.upgrade(alembic_config, "head")
+    with migrate_engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO users (id, github_id, github_login) VALUES (1, 101405, 'darkflib')")
+        )
+    _seed_api_token(migrate_engine)
+
+    with pytest.raises(IntegrityError), migrate_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO api_tokens "
+                "(id, user_id, label, token_hash, display_prefix, scope) "
+                f"VALUES (2, 1, 'escalation', '{'b' * 64}', 'sretab_pat_bbbbbb', 'admin')"
+            )
+        )
+
+    assert _count(migrate_engine, "api_tokens") == 1
 
 
 def test_api_tokens_cascade_with_their_owner(
