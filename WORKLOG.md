@@ -3,6 +3,105 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+<a id="feed-search-and-a-wider-shell"></a>
+## 2026-09-03 — Feed search, and a shell the screen's width can reach
+
+The first two items of the new
+[Reading experience](ROADMAP.md) section, which was written the same day
+and orders the rest.
+
+**Six of the seven asks turned out to be one shape, and that decided the
+order rather than any judgement about which was most wanted.**
+`_apply_filters` in `app/services/feed.py` is the only place the feed
+narrows and it is private with a single caller, so search, muted words,
+muted tags, and a language filter all belong inside it. The question was
+therefore which predicate to build first and what the next one gets for
+nothing — search, because muting is the same expression negated, and
+building muting first means writing that expression twice and making the
+second copy agree with the first about stemming, case folding, and word
+boundaries on two engines.
+
+**The wide-screen fix was a `max-width`, and measuring it corrected a claim
+made about it an hour earlier.** `.shell__main` and `.shell__bar` were
+capped at 1180px, which against a `minmax(20rem, 1fr)` grid is three
+columns and then an empty margin on anything above a laptop. Both now take
+`--shell-max`, at 106rem — five columns plus the shell's padding — so the
+header and the grid still share an edge and a 2560px display does not get
+seven columns.
+
+The roadmap entry had asserted that widening without raising the page size
+"turns infinite scroll into a loop". Measured against the real stylesheet
+in a browser rather than reasoned about, it is wrong in both directions: at
+1920×1080 a 25-item page is five rows and 1361px, which leaves the
+`loadMore` sentinel 54px *inside* its 400px root margin — so the second
+page is fetched on arrival with no scrolling at all, which is worse than
+the estimate — and 50 items is 2739px, putting the next trigger 1324px
+below the fold, so it fires exactly once and settles, which is much better
+than a loop. One extra request for a viewport that genuinely holds more
+than five rows is close enough to correct to leave alone. The entry now
+says that, with the numbers.
+
+**Search: `plainto_tsquery` over `websearch_to_tsquery`, and publication
+order over relevance.** The first because `websearch_to_tsquery`'s quoted
+phrases and `-` exclusions have no honest counterpart in the SQLite branch,
+and an engine divergence in *semantics* is worse than the one in recall
+that stemming already costs. The second because the cursor *is*
+`(published_at, id)`: ranking needs a different key and invalidates every
+cursor already issued, to reorder a corpus a reader is searching by
+recency anyway.
+
+The two engines do differ, and the docstring says so rather than implying
+they agree. PostgreSQL stems, so `bookmarks` finds "bookmark" and `cat`
+does not find "catalogue"; SQLite matches substrings, so it does. That is
+a thing to know before reading a search result on a laptop as evidence
+about production.
+
+**The index is a guard, not a test, and it is the kind this repository has
+shipped six times under other names.** PostgreSQL uses an expression index
+only when the indexed expression matches the query's character for
+character. Diverge them and nothing anywhere reports a problem: the index
+builds, `CREATE INDEX` succeeds, every result is correct, and every query
+is a sequential scan with a `to_tsvector` call per row. So
+`tests/postgres/test_search.py` asserts the *plan*, with `enable_seqscan`
+off — which is deliberately not cheating, because the question is "can this
+index serve this query at all" rather than "does the planner prefer it on a
+small table", and the latter would make the test flap with the row count.
+Confirmed by pointing the migration's expression at `feed_items.title`
+alone and watching it report `Seq Scan on feed_items … Disabled: true`.
+
+**Two guards were written, believed, and then found to be answering the
+wrong question.** The `LIKE`-metacharacter tests — that `%` and `_` are
+literals rather than wildcards — passed with `autoescape=True` removed.
+They asserted that searching for `snake_case` finds "snake_case", which is
+true whether or not the underscore is a wildcard. A wildcard is only
+visible against something it would *wrongly* reach, so the corpus now
+carries a decoy differing from each metacharacter item exactly where the
+wildcard would match: `snakeXcase` beside `snake_case`, and
+`100% overnight` beside `100%overnight`. Escaped, the search finds one;
+unescaped, both. Both tests now go red without the escape.
+
+Every other guard in the change was made to fail on purpose too — the
+search predicate disabled (eleven failures, each naming its own
+behaviour), and each of the search box's three effects removed in turn
+(one failure each, and only its own, rather than a cascade).
+
+**The search box is in the filter head, which never collapses.** A search
+is the narrowing a reader is likeliest to have forgotten they left on — a
+few words in a box rather than a chip they can see — so putting it behind
+the disclosure would be the failure `FilterBar.tsx` is written against, in
+its worst form. It is debounced at 300ms because each commit is a new
+`filterKey`, which discards every loaded page and refetches from the top;
+per keystroke that is eight requests and eight thrown-away feeds to type
+one word. Its committed value and its typed value are separate state for
+the same reason, and the effect that resynchronises them compares against
+what the box itself last committed — echoing its own commit back into the
+input would reset the caret mid-word for anyone still typing.
+
+**Everything the new dimension touched, the type checker found.** Adding
+`query` to `FeedFilters` failed the build at fourteen call sites across
+three test files, which is the argument for the field being required
+rather than optional.
+
 <a id="per-user-api-tokens"></a>
 ## 2026-09-03 — Per-user API tokens
 

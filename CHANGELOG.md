@@ -8,6 +8,53 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Search over the retained items — `GET /api/v1/feed?q=`, and a box in the
+  filter bar.** `feed_retention_days` defaults to 90, so there has always
+  been a real corpus behind the feed and no way to reach anything in it but
+  to scroll.
+
+  **It is one more predicate in the query that already runs, not a second
+  endpoint.** `search_predicate` joins the read-state and source filters
+  inside `_apply_filters`, so the `LIMIT` is taken after the narrowing:
+  pages stay full, a cursor still names a row that satisfies the filter, and
+  a search composes with every other control rather than replacing them.
+  That is also what makes it the right thing to build first — muting words,
+  which is next, is this expression negated.
+
+  **Two engines, and the difference is documented rather than smoothed
+  over.** PostgreSQL matches `plainto_tsquery` against a `to_tsvector` of
+  title and summary, backed by a GIN index (revision `b7c1e0a94f6d`);
+  SQLite, which is development only, requires each term as a case-folded
+  substring. So PostgreSQL stems — `bookmarks` finds "bookmark", and `cat`
+  does not find "catalogue" — and SQLite does not. `plainto_tsquery` rather
+  than `websearch_to_tsquery` because that one's quoted phrases and `-`
+  exclusions have no honest counterpart in the SQLite branch, and a
+  divergence in *semantics* between the engine a developer runs and the one
+  that serves anybody is worse than one in recall.
+
+  **Results stay in publication order.** The cursor *is* `(published_at,
+  id)`, so relevance ranking needs a different key and would invalidate
+  every cursor already issued.
+
+  **The index is verified by its query plan, not by its results.**
+  PostgreSQL uses an expression index only when the indexed expression
+  matches the query's character for character, and a divergence is silent
+  in every direction that can be observed cheaply: the index builds,
+  `CREATE INDEX` reports success, results are correct, and every query is a
+  sequential scan. `tests/postgres/test_search.py` therefore asserts the
+  plan with `enable_seqscan` off, so the question is whether the index *can*
+  serve the query rather than whether the planner prefers it on a small
+  table.
+
+- **The feed uses the width the screen has.** `.shell__main` and
+  `.shell__bar` were capped at 1180px, which against the card grid is three
+  columns and then an empty margin on anything wider than a laptop. Both now
+  take `--shell-max`, at 106rem — five columns plus the shell's own padding,
+  set in `rem` so it tracks the root font size the cards are already sized
+  against. Measured at 1920×1080: three columns to five, and 61% of the
+  viewport to 88%. `.settings` and `.bookmarks` keep their 60rem reading
+  measure and are now centred rather than left-aligned.
+
 - A social preview image, which closes the last of the discoverability items
   and the whole Repository section of `ROADMAP.md`. Its source is committed
   at `docs/images/github-social-preview.png`, and the reason that is worth
