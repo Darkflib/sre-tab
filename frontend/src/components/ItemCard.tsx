@@ -36,8 +36,26 @@ export function ItemCard({
   onRemoveBookmark,
   tabIndex,
 }: ItemCardProps) {
-  const [imageFailed, setImageFailed] = useState(false);
-  const showImage = Boolean(item.image_url) && !imageFailed;
+  /**
+   * Artwork, in order of preference, skipping anything the browser has
+   * already failed to load.
+   *
+   * Two candidates rather than one, because most items have no image of
+   * their own and the source almost always does — Hacker News, Lobsters
+   * and LWN publish an item image about never, so before this the great
+   * majority of cards were a headline and a rule.
+   *
+   * Failures are tracked by URL rather than as a single boolean, because
+   * a chain needs to know *which* link broke: a dead item image must fall
+   * through to the channel's, and a dead channel image must leave the
+   * card without artwork rather than retrying the one that already
+   * failed.
+   */
+  const [failed, setFailed] = useState<readonly string[]>([]);
+  const itemImage = item.image_url && !failed.includes(item.image_url) ? item.image_url : null;
+  const channelImage =
+    item.source.icon_url && !failed.includes(item.source.icon_url) ? item.source.icon_url : null;
+  const artwork = itemImage ?? channelImage;
   const titleId = useId();
   const readFlagId = `${titleId}-read`;
 
@@ -56,16 +74,23 @@ export function ItemCard({
       // that a sighted user cannot also see.
       aria-labelledby={item.read ? `${titleId} ${readFlagId}` : titleId}
     >
-      {showImage ? (
+      {artwork ? (
+        // The fallback is a different kind of picture and is not styled as
+        // the same one: a channel logo is square-ish and branded, so
+        // `cover` at the item image's height crops it to a slice of
+        // gradient. The modifier gives it `contain` in a shorter box —
+        // legible as a mark rather than passed off as a photograph.
         <img
-          className="card__image"
-          src={item.image_url ?? ''}
+          className={itemImage ? 'card__image' : 'card__image card__image--channel'}
+          src={artwork}
           alt=""
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"
           onError={() => {
-            setImageFailed(true);
+            setFailed((current) =>
+              current.includes(artwork) ? current : [...current, artwork],
+            );
           }}
         />
       ) : null}

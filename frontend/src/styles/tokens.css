@@ -55,6 +55,19 @@
   --radius-sm: 5px;
   --gap: 1rem;
   --measure: 68ch;
+  /* The shell's content width, and therefore the feed's column count: the
+     grid is `auto-fill, minmax(20rem, 1fr)`, so five columns need
+     5 × 20rem + 4 × var(--gap) = 104rem, plus the 1rem of padding on each
+     side of the shell. It was 1180px, which is three columns and then a
+     wide empty margin on anything larger than a laptop.
+
+     A column ceiling rather than a pleasing width, and set in `rem` so it
+     tracks the root font size the cards are already sized against — a
+     reader who scales text up gets the same five columns, wider, rather
+     than the same pixels holding fewer words. Five is where a 20rem card
+     stops being a card: past it the titles wrap to a word a line and there
+     is nothing for the eye to rest on between them. */
+  --shell-max: 106rem;
 
   color-scheme: light;
 }

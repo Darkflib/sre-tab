@@ -10,6 +10,12 @@ from app.api.v1.schemas.common import ApiModel
 FEED_DEFAULT_PAGE_SIZE = 25
 FEED_MAX_PAGE_SIZE = 100
 
+#: Bound on ``q``. A search box, not a document: past a couple of hundred
+#: characters the input is a paste or a probe, and the bound is here rather
+#: than left to the term cap so the rejection is a 422 naming the parameter
+#: instead of a silently truncated query returning a page that looks right.
+FEED_MAX_QUERY_LENGTH = 200
+
 
 # How GET /feed narrows on the caller's read state.
 #

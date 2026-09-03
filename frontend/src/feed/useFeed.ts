@@ -18,6 +18,9 @@ export function useFeed(filters: FeedFilters, limit: number): PagedResource<Feed
         // Same reasoning, different default: `all` is what an absent
         // parameter means, so sending it would be noise on the wire.
         read_state: filters.readState === 'all' ? undefined : filters.readState,
+        // Ditto: an empty search means no narrowing, which is what an
+        // absent parameter already means.
+        q: filters.query === '' ? undefined : filters.query,
         cursor,
         limit,
         signal,

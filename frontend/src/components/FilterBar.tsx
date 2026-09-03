@@ -13,18 +13,30 @@ import {
   type FeedFilters,
   hasOverride,
   hasSavableOverride,
+  mutesBlocking,
   selectsNothing,
+  shouldReplaceHistory,
   toggle,
 } from '../feed/filters';
 import { isHighVolume, type SourceShare } from '../feed/volume';
 import { cssVars } from '../lib/css';
 import { percent } from '../lib/format';
 import { useAuthenticatedSession } from '../session/useSession';
+import { Link } from 'react-router-dom';
+
 import { ChevronIcon, CrossIcon } from './icons';
+import { SearchBox } from './SearchBox';
 
 interface FilterBarProps {
   filters: FeedFilters;
-  onChange: (next: FeedFilters) => void;
+  /**
+   * `replace` asks the router to replace the current history entry rather
+   * than push one. Typing is the reason it exists: a debounced search
+   * commits every few hundred milliseconds, and each commit pushing an
+   * entry would make Back walk the reader backwards through their own
+   * keystrokes instead of out of the search.
+   */
+  onChange: (next: FeedFilters, options?: { replace?: boolean }) => void;
   /** Measured from the items actually loaded, not assumed. */
   shares: SourceShare[];
   loadedCount: number;
@@ -70,6 +82,13 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
   // the chips are hidden, because the chips are the better version of it.
   const summary = summariseFilters(filters, { sources, topics });
 
+  // Muting is the one narrowing with no evidence of itself on this screen:
+  // a deselected source is a chip you can see and a search is text in a
+  // box, but a mute simply removes items. So it is stated here whenever it
+  // is on, outside the disclosure, with the way to change it attached.
+  const mutedCount = preferences.muted_words.length + preferences.muted_tags.length;
+  const blocking = mutesBlocking(filters.query, preferences.muted_words);
+
   const setSources = (next: string[] | null) => {
     onChange({ ...filters, sources: next });
   };
@@ -78,6 +97,9 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
   };
   const setReadState = (next: ReadFilter) => {
     onChange({ ...filters, readState: next });
+  };
+  const setQuery = (next: string) => {
+    onChange({ ...filters, query: next }, { replace: shouldReplaceHistory(filters.query, next) });
   };
 
   // Nothing selected is a step, not a destination: it exists so you can
@@ -132,6 +154,16 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
           Filters
         </button>
 
+        {/*
+          In the head, which never collapses, rather than in the body with
+          the chips. A search is the narrowing a reader is most likely to
+          have forgotten they left on — it is a few words in a box rather
+          than a chip they can see — so hiding it behind the disclosure
+          would be the failure this file is written against, in its worst
+          form.
+        */}
+        <SearchBox value={filters.query} onChange={setQuery} />
+
         <p className="filters__state" role="status">
           {overridden ? (
             <>
@@ -142,6 +174,11 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
                   to unread leaves every source and topic selected, and a
                   "Filtered" badge over "3 of 3 sources" reads as a bug. */}
               {filters.readState === 'all' ? null : `, ${filters.readState} only`}
+              {/* Same reasoning as the line above, and the stronger case
+                  for it: a search narrows without touching a single chip,
+                  so "8 of 8 sources, 4 of 4 topics" over three results is
+                  a badge actively disagreeing with the screen. */}
+              {filters.query === '' ? null : `, matching “${filters.query}”`}
             </>
           ) : (
             <>
@@ -195,6 +232,28 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
       */}
       {collapsed && summary.length > 0 ? (
         <p className="filters__summary">{summary.join('. ')}.</p>
+      ) : null}
+
+      {/*
+        Two messages rather than one, because the second is a different
+        claim. The first says a standing preference is narrowing this feed.
+        The second says *this search cannot return anything* — every word
+        the reader asked for is also a word they have muted, so the empty
+        page is theirs rather than the corpus's. `role="status"` on it, and
+        not on the quieter line, so a screen reader hears the one that
+        explains a result rather than the one that describes a setting.
+      */}
+      {blocking.length > 0 ? (
+        <p className="filters__muted filters__muted--blocking" role="status">
+          Nothing can match: you have muted {blocking.map((term) => `“${term}”`).join(' and ')},
+          which every result would contain.{' '}
+          <Link to="/settings">Change what is muted</Link>.
+        </p>
+      ) : mutedCount > 0 ? (
+        <p className="filters__muted">
+          {describeMutes(preferences.muted_words.length, preferences.muted_tags.length)} hidden from
+          this feed. <Link to="/settings">Change what is muted</Link>.
+        </p>
       ) : null}
 
       {/*
@@ -430,4 +489,16 @@ function FilterGroup({
       </ul>
     </div>
   );
+}
+
+
+function describeMutes(words: number, tags: number): string {
+  // Counts rather than the terms themselves. The terms are the reader's
+  // own words and some of them are muted precisely because the reader does
+  // not want to read them — printing them back across the top of the feed
+  // would defeat the setting it describes.
+  const parts: string[] = [];
+  if (words > 0) parts.push(`${String(words)} ${words === 1 ? 'word' : 'words'}`);
+  if (tags > 0) parts.push(`${String(tags)} ${tags === 1 ? 'topic' : 'topics'}`);
+  return parts.join(' and ');
 }

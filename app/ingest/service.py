@@ -21,10 +21,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.models import Source, SourceTopic
 from app.ingest.errors import IngestError
 from app.ingest.fetch import FeedFetcher, FetchResult
-from app.ingest.normalise import NormalisedItem, normalise_entries
+from app.ingest.normalise import NormalisedItem, normalise_entries, safe_optional_url
 from app.ingest.parse import parse_feed
 from app.ingest.status import SourceStatus, SourceStatusRegistry
-from app.ingest.store import prune_feed_items, upsert_items
+from app.ingest.store import prune_feed_items, record_discovered_icon, upsert_items
 from app.settings import Settings
 
 log = structlog.get_logger("app.ingest")
@@ -106,7 +106,16 @@ class IngestService:
                 fetched_at=moment,
                 oldest_allowed=self._retention_cutoff(moment),
             )
-            inserted = self._store(source, items, fetched_at=moment)
+            inserted = self._store(
+                source,
+                items,
+                fetched_at=moment,
+                # Made safe here rather than in the parser: the parser
+                # reports what the document said, and what a feed-supplied
+                # URL is allowed to be is a question for the normaliser,
+                # which already answers it for every other one.
+                icon_url=safe_optional_url(parsed.image_url),
+            )
         except IngestError as exc:
             return self._fail(source, bound, exc.error_class, str(exc), moment)
         except Exception as exc:
@@ -157,7 +166,12 @@ class IngestService:
         return self._fetcher.fetch(source.feed_url, allowed_urls={source.feed_url})
 
     def _store(
-        self, source: SourceRef, items: Sequence[NormalisedItem], *, fetched_at: datetime
+        self,
+        source: SourceRef,
+        items: Sequence[NormalisedItem],
+        *,
+        fetched_at: datetime,
+        icon_url: str | None,
     ) -> int:
         with self._session_factory() as session:
             inserted = upsert_items(
@@ -167,6 +181,7 @@ class IngestService:
                 topic_ids=source.topic_ids,
                 fetched_at=fetched_at,
             )
+            record_discovered_icon(session, source_id=source.id, icon_url=icon_url)
             session.commit()
             return inserted
 

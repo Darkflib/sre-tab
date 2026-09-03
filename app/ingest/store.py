@@ -28,7 +28,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.models import Base, Bookmark, FeedItem, FeedItemTopic
+from app.db.models import Base, Bookmark, FeedItem, FeedItemTopic, SourceStatus
 from app.ingest.normalise import NormalisedItem
 
 log = structlog.get_logger("app.ingest.store")
@@ -140,6 +140,46 @@ def upsert_items(
         already_present=len(items) - inserted,
     )
     return inserted
+
+
+def record_discovered_icon(session: Session, *, source_id: int, icon_url: str | None) -> bool:
+    """Store the channel artwork this refresh found. Returns whether it moved.
+
+    Written here rather than through :mod:`app.ingest.status`, which is
+    best-effort by design and would drop this as readily as it drops a
+    timestamp. This rides the item write instead: the same session, the
+    same commit, so a source either records what it fetched or records
+    nothing.
+
+    An upsert, because ``source_status`` may not exist yet — a source
+    polled for the first time writes its items before the status registry
+    writes its row.
+
+    ``None`` is not a value here, it is an absence. A feed that has
+    stopped declaring artwork, or a parse that could not make its URL
+    safe, leaves the last good icon in place rather than blanking the
+    card: a missing ``<image>`` element is far more often a fetch that
+    landed on a partial document than a publisher retiring their logo.
+    """
+    if icon_url is None:
+        return False
+
+    existing = session.get(SourceStatus, source_id)
+    if existing is not None:
+        if existing.discovered_icon_url == icon_url:
+            return False
+        existing.discovered_icon_url = icon_url
+        session.flush()
+        return True
+
+    _insert_ignore(
+        session,
+        SourceStatus,
+        [{"source_id": source_id, "discovered_icon_url": icon_url}],
+        index_elements=["source_id"],
+    )
+    session.flush()
+    return True
 
 
 def prune_feed_items(session: Session, *, cutoff: datetime) -> int:
