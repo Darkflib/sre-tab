@@ -26,15 +26,24 @@ read-state filter. Ordering stays ``published_at`` descending rather than
 becoming relevance: the cursor *is* ``(published_at, id)``, so ranking
 would need a different key and would invalidate every cursor already
 issued, to reorder a corpus a reader is searching by recency anyway.
+
+*Muting is that predicate negated, and it is a filter rather than an
+index seek.* A GIN index answers "which rows match"; nothing indexes
+"which rows do not", so the mute predicate is evaluated per row. What
+bounds it is the ordering: the scan walks ``(published_at, id)``
+descending and stops once it has ``limit + 1`` rows that survive every
+filter, so the cost is a page's worth of rows plus whatever a reader's
+own mutes push past — not the corpus.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import cast
+from typing import Any
 
-from sqlalchemy import ColumnElement, Select, and_, func, select, text, tuple_
+from sqlalchemy import ColumnElement, Select, and_, func, literal_column, or_, select, tuple_
+from sqlalchemy.dialects.postgresql import TSQUERY, TSVECTOR
 from sqlalchemy.orm import Session, contains_eager, selectinload
 
 from app.api.v1.schemas import FeedItemOut, FeedPage, FeedSourceRef
@@ -43,9 +52,11 @@ from app.db.models import (
     Bookmark,
     FeedItem,
     FeedItemTopic,
+    MuteKind,
     Source,
     Topic,
     User,
+    UserMutedTerm,
     UserPreferenceTopic,
     UserReadItem,
 )
@@ -149,6 +160,9 @@ def _apply_filters(
     if match is not None:
         statement = statement.where(match)
 
+    for predicate in mute_predicates(db, user):
+        statement = statement.where(predicate)
+
     topic_filter = _effective_topics(db, user, topics)
     if topic_filter is not None:
         statement = statement.where(
@@ -205,21 +219,90 @@ def _effective_topics(db: Session, user: User, requested: Sequence[str] | None) 
     return selected
 
 
-#: Bound on the terms taken from one query. Past this the extra words
-#: narrow nothing a reader would notice and each one is another predicate;
-#: on SQLite that is another ``LIKE`` over the same scan.
+#: Bound on the terms taken from one search query. Past this the extra
+#: words narrow nothing a reader would notice and each one is another
+#: clause; on SQLite that is another ``LIKE`` over the same scan.
 MAX_SEARCH_TERMS = 8
 
-#: The text a query is matched against, spelled once. The PostgreSQL index
-#: in revision ``b7c1e0a94f6d`` declares this same expression, and the
-#: planner only uses an expression index when the two match exactly — so
-#: this constant and that migration are a pair, and the PostgreSQL suite
-#: asserts the plan rather than trusting the resemblance.
+#: The text both search and muting are matched against, spelled once. The
+#: PostgreSQL index in revision ``b7c1e0a94f6d`` declares this same
+#: expression, and the planner only uses an expression index when the two
+#: match exactly — so this constant and that migration are a pair, and the
+#: PostgreSQL suite asserts the plan rather than trusting the resemblance.
 SEARCH_DOCUMENT_SQL = "feed_items.title || ' ' || coalesce(feed_items.summary, '')"
 
-_POSTGRES_MATCH = text(
-    f"to_tsvector('english', {SEARCH_DOCUMENT_SQL}) @@ plainto_tsquery('english', :search_query)"
-)
+#: The text-search configuration, as a literal rather than the session's
+#: ``default_text_search_config``: ``to_tsvector(text)`` is STABLE and
+#: ``to_tsvector(regconfig, text)`` is IMMUTABLE, and only an IMMUTABLE
+#: expression can be indexed.
+_ENGLISH: ColumnElement[str] = literal_column("'english'")
+
+
+def _text_match(db: Session, terms: Sequence[str], *, require_all: bool) -> ColumnElement[bool]:
+    """True where the item's text matches *terms* — all of them, or any.
+
+    One function for both readers of it. Search asserts it over the words
+    of a query, with ``require_all``; muting negates it over a reader's
+    muted terms, without. Writing it once is why search landed first: the
+    alternative was two copies that had to agree about stemming, case
+    folding, and what a word boundary is, on two engines.
+
+    Two engines, because they are not interchangeable here and pretending
+    otherwise would hide the difference rather than remove it.
+
+    *PostgreSQL* matches a ``tsquery`` against a ``to_tsvector`` of title
+    and summary. Each term becomes its own ``plainto_tsquery``, combined
+    with ``&&`` or ``||``. ``plainto_tsquery`` rather than ``to_tsquery``
+    because it takes a reader's words as words — no operator syntax to get
+    wrong, and no malformed-input branch — and rather than
+    ``websearch_to_tsquery`` because that one's quoted phrases and ``-``
+    exclusions have no honest counterpart below, and an engine divergence
+    in *semantics* is worse than one in recall.
+
+    Per term rather than one query over the joined string, and that
+    matters on the muting side: a muted phrase stays an AND of its own
+    words, so "premier league" hides the league rather than every item
+    mentioning a premier. It also keeps the whole thing a single ``@@``
+    against a single vector, so forty muted words cost one match.
+
+    *SQLite* uses a case-folded substring per term. This is the
+    development engine (``app/db/engine.py``), and the roadmap entry that
+    specified search sanctioned ``LIKE`` for it. The divergence is real
+    and is stated rather than papered over. PostgreSQL matches stemmed
+    words: ``bookmarks`` finds a title saying "bookmark", and ``cat``
+    finds nothing that only says "catalogue". SQLite matches substrings,
+    so ``cat`` finds the catalogue — and a mute is where that costs most,
+    because a short muted word quietly removes more than it was meant to.
+    Worth knowing before reading a laptop's feed as evidence about
+    production.
+
+    ``autoescape`` is not decoration: ``%`` and ``_`` are wildcards, so a
+    reader searching for ``100%`` would otherwise match everything, and
+    muting ``c_t`` would hide every item with "cat", "cut", or "cot".
+    """
+    if db.get_bind().dialect.name == "postgresql":
+        # Built from expressions rather than from `text()`, and that is not
+        # style. A `TextClause` cannot be negated — `~` on one trips an
+        # assertion inside SQLAlchemy rather than producing `NOT (…)` — and
+        # muting is this predicate negated, so the raw-SQL version worked
+        # for search and broke the moment it had a second caller.
+        #
+        # `literal_column` is what keeps the rendered SQL identical to the
+        # index expression in revision `b7c1e0a94f6d`, which the plan
+        # assertion in `tests/postgres/test_search.py` holds it to. The
+        # terms stay bound parameters.
+        document = func.to_tsvector(_ENGLISH, literal_column(SEARCH_DOCUMENT_SQL), type_=TSVECTOR)
+        combine = "&&" if require_all else "||"
+        query: ColumnElement[Any] = func.plainto_tsquery(_ENGLISH, terms[0], type_=TSQUERY)
+        for term in terms[1:]:
+            query = query.op(combine, return_type=TSQUERY)(
+                func.plainto_tsquery(_ENGLISH, term, type_=TSQUERY)
+            )
+        return document.bool_op("@@")(query)
+
+    document_text = func.lower(FeedItem.title + " " + func.coalesce(FeedItem.summary, ""))
+    clauses = [document_text.contains(term.lower(), autoescape=True) for term in terms]
+    return and_(*clauses) if require_all else or_(*clauses)
 
 
 def search_terms(query: str | None) -> list[str]:
@@ -237,44 +320,55 @@ def search_terms(query: str | None) -> list[str]:
 def search_predicate(db: Session, query: str | None) -> ColumnElement[bool] | None:
     """Full-text narrowing for *query*, or ``None`` when it narrows nothing.
 
-    Two implementations, because the two engines are not interchangeable
-    here and pretending otherwise would hide the difference rather than
-    remove it.
-
-    *PostgreSQL* matches ``plainto_tsquery`` against a ``to_tsvector`` of
-    title and summary. ``plainto_tsquery`` rather than ``to_tsquery``
-    because it takes the reader's words as words — no operator syntax to
-    get wrong, and no malformed-input branch — and rather than
-    ``websearch_to_tsquery`` because that one's quoted phrases and ``-``
-    exclusions have no honest counterpart below, and an engine divergence
-    in *semantics* is worse than one in recall. It ANDs the terms, which
-    is what a reader typing two words means.
-
-    *SQLite* requires every term as a case-folded substring. This is the
-    development engine (``app/db/engine.py``), and the roadmap entry that
-    specified this work sanctioned ``LIKE`` for it. The divergence is real
-    and is stated rather than papered over. PostgreSQL matches stemmed
-    words: ``bookmarks`` finds a title saying "bookmark", and ``cat``
-    finds nothing that only says "catalogue". SQLite matches substrings,
-    so ``cat`` finds the catalogue. Recall differs between the engine a
-    developer runs and the one that serves anybody, which is a thing to
-    know before reading a search result on a laptop as evidence.
-
-    ``autoescape`` is not decoration: ``%`` and ``_`` are wildcards, so a
-    reader searching for ``100%`` would otherwise match everything.
+    Every word required, which is what a reader typing two of them means.
     """
     terms = search_terms(query)
     if not terms:
         return None
+    return _text_match(db, terms, require_all=True)
 
-    if db.get_bind().dialect.name == "postgresql":
-        # `text()` is a `TextClause`, which is what `.where()` wants and
-        # not what it is annotated to want. The cast is the annotation
-        # catching up, not a claim about the SQL.
-        return cast("ColumnElement[bool]", _POSTGRES_MATCH.bindparams(search_query=" ".join(terms)))
 
-    document = func.lower(FeedItem.title + " " + func.coalesce(FeedItem.summary, ""))
-    return and_(*(document.contains(term.lower(), autoescape=True) for term in terms))
+def mute_predicates(db: Session, user: User) -> list[ColumnElement[bool]]:
+    """Predicates excluding what this user has muted; ``[]`` for nobody.
+
+    Two of them rather than one, because the two kinds match different
+    things — words against the item's text, tags against its topic links —
+    and folding them into a single ``OR`` would put an unrelated subquery
+    inside the text predicate for no gain.
+
+    One statement, not two: both kinds come back together, which is the
+    shape ``_effective_topics`` already uses and for the same reason.
+
+    **Bookmarks are deliberately not filtered.** ``app.services.bookmarks``
+    does not call this, and a bookmark is an explicit "keep this" — the
+    argument ``prune_feed_items`` already makes for exempting bookmarks
+    from retention. A saved item vanishing because a word was muted a
+    month later is the same surprise in a quieter form.
+    """
+    rows = db.execute(
+        select(UserMutedTerm.kind, UserMutedTerm.term).where(UserMutedTerm.user_id == user.id)
+    ).all()
+    if not rows:
+        return []
+
+    words = sorted({term for kind, term in rows if kind is MuteKind.WORD})
+    tags = {term for kind, term in rows if kind is MuteKind.TAG}
+
+    predicates: list[ColumnElement[bool]] = []
+    if words:
+        predicates.append(~_text_match(db, words, require_all=False))
+    if tags:
+        # The topic filter's subquery, negated. `feed_item_topics.feed_item_id`
+        # is NOT NULL, so `NOT IN` cannot go three-valued here — the trap
+        # that makes `NOT IN` over a nullable column return nothing at all.
+        predicates.append(
+            ~FeedItem.id.in_(
+                select(FeedItemTopic.feed_item_id)
+                .join(Topic, Topic.id == FeedItemTopic.topic_id)
+                .where(Topic.slug.in_(tags))
+            )
+        )
+    return predicates
 
 
 def build_item_out(item: FeedItem, *, read: bool, bookmarked: bool) -> FeedItemOut:

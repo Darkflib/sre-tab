@@ -80,7 +80,8 @@ that.
     coupled to the column count, which is noted rather than fixed.
   - Search first, as the text predicate the two below reuse — landed; the
     design and what building it settled are under [Product](#product).
-  - Muted words, and muted tags, which wait on the topic entry.
+  - Muted words — landed, with muted tags, which stay thin until the topic
+    entry below lands.
   - Channel images as the fallback when an item carries none; caching them
     here is the larger, separate item.
   - Non-English items — a language column and a predicate, with translation
@@ -1514,22 +1515,52 @@ gets for nothing.
   `search_predicate` is that shared piece, and muting is now the smaller
   half of the entry below rather than the whole of it.
 
-- **Muted words, which is that predicate negated.** The store is the new
-  part: a list per user, so `user_muted_terms(user_id, term, kind)`
-  following the shape `user_preference_topics` already sets, and exposed
-  through `PreferencesPatch` as a replace-the-whole-list field beside
-  `topics` and `sources`, which is the contract those two already have.
+- **Muted words, which is that predicate negated** — **landed, both
+  kinds.** `user_muted_terms(user_id, kind, term)` follows the shape
+  `user_preference_topics` already sets, and `PreferencesPatch` carries
+  `muted_words` and `muted_tags` as replace-the-whole-list fields beside
+  `topics` and `sources` — the contract those two already have.
 
-  **Muting by tag ships with it and is nearly useless until the tag entry
+  What building it added to the entry above is mostly about the direction
+  a mistake runs. A search that matches too little shows a reader an empty
+  page they asked for; a mute that matches too much removes items
+  *silently*, with nothing on screen to say which or why. Three things
+  follow. Terms that normalise to nothing are dropped rather than stored,
+  because an empty term is a substring of every item and the API's length
+  bound cannot catch it — validation runs before normalisation, so `"   "`
+  arrives valid and leaves empty. A muted tag naming no topic is a 422,
+  unlike a muted word, because a preference that reports success and mutes
+  nothing is worse than a refusal. And bookmarks are never muted, which is
+  the argument `prune_feed_items` already makes for exempting them from
+  retention.
+
+  It also forced the shared predicate to be built properly rather than
+  claimed. `search_predicate` had been raw `text()`, which cannot be
+  negated — `~` on a `TextClause` trips an assertion inside SQLAlchemy —
+  so the PostgreSQL branch was rebuilt from expressions with
+  `literal_column`, which renders identically and therefore still matches
+  the index. The plan assertion is what confirmed that, rather than the
+  resemblance.
+
+  The remaining half is that muting is the one narrowing with no evidence
+  of itself on the feed. The filter bar now says how much is muted
+  whenever anything is, and says something stronger when every word of the
+  current search is also a muted word — provable rather than heuristic, so
+  the reader is told the page is necessarily empty rather than left to
+  wonder.
+
+  **Muting by tag shipped with it and is nearly useless until the tag entry
   below lands.** Topic links come from the *source*, asserted onto every
   item of every batch by
   [`upsert_items`](app/ingest/store.py), so `uk-news` is on everything the
   Guardian publishes including the ones about Nvidia. The first tag anybody
   mutes is therefore a tag that mutes an entire publication — which the
   source filter has always done — and the honest conclusion a reader draws
-  from that is that muting does not work. Words first. Tags become the
-  durable answer to "no football, ever" only after topics describe the item
-  rather than its publisher.
+  from that is that muting does not work. Words first, and the Settings
+  screen leads with them and says so where the topics are: "topics come
+  from the source rather than from the article". Tags become the durable
+  answer to "no football, ever" only after topics describe the item rather
+  than its publisher.
 
 - **Feeds carry a channel image and nothing reads it.** `ParsedFeed` holds a
   version, a title, and entries ([parse.py](app/ingest/parse.py)); `_image`

@@ -927,6 +927,75 @@
   margin-top: 0;
 }
 
+/* --- Muted terms ----------------------------------------------------- */
+
+.muted__add {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.6rem;
+}
+
+.muted__input {
+  flex: 1 1 16rem;
+  max-width: 24rem;
+  min-width: 0;
+}
+
+.muted__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+/* A chip with its own remove control, rather than a row in a table. The
+   list is short, the terms are short, and every entry has to come off in
+   one click — muting is the one filter with no evidence of itself on the
+   feed, so this list is where a reader comes when the feed looks wrong. */
+.muted__term {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.2rem 0.2rem 0.2rem 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 0.875rem;
+}
+
+.muted__remove {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.muted__remove:hover {
+  background: var(--surface);
+  color: var(--danger);
+}
+
+/* On the feed, not in Settings: the standing narrowing a reader cannot
+   otherwise see. Full width of the head so it wraps under the controls
+   rather than competing with them. */
+.filters__muted {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.filters__muted--blocking {
+  color: var(--text);
+}
+
 /* --- API tokens ----------------------------------------------------- */
 
 .token-form {

@@ -8,6 +8,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Muted words and topics, so a feed can be told what not to show.**
+  `PATCH /api/v1/me/preferences` gains `muted_words` and `muted_tags`, both
+  replace-the-whole-list like `topics` and `sources`, and Settings gains
+  the list that manages them. Anything muted leaves the feed everywhere.
+
+  **It is the search predicate negated**, which is why search landed
+  first: one `_text_match` serves both, so the two cannot drift apart
+  about stemming, case folding, or what a word boundary is. Words match
+  the item's title and summary; a muted phrase needs all of its words, so
+  "premier league" hides the league and not every mention of a premier.
+  Topics match the item's topic slugs.
+
+  **Bookmarks are never muted.** A bookmark is an explicit "keep this" —
+  the argument that already exempts bookmarked items from retention.
+
+  **A muted topic is validated against the catalogue and a muted word is
+  not**, and the asymmetry is deliberate: muting language the catalogue
+  has never heard of is what word-muting is for, while a muted topic
+  matching nothing is a typo that would report success and mute nothing.
+
+  Terms are case-folded, whitespace-collapsed and deduplicated, and a term
+  that normalises to nothing is dropped rather than stored — an empty term
+  is a substring of every item, so storing one would empty the feed with
+  nothing on screen to say why.
+
+  **Muting is the only narrowing with no evidence of itself on the feed**,
+  so the filter bar now says how much is muted whenever anything is. When
+  every word of the current search is also a muted word it says something
+  stronger, because that page is provably empty before the request is
+  made — the reader is told rather than left to wonder.
+
 - **Search over the retained items — `GET /api/v1/feed?q=`, and a box in the
   filter bar.** `feed_retention_days` defaults to 90, so there has always
   been a real corpus behind the feed and no way to reach anything in it but

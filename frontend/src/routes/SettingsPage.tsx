@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ApiError } from '../api/client';
 import type { Layout, PreferencesPatch, Theme } from '../api/types';
 import { ApiTokensSection } from './ApiTokensSection';
+import { MutedTermsSection } from './MutedTermsSection';
 import { ErrorState, LoadingState, Spinner } from '../components/States';
 import { useCatalogue } from '../catalogue/useCatalogue';
 import { toggle } from '../feed/filters';
@@ -202,6 +203,8 @@ export function SettingsPage() {
           </>
         ) : null}
       </section>
+
+      <MutedTermsSection preferences={preferences} topics={catalogue.topics} onSave={save} />
 
       <ApiTokensSection />
 

@@ -41,8 +41,8 @@ from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
-from app.db.models import Base, FeedItem, Source
-from app.services.feed import SEARCH_DOCUMENT_SQL, search_predicate
+from app.db.models import Base, FeedItem, MuteKind, Source, User, UserMutedTerm
+from app.services.feed import SEARCH_DOCUMENT_SQL, mute_predicates, search_predicate
 from tests.postgres.conftest import postgres_url
 from tests.postgres.conftest import pytestmark as _pytestmark
 
@@ -207,3 +207,97 @@ def test_the_migration_and_the_service_spell_the_document_identically() -> None:
     ).read_text()
 
     assert f'DOCUMENT = "{SEARCH_DOCUMENT_SQL}"' in revision
+
+
+# --- muting, which is the same match negated -----------------------------
+
+
+@pytest.fixture
+def mute_corpus(migrated: sessionmaker[Session]) -> sessionmaker[Session]:
+    with migrated() as session:
+        user = User(github_id=101405, github_login="darkflib")
+        source = Source(
+            slug="mutable",
+            name="Mutable",
+            feed_url="https://mutable.example/rss",
+            website_url="https://mutable.example",
+        )
+        session.add_all([user, source])
+        session.flush()
+        session.add_all(
+            FeedItem(
+                source_id=source.id,
+                canonical_url=f"https://mutable.example/{key}",
+                title=title,
+                summary=summary,
+                published_at=NOW - timedelta(minutes=index),
+            )
+            for index, (key, title, summary) in enumerate(
+                [
+                    ("league", "Premier League clubs agree a new deal", None),
+                    ("premier", "A premier example of cache invalidation", None),
+                    ("keyset", "Keyset pagination in Postgres", "OFFSET degrades with depth."),
+                    ("stop", "The the the", "Nothing but stop words up there."),
+                ]
+            )
+        )
+        session.commit()
+    return migrated
+
+
+def _muted_titles(session: Session, *terms: str) -> list[str]:
+    """Titles surviving *terms* as muted words."""
+    user = session.scalars(select(User)).one()
+    session.add_all(UserMutedTerm(user_id=user.id, kind=MuteKind.WORD, term=term) for term in terms)
+    session.flush()
+    statement = select(FeedItem.title)
+    for predicate in mute_predicates(session, user):
+        statement = statement.where(predicate)
+    return sorted(session.scalars(statement))
+
+
+def test_a_muted_phrase_requires_all_its_words_on_postgres(
+    mute_corpus: sessionmaker[Session],
+) -> None:
+    """``||`` between per-term ``plainto_tsquery`` calls, not one query over
+    the joined string: "premier league" hides the league and leaves the
+    article about caches, which a reader who dislikes football still wants."""
+    with mute_corpus() as session:
+        assert _muted_titles(session, "premier league") == [
+            "A premier example of cache invalidation",
+            "Keyset pagination in Postgres",
+            "The the the",
+        ]
+
+
+def test_a_muted_word_stems_on_postgres(mute_corpus: sessionmaker[Session]) -> None:
+    """Muting "club" takes "clubs". The SQLite branch reaches the same item
+    by substring and would also take "clubhouse"; this is the divergence
+    ``_text_match`` documents, from the side where it costs most."""
+    with mute_corpus() as session:
+        assert "Premier League clubs agree a new deal" not in _muted_titles(session, "club")
+
+
+def test_several_muted_words_are_one_match_on_postgres(
+    mute_corpus: sessionmaker[Session],
+) -> None:
+    """Any-of, and in a single ``@@`` against a single vector — the reason
+    the terms are OR-ed into one tsquery rather than given a predicate
+    each."""
+    with mute_corpus() as session:
+        assert _muted_titles(session, "league", "keyset") == [
+            "A premier example of cache invalidation",
+            "The the the",
+        ]
+
+
+def test_a_mute_of_only_stop_words_mutes_nothing(
+    mute_corpus: sessionmaker[Session],
+) -> None:
+    """``plainto_tsquery('english', 'the')`` is the empty tsquery, and
+    ``vector @@ ''`` is false — so the negation is true and nothing is
+    hidden. Worth pinning because the failure would be silent and total:
+    if an empty query matched instead, muting a stop word would empty the
+    reader's feed."""
+    with mute_corpus() as session:
+        assert len(_muted_titles(session, "the")) == 4

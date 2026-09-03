@@ -1,12 +1,13 @@
-"""ORM models for the twelve PRD entities, plus ``api_tokens``.
+"""ORM models for the twelve PRD entities, plus ``api_tokens`` and
+``user_muted_terms``.
 
 Phase 0 property. The parallel build's rule was that no Phase 1 agent
 edits this file and a schema gap is escalated rather than patched
 (AGENTS.md); what survives that build is the narrower rule the same
 paragraph gives, which is that a revision is never generated *without
-meaning to*. ``api_tokens`` is the one addition since — one class, one
-enum, one revision, added deliberately for a feature that genuinely
-needs a table.
+meaning to*. ``api_tokens`` and ``user_muted_terms`` are the additions
+since — each one class, one revision, added deliberately for a feature
+that genuinely needs a table.
 
 Contract decisions encoded here:
 
@@ -113,6 +114,14 @@ class ApiTokenScope(enum.StrEnum):
 
 def _values(enum_cls: type[enum.Enum]) -> list[str]:
     return [str(member.value) for member in enum_cls]
+
+
+#: Column width for a muted term, and the bound the API validates against.
+#: Long enough for a phrase — "premier league football" is twenty-three
+#: characters — and short enough that it is plainly a term rather than a
+#: paste. The API's own bound is this same number so the two cannot drift
+#: into a 500 where a 422 was meant.
+MAX_MUTED_TERM_LENGTH = 64
 
 
 class User(TimestampMixin, Base):
@@ -247,6 +256,64 @@ class UserPreferences(TimestampMixin, Base):
     )
 
     user: Mapped[User] = relationship(back_populates="preferences", lazy="raise")
+
+
+class MuteKind(enum.StrEnum):
+    """What a muted term is matched against."""
+
+    #: Matched against the item's title and summary.
+    WORD = "word"
+    #: Matched against the item's topic slugs.
+    TAG = "tag"
+
+
+class UserMutedTerm(Base):
+    """A term whose items this user does not want to see.
+
+    A table rather than a JSON column on ``user_preferences``, and for the
+    reason every other collection here is one: the predicate that uses it
+    runs in SQL, inside the feed's own statement, and a JSON array cannot
+    be joined or indexed without the database growing an opinion about
+    JSON that differs between the two engines this project supports.
+
+    The primary key is ``(user_id, kind, term)``, which is the same
+    composite-key idempotence ``user_preference_topics`` has: muting a
+    term twice is one row, so a client that retries a save cannot create
+    duplicates.
+
+    ``kind`` carries ``create_constraint=True`` for the reason
+    :class:`ApiTokenScope` records — ``Enum(native_enum=False)`` renders
+    as a bare ``VARCHAR`` and emits no constraint of its own, so without
+    it a restore or a hand-written ``UPDATE`` could store a kind the
+    application does not know, and the row would fail to materialise with
+    ``LookupError`` on the next feed request.
+
+    Terms are stored normalised — case-folded and stripped by
+    ``app.services.preferences`` before they arrive — so the uniqueness
+    the primary key promises is uniqueness a reader would recognise
+    rather than uniqueness of bytes. A tag term is a topic slug and is
+    validated against the catalogue at write time; a word term is free
+    text and is deliberately not validated against anything, because the
+    whole point is muting language the catalogue has never heard of.
+    """
+
+    __tablename__ = "user_muted_terms"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    kind: Mapped[MuteKind] = mapped_column(
+        Enum(
+            MuteKind,
+            name="mute_kind",
+            native_enum=False,
+            length=16,
+            values_callable=_values,
+            create_constraint=True,
+        ),
+        primary_key=True,
+    )
+    term: Mapped[str] = mapped_column(String(MAX_MUTED_TERM_LENGTH), primary_key=True)
 
 
 class UserPreferenceTopic(Base):

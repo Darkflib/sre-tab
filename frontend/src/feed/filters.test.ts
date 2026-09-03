@@ -10,6 +10,7 @@ import {
   hasOverride,
   hasSavableOverride,
   MAX_QUERY_LENGTH,
+  mutesBlocking,
   parseFilters,
   selectsNothing,
   toggle,
@@ -63,6 +64,8 @@ function preferences(overrides: Partial<Preferences> = {}): Preferences {
     onboarding_completed: true,
     topics: [],
     sources: [],
+    muted_words: [],
+    muted_tags: [],
     ...overrides,
   };
 }
@@ -236,6 +239,57 @@ describe('applyFiltersToParams', () => {
     // the URL still claims.
     const next = applyFiltersToParams(new URLSearchParams('q=postgres'), EMPTY_FILTERS);
     expect(next.has('q')).toBe(false);
+  });
+});
+
+describe('mutesBlocking', () => {
+  // The claim is provable rather than approximate: a search requires every
+  // word it names, a mute excludes any item carrying all of its own, so a
+  // mute whose words are a subset of the query's removes everything the
+  // query could match. These tests are the subset relation, at its edges.
+  it('names a mute the search cannot escape', () => {
+    expect(mutesBlocking('football', ['football'])).toEqual(['football']);
+  });
+
+  it('names a mute the search merely contains', () => {
+    // Every item matching "football scores" contains "football", which is
+    // muted, so the page is empty however many other words are asked for.
+    expect(mutesBlocking('football scores', ['football'])).toEqual(['football']);
+  });
+
+  it('says nothing when the mute needs a word the search did not ask for', () => {
+    // "premier league" only removes items carrying both. A search for
+    // "premier" alone can still return items that never say "league".
+    expect(mutesBlocking('premier', ['premier league'])).toEqual([]);
+  });
+
+  it('names a multi-word mute when the search asks for all of it', () => {
+    expect(mutesBlocking('premier league table', ['premier league'])).toEqual(['premier league']);
+  });
+
+  it('is case-insensitive, as the server is', () => {
+    expect(mutesBlocking('FOOTBALL', ['football'])).toEqual(['football']);
+  });
+
+  it('says nothing for an empty search', () => {
+    // No words asked for is no narrowing at all, not a query every mute
+    // blocks — the difference between an empty feed and the whole one.
+    // This holds by construction rather than by a check: `every` over a
+    // term's words is false when none were asked for. Kept because the
+    // behaviour is worth pinning, not because a branch implements it.
+    expect(mutesBlocking('', ['football'])).toEqual([]);
+    expect(mutesBlocking('   ', ['football'])).toEqual([]);
+  });
+
+  it('says nothing when nothing is muted', () => {
+    expect(mutesBlocking('football', [])).toEqual([]);
+  });
+
+  it('names every mute that blocks, not just the first', () => {
+    expect(mutesBlocking('football derby', ['football', 'derby', 'cricket'])).toEqual([
+      'football',
+      'derby',
+    ]);
   });
 });
 

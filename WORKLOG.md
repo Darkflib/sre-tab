@@ -3,6 +3,103 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+<a id="muted-words-and-tags"></a>
+## 2026-09-03 — Muted words and tags
+
+The third item of [Reading experience](ROADMAP.md), and the one the second
+was sequenced to make cheap.
+
+**It was cheap, and then it was not, and the reason is worth writing
+down.** Muting is `_text_match` negated, which was the whole argument for
+landing search first. The negation did not work. `search_predicate` had
+been built from `text()`, and a `TextClause` cannot be negated — `~` on
+one trips an assertion inside SQLAlchemy rather than producing `NOT (…)`.
+Raw SQL was fine while it had one caller and wrong the moment it had two.
+
+So the PostgreSQL branch was rebuilt from expressions —
+`func.to_tsvector(literal_column("'english'"), literal_column(SEARCH_DOCUMENT_SQL))`
+and `bool_op("@@")` — which negates, and which renders character for
+character what the raw string did. That last part is the whole risk of the
+change and is not something to eyeball: the expression has to keep
+matching the index, and a mismatch is silent. The plan assertion in
+`tests/postgres/test_search.py` is what settled it, and was re-broken on
+purpose afterwards to confirm it still bites.
+
+**One table, one revision, deliberately.** `user_muted_terms`, primary key
+`(user_id, kind, term)` — the composite-key idempotence
+`user_preference_topics` has, so saving a mute twice is one row. `kind`
+carries a CHECK constraint for the reason `api_tokens.scope` records.
+There is no index beyond the primary key: every read is "this user's
+terms", which the leading column already serves.
+
+**The direction a mistake runs is different here, and it shaped the
+tests.** A search that matches too little shows the reader an empty page
+they asked for and can undo by typing something else. A mute that matches
+too much removes items silently, permanently, with nothing on screen. So
+the tests that earn their place are the over-matching ones rather than the
+matching ones, which `test_feed_search.py` already covers:
+
+- **An empty term is the worst available bug** — it is a substring of
+  every item, so storing one empties the feed with no visible cause. The
+  schema cannot catch it: pydantic validates before the service
+  normalises, so `"   "` satisfies `min_length=1` and is empty by the time
+  it would be stored. Dropped in `normalise_terms`, and the comment in the
+  schema was rewritten when it turned out to claim the opposite order.
+- **A metacharacter in a mute** — without `autoescape`, muting
+  `snake_case` also hides `snakeXcase`. Same guard as search, higher
+  stakes, and a decoy in the corpus so the test can see the difference.
+- **Bookmarks are not muted**, the argument `prune_feed_items` already
+  makes for exempting them from retention.
+- **An untagged item survives a muted tag** — `NOT IN` over the topic
+  subquery must not take items carrying no topics, which is the failure
+  `_effective_topics` records for the positive direction, inverted.
+
+**A muted tag naming no topic is a 422; a muted word is never validated.**
+The asymmetry is the point of each. Muting language the catalogue has
+never heard of is what word-muting is *for*; a muted tag that matches no
+topic is a typo that would report success and mute nothing.
+
+**Two statement-count guards had to move from four to five**, and that is
+the honest cost: the mute lookup is one query per request. The equality
+beside each bound — a page of ten costs what a page of one costs — did not
+move, which is what those tests are actually about.
+
+**Muting is the one narrowing with no evidence of itself.** A deselected
+source is a chip you can see; a search is text in a box above the results;
+a mute simply removes things. So the filter bar says how much is muted
+whenever anything is, and Settings lists every term with a one-click
+removal on each rather than a textarea of comma-separated words — which
+would have been fewer components and would have made "why am I not seeing
+anything about Rust?" an editing exercise.
+
+There is a second message for the case where muting is actively confusing
+rather than merely invisible: the reader searches for a word they have
+muted and gets nothing. `mutesBlocking` names the mutes that guarantee it,
+and the claim is provable rather than approximate — a search requires
+every word it names, a mute excludes any item carrying all of its own, so
+a mute whose words are a subset of the query's removes everything the
+query could match.
+
+**A guard was written, found to change no test, and removed rather than
+kept.** `mutesBlocking` had an early return for the empty query;
+deleting it broke nothing, because `every` over a term's words is already
+false when none were asked for. The test stayed — the behaviour is worth
+pinning — and the branch went, because a line that cannot fail is
+decoration.
+
+**`alembic check` reports a false positive on SQLite, and it predates this
+work.** It reports `ck_api_tokens_api_token_scope` as a removed constraint
+against a database that has it, and now `ck_user_muted_terms_mute_kind`
+too: SQLAlchemy does not reflect a non-native enum's CHECK constraint on
+SQLite, so autogenerate believes every one of them is missing. Confirmed
+by stashing this change and running it against the previous commit, where
+the api_tokens constraint alone is reported. Nothing in CI runs it and the
+migration tests exercise the real thing in both directions, so it is a
+tool limitation rather than a defect — but the claim in the Phase 0
+entry below that `alembic check` was verified stopped being true when
+`create_constraint=True` first appeared, and that is worth knowing before
+anyone reaches for it as a gate.
+
 <a id="feed-search-and-a-wider-shell"></a>
 ## 2026-09-03 — Feed search, and a shell the screen's width can reach
 

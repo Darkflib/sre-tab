@@ -174,6 +174,35 @@ export function filterKey(filters: FeedFilters, limit: number): string {
 }
 
 /**
+ * The muted terms that guarantee this search returns nothing.
+ *
+ * Not a heuristic. A search requires every one of its words; a mute
+ * excludes any item carrying all of the mute's words. So if a muted
+ * term's words are a subset of the query's, every item the search could
+ * match is also an item the mute removes, and the page is provably empty
+ * before the request is made.
+ *
+ * It exists because that is the one case where muting is actively
+ * confusing rather than merely invisible: the reader types a word, gets
+ * nothing, and has no way to tell an empty corpus from their own standing
+ * preference. Everything else the mute hides, they were not looking for.
+ *
+ * Case-folded to match the server, which normalises terms the same way
+ * before storing them.
+ */
+export function mutesBlocking(query: string, mutedWords: string[]): string[] {
+  const asked = new Set(query.toLowerCase().split(/\s+/).filter(Boolean));
+  // No early return for an empty query. `every` over a term's words is
+  // already false when none of them were asked for, and `words.length > 0`
+  // covers the vacuous case — a guard was written here, removing it broke
+  // no test, and it was removed rather than kept as decoration.
+  return mutedWords.filter((term) => {
+    const words = term.toLowerCase().split(/\s+/).filter(Boolean);
+    return words.length > 0 && words.every((word) => asked.has(word));
+  });
+}
+
+/**
  * What the feed is *actually* showing right now, so a chip UI has
  * something to toggle before the user has set any override. An empty
  * saved selection means the server falls back to instance defaults, which

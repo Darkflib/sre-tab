@@ -13,6 +13,7 @@ import {
   type FeedFilters,
   hasOverride,
   hasSavableOverride,
+  mutesBlocking,
   selectsNothing,
   toggle,
 } from '../feed/filters';
@@ -20,6 +21,8 @@ import { isHighVolume, type SourceShare } from '../feed/volume';
 import { cssVars } from '../lib/css';
 import { percent } from '../lib/format';
 import { useAuthenticatedSession } from '../session/useSession';
+import { Link } from 'react-router-dom';
+
 import { ChevronIcon, CrossIcon } from './icons';
 import { SearchBox } from './SearchBox';
 
@@ -77,6 +80,13 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
   // Names, which the counts in the badge cannot give. Rendered only while
   // the chips are hidden, because the chips are the better version of it.
   const summary = summariseFilters(filters, { sources, topics });
+
+  // Muting is the one narrowing with no evidence of itself on this screen:
+  // a deselected source is a chip you can see and a search is text in a
+  // box, but a mute simply removes items. So it is stated here whenever it
+  // is on, outside the disclosure, with the way to change it attached.
+  const mutedCount = preferences.muted_words.length + preferences.muted_tags.length;
+  const blocking = mutesBlocking(filters.query, preferences.muted_words);
 
   const setSources = (next: string[] | null) => {
     onChange({ ...filters, sources: next });
@@ -221,6 +231,28 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
       */}
       {collapsed && summary.length > 0 ? (
         <p className="filters__summary">{summary.join('. ')}.</p>
+      ) : null}
+
+      {/*
+        Two messages rather than one, because the second is a different
+        claim. The first says a standing preference is narrowing this feed.
+        The second says *this search cannot return anything* — every word
+        the reader asked for is also a word they have muted, so the empty
+        page is theirs rather than the corpus's. `role="status"` on it, and
+        not on the quieter line, so a screen reader hears the one that
+        explains a result rather than the one that describes a setting.
+      */}
+      {blocking.length > 0 ? (
+        <p className="filters__muted filters__muted--blocking" role="status">
+          Nothing can match: you have muted {blocking.map((term) => `“${term}”`).join(' and ')},
+          which every result would contain.{' '}
+          <Link to="/settings">Change what is muted</Link>.
+        </p>
+      ) : mutedCount > 0 ? (
+        <p className="filters__muted">
+          {describeMutes(preferences.muted_words.length, preferences.muted_tags.length)} hidden from
+          this feed. <Link to="/settings">Change what is muted</Link>.
+        </p>
       ) : null}
 
       {/*
@@ -456,4 +488,16 @@ function FilterGroup({
       </ul>
     </div>
   );
+}
+
+
+function describeMutes(words: number, tags: number): string {
+  // Counts rather than the terms themselves. The terms are the reader's
+  // own words and some of them are muted precisely because the reader does
+  // not want to read them — printing them back across the top of the feed
+  // would defeat the setting it describes.
+  const parts: string[] = [];
+  if (words > 0) parts.push(`${String(words)} ${words === 1 ? 'word' : 'words'}`);
+  if (tags > 0) parts.push(`${String(tags)} ${tags === 1 ? 'topic' : 'topics'}`);
+  return parts.join(' and ');
 }

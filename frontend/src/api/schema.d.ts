@@ -499,6 +499,16 @@ export interface components {
              * @description Enabled source slugs
              */
             sources: string[];
+            /**
+             * Muted Words
+             * @description Words and phrases hidden from the feed, normalised and sorted
+             */
+            muted_words: string[];
+            /**
+             * Muted Tags
+             * @description Topic slugs hidden from the feed, sorted
+             */
+            muted_tags: string[];
         };
         /**
          * PreferencesPatch
@@ -516,6 +526,10 @@ export interface components {
             topics?: string[] | null;
             /** Sources */
             sources?: string[] | null;
+            /** Muted Words */
+            muted_words?: string[] | null;
+            /** Muted Tags */
+            muted_tags?: string[] | null;
         };
         /** ProbeStatus */
         ProbeStatus: {

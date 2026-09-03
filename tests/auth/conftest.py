@@ -103,6 +103,8 @@ DEFAULT_PROFILE = PreferencesOut(
     onboarding_completed=False,
     topics=[],
     sources=[],
+    muted_words=[],
+    muted_tags=[],
 )
 
 

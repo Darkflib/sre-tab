@@ -1379,6 +1379,26 @@
             "type": "array",
             "title": "Sources",
             "description": "Enabled source slugs"
+          },
+          "muted_words": {
+            "items": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 1
+            },
+            "type": "array",
+            "title": "Muted Words",
+            "description": "Words and phrases hidden from the feed, normalised and sorted"
+          },
+          "muted_tags": {
+            "items": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 1
+            },
+            "type": "array",
+            "title": "Muted Tags",
+            "description": "Topic slugs hidden from the feed, sorted"
           }
         },
         "type": "object",
@@ -1388,7 +1408,9 @@
           "max_visible_cards",
           "onboarding_completed",
           "topics",
-          "sources"
+          "sources",
+          "muted_words",
+          "muted_tags"
         ],
         "title": "PreferencesOut"
       },
@@ -1465,6 +1487,40 @@
               }
             ],
             "title": "Sources"
+          },
+          "muted_words": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "minLength": 1
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Words"
+          },
+          "muted_tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "minLength": 1
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Tags"
           }
         },
         "type": "object",

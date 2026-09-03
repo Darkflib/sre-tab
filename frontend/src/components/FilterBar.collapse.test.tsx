@@ -75,6 +75,8 @@ const PREFERENCES: Preferences = {
   onboarding_completed: true,
   topics: [],
   sources: [],
+  muted_words: [],
+  muted_tags: [],
 };
 
 const SESSION: SessionValue = {
