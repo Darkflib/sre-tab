@@ -90,6 +90,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Api Tokens
+         * @description The caller's own tokens. Never anybody else's, and never a value.
+         */
+        get: operations["list_api_tokens_api_v1_me_tokens_get"];
+        put?: never;
+        /**
+         * Create Api Token
+         * @description Mint a token and return it. This response is the only sight of it.
+         *
+         *     The expiry is computed here rather than accepted as a timestamp: a
+         *     client sending an absolute moment would be asserting a shared clock,
+         *     and the only clock that matters is the one the ``expires_at``
+         *     predicate is evaluated against.
+         */
+        post: operations["create_api_token_api_v1_me_tokens_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/tokens/{token_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke Api Token
+         * @description Revoke a token. Revoking one that is not yours is a 204 no-op.
+         *
+         *     Not a 404, on the reasoning ``tests/api/test_isolation.py`` already
+         *     pins for bookmarks: answering differently for "not yours" and "never
+         *     existed" would confirm a guessed id. The revocation either happened
+         *     or there was nothing of yours to revoke, and from outside those look
+         *     the same.
+         */
+        delete: operations["revoke_api_token_api_v1_me_tokens__token_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me": {
         parameters: {
             query?: never;
@@ -243,6 +298,76 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ApiTokenCreate */
+        ApiTokenCreate: {
+            /**
+             * Label
+             * @description What this token is for, in the owner's own words
+             */
+            label: string;
+            /** @description read: safe methods only. full: everything. */
+            scope: components["schemas"]["ApiTokenScope"];
+            /**
+             * Expires In Days
+             * @description Optional lifetime in days; omit for a token that does not expire
+             */
+            expires_in_days?: number | null;
+        };
+        /**
+         * ApiTokenCreated
+         * @description The one and only response carrying a raw token.
+         */
+        ApiTokenCreated: {
+            token: components["schemas"]["ApiTokenOut"];
+            /**
+             * Value
+             * @description The token itself. Shown once, at creation. Only a hash is stored, so it cannot be retrieved again.
+             */
+            value: string;
+        };
+        /** ApiTokenList */
+        ApiTokenList: {
+            /** Tokens */
+            tokens: components["schemas"]["ApiTokenOut"][];
+        };
+        /**
+         * ApiTokenOut
+         * @description A token as its owner sees it. Never carries the token.
+         */
+        ApiTokenOut: {
+            /** Id */
+            id: number;
+            /** Label */
+            label: string;
+            scope: components["schemas"]["ApiTokenScope"];
+            /**
+             * Display Prefix
+             * @description The token's non-secret leading characters, for telling two tokens apart
+             */
+            display_prefix: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Last Used At
+             * @description When this token was last presented successfully; null if never
+             */
+            last_used_at: string | null;
+            /**
+             * Expires At
+             * @description When it stops working; null if it does not
+             */
+            expires_at: string | null;
+        };
+        /**
+         * ApiTokenScope
+         * @description What an API token may do. `read` permits safe methods only;
+         *     `full` permits everything the owner's account can do.
+         * @enum {string}
+         */
+        ApiTokenScope: "read" | "full";
         /** BookmarkOut */
         BookmarkOut: {
             item: components["schemas"]["FeedItemOut"];
@@ -628,6 +753,142 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_api_tokens_api_v1_me_tokens_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiTokenList"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not a signed-in session */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_api_token_api_v1_me_tokens_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApiTokenCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiTokenCreated"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not a signed-in session */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_api_token_api_v1_me_tokens__token_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not a signed-in session */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

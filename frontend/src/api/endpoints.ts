@@ -1,9 +1,12 @@
 /**
- * Thin typed wrappers over the twelve contract endpoints. Screens call
- * these; nothing else imports `client.ts` directly.
+ * Thin typed wrappers over the contract endpoints. Screens call these;
+ * nothing else imports `client.ts` directly.
  */
 import { api, toApiError, unwrap, unwrapEmpty } from './client';
 import type {
+  ApiToken,
+  ApiTokenCreate,
+  ApiTokenCreated,
   BookmarkEntry,
   BookmarkPage,
   FeedPage,
@@ -111,5 +114,32 @@ export function logout(): Promise<void> {
 export function deleteAccount(): Promise<void> {
   return guard(async () => {
     unwrapEmpty(await api.DELETE('/api/v1/me', {}));
+  });
+}
+
+
+/**
+ * The API-token endpoints.
+ *
+ * `createApiToken` is the only call in this file whose response carries a
+ * credential. It is returned to the caller and never stored: the screen
+ * shows it once and drops it on the next render, because the server keeps
+ * only a hash and cannot produce it again.
+ */
+export function fetchApiTokens(signal?: AbortSignal): Promise<ApiToken[]> {
+  return guard(async () => unwrap(await api.GET('/api/v1/me/tokens', { signal })).tokens);
+}
+
+export function createApiToken(body: ApiTokenCreate): Promise<ApiTokenCreated> {
+  return guard(async () => unwrap(await api.POST('/api/v1/me/tokens', { body })));
+}
+
+export function revokeApiToken(tokenId: number): Promise<void> {
+  return guard(async () => {
+    unwrapEmpty(
+      await api.DELETE('/api/v1/me/tokens/{token_id}', {
+        params: { path: { token_id: tokenId } },
+      }),
+    );
   });
 }

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -20,9 +21,9 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.auth import callback_failure_limiter, start_limiter
 from app.api.v1.schemas import PreferencesOut, PreferencesPatch
-from app.auth import github
+from app.auth import api_tokens, github
 from app.auth.state import state_store
-from app.db.models import Layout, Theme, User
+from app.db.models import ApiTokenScope, Layout, Theme, User
 from app.main import create_app
 from app.settings import Settings
 
@@ -31,6 +32,9 @@ OAUTH_CODE = "oauth-code-must-never-be-logged"
 ACCESS_TOKEN = "gho_accesstokenmustneverbelogged00"
 ALLOWED_GITHUB_ID = 1000001
 DENIED_GITHUB_ID = 2000002
+#: A second allow-listed identity. Distinct from DENIED_GITHUB_ID:
+#: the cross-user tests need two accounts that may both sign in.
+SECOND_GITHUB_ID = 1000002
 
 START_PATH = "/api/v1/auth/github/start"
 CALLBACK_PATH = "/api/v1/auth/github/callback"
@@ -191,3 +195,50 @@ def csrf_headers(client: TestClient, settings: Settings) -> dict[str, str]:
 def app_with_allowed_ids(settings: Settings, engine: Engine, allowed: list[int]) -> FastAPI:
     """A second app differing only in its allow-list."""
     return create_app(settings.model_copy(update={"allowed_github_ids": allowed}), engine=engine)
+
+
+# --- API tokens ---------------------------------------------------------
+
+
+def bearer(value: str) -> dict[str, str]:
+    """The header another application sends. No cookie goes with it."""
+    return {"Authorization": f"Bearer {value}"}
+
+
+IssueToken = Callable[..., str]
+
+
+@pytest.fixture
+def issue_token(db_session: Session, test_user: User) -> IssueToken:
+    """Mint a real API token and return its raw value.
+
+    Goes through ``app.auth.api_tokens`` rather than inserting a row, so
+    the hashing, the prefix, and the display prefix are the ones the
+    application would have produced — a fixture that wrote its own row
+    would be testing a schema rather than a feature.
+    """
+
+    def _issue(
+        user: User | None = None,
+        *,
+        scope: ApiTokenScope = ApiTokenScope.FULL,
+        label: str = "integration",
+        expires_at: datetime | None = None,
+    ) -> str:
+        issued = api_tokens.create_token(
+            db_session, user or test_user, label=label, scope=scope, expires_at=expires_at
+        )
+        db_session.commit()
+        return issued.value
+
+    return _issue
+
+
+@pytest.fixture
+def second_user(db_session: Session) -> User:
+    """A second allow-listed account, for the cross-user token tests."""
+    user = User(github_id=SECOND_GITHUB_ID, github_login="hubot", display_name="Hubot")
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+    return user

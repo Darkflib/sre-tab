@@ -96,9 +96,12 @@ one digest, no skew.
 
 ```mermaid
 flowchart TB
-    req["GET /api/v1/feed<br/>Cookie: session"]
+    req["GET /api/v1/feed<br/>Cookie: session, or Authorization: Bearer"]
     sec["SecurityHeadersMiddleware"]
     rid["RequestIDMiddleware"]
+    tokmw{"no session cookie,<br/>and a bearer credential?"}
+    tokres{"live token,<br/>owner still allow-listed?"}
+    scope{"read-only token<br/>on an unsafe method?"}
     csrfmw{"unsafe method,<br/>session cookie present?"}
     csrfchk{"CSRF token bound<br/>to this session?"}
     route["Router · app/api/v1"]
@@ -108,23 +111,31 @@ flowchart TB
     resp["Response, decorated on the way out"]
     e401["401 Not signed in"]
     e403["403 CSRF"]
+    e403s["403 token is read-only"]
 
-    req --> sec --> rid --> csrfmw
+    req --> sec --> rid --> tokmw
+    tokmw -->|"no"| csrfmw
+    tokmw -->|"yes"| tokres
+    tokres -->|"no"| csrfmw
+    tokres -->|"yes · touch last_used_at"| scope
+    scope -->|"yes"| e403s
+    scope -->|"no"| csrfmw
     csrfmw -->|"no"| route
     csrfmw -->|"yes"| csrfchk
     csrfchk -->|"passes"| route
     csrfchk -->|"fails"| e403
     route --> cur
-    cur -->|"absent, forged,<br/>revoked or expired"| e401
+    cur -->|"no credential resolved"| e401
     cur -->|"resolved"| getdb --> svc --> resp
     e401 --> resp
     e403 --> resp
+    e403s --> resp
 ```
 
 **The middleware order is the reverse of the registration order**, because
-Starlette wraps. `app/main.py:create_app` adds CSRF, then request-ID, then
-security headers, which puts security headers outermost and CSRF closest to
-the router. That is the arrangement you want: a CSRF rejection travels back
+Starlette wraps. `app/main.py:create_app` adds CSRF, then the API-token
+middleware, then request-ID, then security headers, which puts security
+headers outermost and CSRF closest to the router. That is the arrangement you want: a CSRF rejection travels back
 out through the other two, so a 403 carries the same headers and the same
 request id as a 200. A guard that produces undecorated responses is a guard
 that produces a second, quieter class of response.
@@ -137,8 +148,29 @@ document. It narrows twice, on purpose: only `POST`/`PATCH`/`PUT`/`DELETE`,
 and only when the session cookie is present — CSRF is an attack on ambient
 authority, and a request carrying no authority has none to abuse.
 
+**That second narrowing is also what exempts an API token, and the exemption
+is exact rather than incidental.** `ApiTokenMiddleware` declines to
+bearer-authenticate any request carrying the session cookie, so "cookie
+present" and "the cookie is what authenticates" are the same condition in
+both files. Adding an `Authorization` header to a browser request is
+therefore not a way past the CSRF check — it is ignored. The token
+middleware sits *outside* CSRF so the identity it resolves is on the request
+before either the CSRF layer or the router looks, and so a scope refusal is
+decided before the route function exists.
+
+**Token scope is enforced there for the reason CSRF is.** "A read-only token
+may not use a mutating method" is a rule every route has to obey, including
+ones added later; putting it in a dependency would protect whichever routes
+remembered to ask. No route is consulted, so no route can forget. The one
+place that rule does *not* reach is a route that mutates on `GET`, which is
+the same gap CSRF has and for the same reason.
+
 **`get_current_user` answers the same 401 for absent, forged, revoked, and
 expired**, because which one it was is useful to exactly one kind of caller.
+An API token that failed to resolve — unknown, malformed, revoked, expired,
+or owned by somebody no longer on the allow-list — arrives at the same place
+by the same route, having left nothing on the request, so the five refusals
+are one refusal rather than five that happen to match.
 It also builds a fresh `HTTPException` every time rather than raising a
 module-level singleton: each `raise` appends a frame to the object's
 traceback, a module global is never collected, and the measured cost was
@@ -212,6 +244,17 @@ erDiagram
         datetime expires_at
         datetime revoked_at
     }
+    api_tokens {
+        int id PK
+        int user_id FK
+        string label "the owner's own name for it"
+        string token_hash UK "SHA-256 hex, never the token"
+        string display_prefix "non-secret, for telling two apart"
+        enum scope "read or full"
+        datetime expires_at "optional; long-lived is the point"
+        datetime revoked_at
+        datetime last_used_at
+    }
     user_preferences {
         int user_id PK "also FK, 1:1"
         enum theme
@@ -247,6 +290,7 @@ erDiagram
     }
 
     users ||--o{ sessions : opens
+    users ||--o{ api_tokens : issues
     users ||--o| user_preferences : has
     users ||--o{ user_preference_topics : selects
     users ||--o{ user_preference_sources : selects
@@ -267,7 +311,8 @@ erDiagram
     topics ||--o{ user_preference_topics : chosen
 ```
 
-Thirteen tables: the PRD's twelve entities, plus `source_status`.
+Fourteen tables: the PRD's twelve entities, plus `source_status` and
+`api_tokens`.
 
 **`source_status` is separate from `sources` on purpose.** `sources` is
 operator-managed configuration; `source_status` is runtime state written by
@@ -553,8 +598,15 @@ enforced only in prose is not enforced.
 | One origin; no CORS anywhere | Caddy routes `/api/*` to FastAPI; the Vite dev server proxies the same paths |
 | Session cookie is not readable by script | `HttpOnly`, `Secure`, `SameSite=Lax`, set in `app/auth/sessions.py` |
 | A database copy yields no usable session | `sessions.token_hash` holds a SHA-256 digest; `app/security/tokens.py` |
+| A database copy yields no usable API token | `api_tokens.token_hash` holds a SHA-256 digest; the raw value exists once, in the creation response |
 | Every mutating request is CSRF-checked | `CSRFMiddleware`, structurally, not `Depends` per route |
+| An unknown token scope cannot reach the database | `CHECK (scope IN ('read', 'full'))` on `api_tokens`; `Enum(native_enum=False)` alone emits none |
+| A bearer request is exempt from CSRF, and a cookie request never is | One condition in two files: `CSRFMiddleware` fires on the session cookie, and `ApiTokenMiddleware` refuses to bearer-authenticate a request that carries it |
+| A read-only token cannot reach a mutating route | `ApiTokenMiddleware`, structurally; the route is never asked |
 | Sign-in is allow-list only | Numeric-id check at the callback, before any user row is created |
+| A token does not outlive its owner's place on the allow-list | `allowlist.is_authorised` re-checked on every bearer request, not only at sign-in |
+| A revoked or expired token cannot authenticate | `resolve_token`'s `WHERE`: `revoked_at IS NULL` and the expiry predicate, evaluated in SQL rather than after the load |
+| Revocation cannot be undone by the token it revoked | `/api/v1/me/tokens` refuses a bearer credential, so a leaked token cannot mint a replacement first |
 | No route opens a database session | The `get_db` dependency; routes commit, nothing below them does |
 | No implicit lazy load in a request path | `lazy="raise"` on every relationship in `app/db/models.py` |
 | No URL outside the catalogue is fetched as an entry point | The allow-list is the source's own `feed_url`, read from the database each refresh. A redirect destination is not in the catalogue and is reached — see the next row, which is what covers it |

@@ -8,6 +8,98 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Per-user API tokens, so the API can be called from somewhere other than
+  the browser.** Everything under `/api/v1` was reachable only with the
+  session cookie, which meant a script, a status board, or a terminal had no
+  way in that was not "hold a GitHub session". A token is created from
+  Settings, sent as `Authorization: Bearer …`, and belongs to a user rather
+  than to the instance — there is no operator half and no CLI in this change,
+  because a token is not an operator's concern.
+
+  **Two scopes, chosen at creation and not defaulted.** Read-only and full.
+  The split is the whole blast radius of a leak: a read-only token in a log
+  file discloses what someone reads, a full one is their account. The schema
+  models it the way `Theme` and `Layout` are modelled — `Enum(…,
+  native_enum=False)` — so the database refuses a value the application does
+  not know, and a request that omits the field is a 422 rather than the
+  convenient scope.
+
+  **The scope column carries a CHECK constraint**, which `theme` and
+  `layout` do not. `Enum(native_enum=False)` renders as `VARCHAR` and emits
+  no constraint of its own — `create_constraint` has defaulted to `False`
+  since SQLAlchemy 1.4 — so without it a restore or a hand-written `UPDATE`
+  could store a scope the application does not know, and the first request
+  presenting that token would fail materialising the row with `LookupError`:
+  a 500 out of the authentication path, from a column believed to be
+  constrained. Asserted against the migrated schema, the `create_all` schema,
+  and PostgreSQL, each with a valid insert first so a table that refused
+  every write could not pass.
+
+  **The value is shown once and stored as a SHA-256 digest**, the same
+  discipline `sessions.token_hash` already uses, so the server cannot produce
+  it again and a database leak yields nothing presentable. The row keeps a
+  short non-secret `display_prefix` so two tokens can be told apart in the
+  UI, an optional `expires_at`, a `revoked_at`, and a `last_used_at` — the
+  last of those because a forgotten token should be *visible* rather than
+  merely present. Every token starts `sretab_pat_`, which is a fixed prefix
+  rather than entropy: it makes one greppable and gives secret scanners a
+  literal to match. The random part is 256 bits from `secrets`.
+
+  **The allow-list is now re-checked on every token request.**
+  `allowlist.is_authorised` used to run once, at the OAuth callback, because
+  that was the only moment authorisation was decided. A token outlives that
+  moment by design, so an account removed from `ALLOWED_GITHUB_IDS` would
+  have kept a working credential — a way back in for the one person an
+  operator has just decided to remove. Removing the id now kills the token on
+  the next request, with the row untouched, and it fails closed the way that
+  module already requires.
+
+  **Scope is enforced in middleware, not in a dependency.** The rule is that
+  a read-only token may not use a mutating method, and it has to hold on
+  every route including ones written later by someone who has never read the
+  file. That is the same shape of rule CSRF is, and it gets the same
+  treatment for the reason `csrf_middleware.py` already gives: a dependency
+  protects whichever routes remember to ask. No route is consulted, so no
+  route can forget. The test that asserts the refusal builds its list of
+  mutating operations from the published schema, so a new one is covered
+  without anybody remembering to add it — and it was watched failing with a
+  route added that the list did not name.
+
+  **Token management refuses a token.** `/api/v1/me/tokens` requires the
+  browser session and answers 403 to a bearer credential however privileged.
+  A full-scope token can already do everything the API offers, so letting it
+  mint and revoke tokens costs nothing an attacker did not have — until the
+  leak is noticed, at which point revoking the leaked token accomplishes
+  nothing because its holder could have issued a replacement at any time.
+  This is the decision in this change most worth arguing with: it is not
+  forced by anything, and it is easily reverted by deleting one router
+  dependency.
+
+  **A refused token is always the same 401 an absent cookie gets.** Unknown,
+  malformed, revoked, expired, and no-longer-allow-listed all fall through to
+  one refusal rather than to five matching `raise` statements, on
+  `app/api/deps.py`'s existing reasoning. Revoking a token that is not yours
+  is a 204 no-op rather than a 404, on the reasoning
+  `tests/api/test_isolation.py` pins for bookmarks: a different answer would
+  confirm a guessed id.
+
+  **No new rate limiter, recorded as a decision rather than an omission.**
+  `app/auth/ratelimit.py` throttles OAuth initiation and callback failures.
+  Failed bearer authentication is not throttled: the credential is 256 bits,
+  so guessing is not the threat, and the cost of a refusal is one indexed
+  lookup on `token_hash` — identical to the session-cookie path, which has no
+  limiter either. Adding one only here would throttle a legitimate
+  integration sharing an egress address with a failing one, which is exactly
+  the case this feature exists for, while leaving the equivalent session path
+  open. [ROADMAP.md](ROADMAP.md#scaling) carries the version worth building,
+  which covers both credential paths at once.
+
+  One model class, one enum, and exactly one Alembic revision — a deliberate
+  crossing of two rules [AGENTS.md](AGENTS.md) marks as considered acts
+  rather than forbidden ones. The revision is verified up and down, empty and
+  populated, on SQLite and PostgreSQL, one revision at a time in each
+  direction so a defect in either downgrade cannot be masked by the other.
+
 - **The published host port is an operator setting, because on the reference
   host it was already a local fork of a tracked file.** `sre-tab-web.container`
   hardcoded `PublishPort=127.0.0.1:8080:8080`, 8080 was taken on the host it

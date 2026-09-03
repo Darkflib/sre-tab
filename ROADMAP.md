@@ -27,13 +27,18 @@ that.
     the OAuth state and CSRF cookies.
   - PostgreSQL traffic inside the deployment is cleartext.
 - [API surface](#api-surface)
+  - `user_preferences.theme` and `.layout` carry no CHECK constraint.
   - Serve `/api/v1/openapi.json` from the committed file in
     `deploy/Caddyfile`, not from the running application.
+  - Token scopes finer than read and full.
+  - A per-token audit trail; `last_used_at` answers only "still in service".
 - [Scaling](#scaling)
   - Shared state store for OAuth state and the rate limiters.
   - Separate scheduler worker.
   - Rate limiting keyed on a trusted client address — fragile pending a
     shared store.
+  - One failed-authentication limiter covering both the session and API-token
+    paths, rather than one for tokens alone.
 - [Operations](#operations)
   - Release hygiene: the machinery is in place and has never been run. No
     `v1.1.0` tag has been pushed, so no Release object and no versioned image
@@ -364,6 +369,18 @@ genuinely held by the three-operator assumption.
   is the correct blast radius for a cookie-toss: annoy a user who shares your
   registrable domain, and nothing further.
 
+  **API tokens do not widen this, and are worth naming so nobody assumes they
+  do.** A bearer credential is a header, not a cookie, so a sibling subdomain
+  can neither read nor write one, and the CSRF middleware's condition is
+  unchanged: it fires exactly when the session cookie is present, and
+  `app/auth/bearer.py` declines to bearer-authenticate any request that
+  carries it. If anything the new path narrows the exposure, because an
+  integration that would otherwise have been handed a session now holds
+  something no cookie-toss can reach. What the entry's prerequisite — a
+  single source of truth for the cookie names across `app/settings.py` and
+  the frontend build — is worth is also unchanged: tokens do not need it and
+  do not supply it.
+
   **`__Host-` was weighed while fixing that and deliberately not taken.** It
   is the prefix that buys domain integrity — only the exact host that set a
   `__Host-` cookie may rewrite it — so it closes this at the source rather
@@ -528,6 +545,26 @@ genuinely held by the three-operator assumption.
 <a id="api-surface"></a>
 ## API surface
 
+- **`user_preferences.theme` and `.layout` are unconstrained in the
+  database.** Found while adding the API token scope column, and left as it
+  was rather than widened into that change. `Enum(..., native_enum=False)`
+  reads as though it constrains the column and does not: `create_constraint`
+  has defaulted to `False` since SQLAlchemy 1.4, so both are a bare
+  `VARCHAR(16)` on either engine. Nothing in `app/` can write a bad value —
+  Pydantic validates the patch and the enum is the only writer — so this is
+  reachable only from outside the application: a maintenance script, a
+  hand-written `UPDATE`, or a restore from a dump somebody edited. The
+  consequence is a `LookupError` materialising the row, which is a 500 rather
+  than a validation error, on a request that has done nothing wrong.
+
+  The token scope column carries `create_constraint=True` for the same reason
+  stated one severity higher — it decides what a credential may do, so
+  "the enum documents the values" is not enough. These two decide what colour
+  the page is, which is why they are recorded here rather than fixed in a
+  change about authentication. Closing it is a migration adding two CHECK
+  constraints, and the migration has to cope with rows that already violate
+  them.
+
 - **`docs_enabled` should default to `False`** — **landed.** A deployment that
   inherits only the defaults — a container run by hand, a second instance,
   anything not derived from `deploy/app.env.example` — no longer publishes an
@@ -578,6 +615,43 @@ genuinely held by the three-operator assumption.
   application. That still wants an owner, and now has a trustworthy artefact
   to serve, which was the prerequisite it was really waiting on.
 
+- **Token scopes finer than read and full.** Two scopes were the right first
+  answer — they separate the leak that discloses a reading history from the
+  leak that is an account, which is the distinction that actually changes
+  what an operator does about it — and they are deliberately coarse. A token
+  for a status board wants the feed and not `DELETE /me`; a token for a
+  bookmarking script wants `/items/{id}/bookmark` and nothing else. Neither
+  is expressible.
+
+  The shape is not obvious and that is why this is an entry rather than a
+  follow-up commit. Per-route scopes are the honest version and they leak the
+  route table into a user-facing choice, so every new endpoint becomes a
+  question about which existing tokens should reach it — the same problem
+  OAuth scopes have and never solved well. Per-resource scopes (`feed`,
+  `bookmarks`, `preferences`, `account`) are coarser, stable across route
+  changes, and need a mapping from route to resource that has to live
+  somewhere a new route cannot forget it — which is what
+  `app/auth/bearer.py` already is, so the enforcement point exists.
+
+  What makes this cheap to defer: the column is an `Enum(…,
+  native_enum=False)`, so adding a value is a migration rather than a
+  re-model, and `read`/`full` remain meaningful as aliases whatever replaces
+  them.
+
+- **A per-token audit trail.** `last_used_at` is one timestamp, overwritten
+  on every request, and it answers exactly one question: is this token still
+  in service? It cannot answer the question somebody actually asks after a
+  suspected leak, which is *what did it do, and from where*. The rows to
+  write are obvious — token id, timestamp, method, path, source address,
+  status — and everything else about it is not: where they go (a table grows
+  without bound and the log aggregator is the natural home), how long they
+  are kept, and whether writing one per request is acceptable on a deployment
+  whose entire authentication path is currently two indexed lookups.
+
+  Worth having before the second person is issued a token, not before the
+  first: with one operator the ordinary request log answers the same question
+  approximately, because there is only one candidate.
+
 <a id="scaling"></a>
 ## Scaling
 
@@ -593,6 +667,23 @@ prerequisite for going past it.
 - **Rate limiting keyed on a trusted client address.** Works today, but it
   depends on the `trusted_proxies` / `FORWARDED_ALLOW_IPS` pair staying in
   step; a shared store would let this move somewhere less fragile.
+- **One limiter covering both credential paths, rather than one for API
+  tokens alone.** API tokens deliberately added no rate limiter, and the
+  reasoning is worth keeping because it is the reasoning for what to build
+  instead. Guessing is not the threat — the credential is 256 bits from
+  `secrets`, so a limiter would be defending a door nobody can pick. The cost
+  of a refusal is one indexed lookup on `token_hash`, which is precisely what
+  a refused session cookie already costs on a path that has never had a
+  limiter and is reachable with no credential at all (`app/api/deps.py`'s
+  `_unauthenticated` says as much). So a limiter on the token path alone
+  would be uneven cover dressed as a control: it would throttle a legitimate
+  integration sharing an egress address with a failing one — the exact case
+  API tokens exist for — while leaving the cheaper path open.
+
+  The useful version limits *failed authentication* across both credentials,
+  and it wants the shared store above rather than the in-process limiter,
+  because an integration and a browser do not necessarily reach the same
+  process once there are two.
 
 <a id="operations"></a>
 ## Operations
@@ -1219,6 +1310,16 @@ difference between the two.
 - **Richer authorisation.** v1 is a static allow-list of GitHub numeric IDs
   behind a single seam, so org or team resolution can replace it without
   disturbing the OAuth flow around it.
+
+  The seam now has two callers rather than one, and that is a change in what
+  the work costs rather than in what it is. `allowlist.is_authorised` used to
+  run once per sign-in; API tokens re-check it on every request, because a
+  long-lived credential that outlived its owner's removal from
+  `ALLOWED_GITHUB_IDS` would be a way back in for exactly the person an
+  operator had just removed. Replacing the static list with org or team
+  resolution therefore puts a network call on the request path unless the
+  answer is cached — which is the real design question this defers, and it
+  did not exist while the only caller was the callback.
 - **There is no five-minute path to a running instance.** The README's
   quickstart is development mode — SQLite, two processes, `npm run dev`, no
   container — and [deploy/README.md](deploy/README.md) is a Debian 13 host

@@ -866,6 +866,68 @@
   margin-top: 0;
 }
 
+/* --- API tokens ----------------------------------------------------- */
+
+.token-form {
+  margin-bottom: 1.25rem;
+}
+
+.token-reveal {
+  border: 1px solid var(--notice-border);
+  background: var(--notice-bg);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.token-reveal h3 {
+  margin-top: 0;
+}
+
+/* The token is long and has no spaces, so it has to be allowed to break
+   or it forces the whole settings column wider than the viewport. */
+.token-reveal__value code {
+  display: block;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.token-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.token-list__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.token-list__label {
+  margin: 0 0 0.15rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.token-list__row .settings__hint {
+  margin: 0;
+}
+
 /* --- Narrow screens ------------------------------------------------- */
 
 @media (max-width: 42rem) {

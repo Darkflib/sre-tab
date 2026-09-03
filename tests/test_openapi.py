@@ -42,7 +42,8 @@ def _as_committed(spec: dict[str, Any]) -> bytes:
     return (json.dumps(spec, indent=2) + "\n").encode("utf-8")
 
 
-# The PRD's twelve endpoints plus healthz: (path, method) operations.
+# The PRD's twelve endpoints, plus healthz, plus the three API-token
+# routes added after v1: (path, method) operations.
 EXPECTED_OPERATIONS = {
     ("/api/v1/healthz", "get"),
     ("/api/v1/auth/github/start", "get"),
@@ -57,6 +58,9 @@ EXPECTED_OPERATIONS = {
     ("/api/v1/bookmarks", "get"),
     ("/api/v1/items/{item_id}/bookmark", "put"),
     ("/api/v1/items/{item_id}/bookmark", "delete"),
+    ("/api/v1/me/tokens", "get"),
+    ("/api/v1/me/tokens", "post"),
+    ("/api/v1/me/tokens/{token_id}", "delete"),
 }
 
 
@@ -157,5 +161,25 @@ def test_openapi_schemas_carry_the_contract(client: TestClient) -> None:
         "ReadStateOut",
         "BookmarkOut",
         "BookmarkPage",
+        "ApiTokenOut",
+        "ApiTokenList",
+        "ApiTokenCreate",
+        "ApiTokenCreated",
+        "ApiTokenScope",
     ):
         assert name in component_schemas, f"missing component schema {name}"
+
+
+def test_the_contract_never_describes_a_token_being_read_back(client: TestClient) -> None:
+    """The raw token appears in exactly one response schema.
+
+    A contract-level restatement of the feature's central claim, and it
+    catches the shape of mistake a test against a running route would
+    not: adding ``value`` to ``ApiTokenOut`` would make every listing
+    return the token, and every existing test would go on passing because
+    they assert what is *in* a response rather than what is not.
+    """
+    schemas = client.get("/api/v1/openapi.json").json()["components"]["schemas"]
+    carrying = {name for name, schema in schemas.items() if "value" in schema.get("properties", {})}
+    assert carrying == {"ApiTokenCreated"}
+    assert "value" not in schemas["ApiTokenOut"]["properties"]
