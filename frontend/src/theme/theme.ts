@@ -1,4 +1,5 @@
 import type { Theme } from '../api/types';
+import { readStoredValue, writeStoredValue } from '../lib/storage';
 
 /**
  * Mirrored in `public/theme-init.js`, which runs before first paint. The
@@ -28,20 +29,12 @@ export function applyTheme(resolved: ResolvedTheme): void {
 }
 
 export function rememberChoice(choice: Theme): void {
-  try {
-    window.localStorage.setItem(THEME_STORAGE_KEY, choice);
-  } catch {
-    // Private browsing or a storage quota; the paint hint is optional.
-  }
+  writeStoredValue(THEME_STORAGE_KEY, choice);
 }
 
 export function readRememberedChoice(): Theme {
-  try {
-    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
-  } catch {
-    // Ignore; fall through to the default.
-  }
+  const stored = readStoredValue(THEME_STORAGE_KEY);
+  if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
   return 'system';
 }
 
