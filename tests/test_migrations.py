@@ -17,6 +17,7 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import Engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from alembic import command
 from app.db.engine import create_db_engine
@@ -27,6 +28,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #: seeding it, and then moving to head is what makes the populated test a
 #: real migration rather than a fresh create_all.
 PRE_PHASE_2 = "d25a61924953"
+
+#: The revision before ``api_tokens``. Named separately so the token
+#: migration can be stepped over on its own rather than only as part of a
+#: two-revision downgrade, where a mistake in one could be hidden by the
+#: other.
+PRE_API_TOKENS = "29038199b328"
 
 ENTITY_TABLES = {
     "users",
@@ -44,6 +51,8 @@ ENTITY_TABLES = {
     # Phase 2: scheduler-written refresh state, separate from the
     # operator-managed sources row.
     "source_status",
+    # Long-lived per-user API credentials.
+    "api_tokens",
 }
 
 
@@ -159,6 +168,17 @@ def test_upgrade_and_downgrade_against_a_populated_database(
         )
     assert _count(migrate_engine, "source_status") == 1
 
+    _seed_api_token(migrate_engine)
+    assert _count(migrate_engine, "api_tokens") == 1
+
+    # One revision at a time on the way back down. Collapsing both into a
+    # single downgrade would let a mistake in either be masked by the
+    # other — the tables would still all be gone at the end.
+    command.downgrade(alembic_config, PRE_API_TOKENS)
+    assert "api_tokens" not in _tables(migrate_engine)
+    assert "source_status" in _tables(migrate_engine)
+    assert _count(migrate_engine, "source_status") == 1
+
     command.downgrade(alembic_config, PRE_PHASE_2)
     assert "source_status" not in _tables(migrate_engine)
     # The downgrade drops the new table and touches nothing else.
@@ -167,6 +187,73 @@ def test_upgrade_and_downgrade_against_a_populated_database(
 
     command.downgrade(alembic_config, "base")
     assert _tables(migrate_engine) == {"alembic_version"}
+
+
+def _seed_api_token(engine: Engine) -> None:
+    """One token row, written as SQL against the schema at head."""
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO api_tokens "
+                "(id, user_id, label, token_hash, display_prefix, scope) "
+                f"VALUES (1, 1, 'laptop', '{'a' * 64}', 'sretab_pat_aaaaaa', 'read')"
+            )
+        )
+
+
+def test_the_scope_column_refuses_a_value_the_application_does_not_know(
+    alembic_config: Config, migrate_engine: Engine
+) -> None:
+    """``Enum(native_enum=False)`` emits no CHECK constraint on its own.
+
+    ``create_constraint`` has defaulted to False since SQLAlchemy 1.4, so
+    the obvious spelling leaves a bare ``VARCHAR(16)`` and "the database
+    refuses an unknown scope" would be prose rather than a property. This
+    asks the *migrated* schema, not the models: a restore or a
+    hand-written ``UPDATE`` meets the database, and an unknown value
+    stored there fails when SQLAlchemy materialises the row — a
+    ``LookupError`` out of the authentication path, which is a 500 rather
+    than a refusal.
+
+    The valid insert above it is not decoration. Without it the refusal
+    would pass just as happily against a table that rejects every write.
+    """
+    command.upgrade(alembic_config, "head")
+    with migrate_engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO users (id, github_id, github_login) VALUES (1, 101405, 'darkflib')")
+        )
+    _seed_api_token(migrate_engine)
+
+    with pytest.raises(IntegrityError), migrate_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO api_tokens "
+                "(id, user_id, label, token_hash, display_prefix, scope) "
+                f"VALUES (2, 1, 'escalation', '{'b' * 64}', 'sretab_pat_bbbbbb', 'admin')"
+            )
+        )
+
+    assert _count(migrate_engine, "api_tokens") == 1
+
+
+def test_api_tokens_cascade_with_their_owner(
+    alembic_config: Config, migrate_engine: Engine
+) -> None:
+    """``DELETE /me`` is one statement leaning on this cascade, so the
+    schema is where it has to be true — not the route."""
+    command.upgrade(alembic_config, "head")
+    with migrate_engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO users (id, github_id, github_login) VALUES (1, 101405, 'darkflib')")
+        )
+    _seed_api_token(migrate_engine)
+    assert _count(migrate_engine, "api_tokens") == 1
+
+    with migrate_engine.begin() as connection:
+        connection.execute(text("DELETE FROM users WHERE id = 1"))
+
+    assert _count(migrate_engine, "api_tokens") == 0
 
 
 def test_source_status_cascades_with_its_source(

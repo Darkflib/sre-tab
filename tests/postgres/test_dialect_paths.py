@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, inspect, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
@@ -30,6 +31,10 @@ pytestmark = _pytestmark
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PRE_PHASE_2 = "d25a61924953"
+#: The revision before ``api_tokens``, so the token migration can be
+#: stepped over on its own rather than only as half of a two-revision
+#: downgrade, where a mistake in either could be masked by the other.
+PRE_API_TOKENS = "29038199b328"
 NOW = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
 
 
@@ -220,7 +225,9 @@ def test_migrations_round_trip_on_a_populated_postgres(
             connection.execute(text("INSERT INTO bookmarks (user_id, feed_item_id) VALUES (1, 1)"))
 
         command.upgrade(pg_alembic_config, "head")
-        assert "source_status" in inspect(pg_engine).get_table_names()
+        tables = inspect(pg_engine).get_table_names()
+        assert "source_status" in tables
+        assert "api_tokens" in tables
         with pg_engine.connect() as connection:
             assert connection.execute(text("SELECT count(*) FROM bookmarks")).scalar_one() == 1
 
@@ -231,6 +238,22 @@ def test_migrations_round_trip_on_a_populated_postgres(
                     "consecutive_failures) VALUES (1, now(), 0)"
                 )
             )
+            connection.execute(
+                text(
+                    "INSERT INTO api_tokens "
+                    "(user_id, label, token_hash, display_prefix, scope) "
+                    f"VALUES (1, 'laptop', '{'a' * 64}', 'sretab_pat_aaaaaa', 'read')"
+                )
+            )
+        with pg_engine.connect() as connection:
+            assert connection.execute(text("SELECT count(*) FROM api_tokens")).scalar_one() == 1
+
+        # One revision at a time on the way down, so a defect in either
+        # downgrade cannot be hidden by the other having worked.
+        command.downgrade(pg_alembic_config, PRE_API_TOKENS)
+        tables = inspect(pg_engine).get_table_names()
+        assert "api_tokens" not in tables
+        assert "source_status" in tables
 
         command.downgrade(pg_alembic_config, PRE_PHASE_2)
         assert "source_status" not in inspect(pg_engine).get_table_names()
@@ -244,3 +267,46 @@ def test_migrations_round_trip_on_a_populated_postgres(
         with pg_engine.begin() as connection:
             connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
         Base.metadata.create_all(pg_engine)
+
+
+def test_the_scope_column_refuses_an_unknown_value_on_postgres(
+    pg_clean: Engine, pg_session: Session
+) -> None:
+    """The CHECK constraint on ``api_tokens.scope``, on the engine that
+    will meet the restore.
+
+    ``Enum(native_enum=False)`` emits no constraint of its own —
+    ``create_constraint`` has defaulted to False since SQLAlchemy 1.4 —
+    so without it this column is a bare ``VARCHAR(16)`` and an unknown
+    scope reaching the table would surface as a ``LookupError`` on the
+    next request that presented the token. SQLite is checked the same way
+    in ``tests/test_migrations.py``; the two dialects render CHECK
+    differently often enough to be worth asking both.
+
+    The valid insert first, so a table that refused every write could not
+    pass this.
+    """
+    user = User(github_id=101405, github_login="darkflib")
+    pg_session.add(user)
+    pg_session.commit()
+
+    with pg_clean.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO api_tokens "
+                "(user_id, label, token_hash, display_prefix, scope) "
+                f"VALUES ({user.id}, 'laptop', '{'a' * 64}', 'sretab_pat_aaaaaa', 'read')"
+            )
+        )
+
+    with pytest.raises(IntegrityError), pg_clean.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO api_tokens "
+                "(user_id, label, token_hash, display_prefix, scope) "
+                f"VALUES ({user.id}, 'escalation', '{'b' * 64}', 'sretab_pat_bbbbbb', 'admin')"
+            )
+        )
+
+    with pg_clean.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM api_tokens")).scalar_one() == 1

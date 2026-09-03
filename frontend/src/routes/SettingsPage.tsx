@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { ApiError } from '../api/client';
 import type { Layout, PreferencesPatch, Theme } from '../api/types';
+import { ApiTokensSection } from './ApiTokensSection';
 import { ErrorState, LoadingState, Spinner } from '../components/States';
 import { useCatalogue } from '../catalogue/useCatalogue';
 import { toggle } from '../feed/filters';
@@ -201,6 +202,8 @@ export function SettingsPage() {
           </>
         ) : null}
       </section>
+
+      <ApiTokensSection />
 
       <AccountSection
         login={user.github_login}

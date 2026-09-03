@@ -22,6 +22,20 @@ that cookie has no authority to abuse and is answered 401 by
 fires on unauthenticated traffic, which would turn a 401 into a confusing
 403.
 
+That second narrowing is what exempts an API token, and the exemption is
+exact rather than approximate. A bearer credential is a header, so no
+browser attaches it to a cross-site request on its own and there is no
+ambient authority to forge; requiring a CSRF token alongside it would also
+make the API unusable from the other application it exists for, since that
+application has no cookie jar to read one out of. The condition stays
+"carries the session cookie" — not "carries no ``Authorization`` header" —
+because :class:`app.auth.bearer.ApiTokenMiddleware` refuses to
+bearer-authenticate a request that has the cookie. Cookie present therefore
+means *the cookie is what authenticates*, in both files, with no third
+state; adding an ``Authorization`` header to a browser request cannot skip
+this check, it is simply ignored. ``tests/auth/test_api_token_csrf.py``
+pins both directions and the both-credentials case.
+
 Ordering matters: this middleware is registered *innermost*, so a rejection
 still passes back out through the request-ID and security-header
 middleware and carries the same headers as any other response.
