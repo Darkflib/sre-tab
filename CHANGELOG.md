@@ -8,6 +8,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Cards fall back to the feed's own artwork when an item has no image of
+  its own**, which for Hacker News, Lobsters and LWN is almost every item.
+  Ingest reads the channel image a feed declares — RSS `<image><url>`, Atom
+  `<logo>` then `<icon>` — through the same URL guard every other
+  feed-supplied URL goes through, and the card renders it as a mark rather
+  than as a photograph: `contain` in a shorter box, so a square logo is not
+  cropped to a slice of itself.
+
+  This also closes the long-standing gap where sources rendered an icon and
+  no source had one: the affordance shipped in v1 and nothing had ever set
+  `icon_url`.
+
+  **The discovered value is held apart from the operator's.**
+  `source_status.discovered_icon_url` is what the last successful parse
+  found and `sources.icon_url` is what an operator set; the API prefers the
+  operator's. Keeping them in separate tables is what stops the refresh loop
+  writing the configuration table and moving `sources.updated_at` on every
+  poll — and it means an operator can set an icon without it being
+  overwritten, or clear one without losing what the feed says about itself.
+
+  A refresh that finds no artwork leaves the previous value alone. A missing
+  `<image>` element is far more often a truncated fetch than a publisher
+  retiring their logo.
+
 - **Muted words and topics, so a feed can be told what not to show.**
   `PATCH /api/v1/me/preferences` gains `muted_words` and `muted_tags`, both
   replace-the-whole-list like `topics` and `sources`, and Settings gains

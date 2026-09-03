@@ -365,6 +365,13 @@ class Source(TimestampMixin, Base):
     topics: Mapped[list[Topic]] = relationship(
         secondary="source_topics", viewonly=True, lazy="raise"
     )
+    #: One row or none — ``source_status`` is 1:1 and only exists once a
+    #: source has been polled. Declared so the feed can reach the
+    #: discovered icon through the join it already makes, rather than
+    #: through a second query per page.
+    status: Mapped[SourceStatus | None] = relationship(
+        back_populates="source", cascade="all, delete-orphan", passive_deletes=True, lazy="raise"
+    )
 
 
 class SourceStatus(Base):
@@ -383,6 +390,16 @@ class SourceStatus(Base):
     schedule living only in one process's memory: a restart or a second
     replica reads when the source was last attempted instead of treating
     every source as due immediately.
+
+    ``discovered_icon_url`` widens what this table holds from *when the
+    refresh loop last ran* to *what the refresh loop learned*, and it
+    belongs here for the reason above rather than despite it. A feed's
+    own artwork is something a fetch discovers, not something an operator
+    configured, so putting it on ``sources`` beside ``icon_url`` would
+    make the refresh loop a writer of the configuration table and would
+    bump ``sources.updated_at`` on a poll — the exact two properties this
+    separation exists to keep. Kept apart, ``sources.icon_url`` stays the
+    operator's answer and wins where both exist.
     """
 
     __tablename__ = "source_status"
@@ -390,12 +407,16 @@ class SourceStatus(Base):
     source_id: Mapped[int] = mapped_column(
         ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True
     )
+    source: Mapped[Source] = relationship(back_populates="status", lazy="raise")
     #: Last attempt, successful or not.
     last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_class: Mapped[str | None] = mapped_column(String(64))
     last_error_detail: Mapped[str | None] = mapped_column(String(500))
     consecutive_failures: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)
+    #: The channel's own artwork, as the last successful parse found it.
+    #: Never overwrites ``sources.icon_url``; see the class docstring.
+    discovered_icon_url: Mapped[str | None] = mapped_column(String(2048))
 
 
 class SourceTopic(Base):

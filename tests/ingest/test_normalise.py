@@ -10,11 +10,11 @@ from app.ingest.normalise import (
     MAX_SUMMARY_LENGTH,
     MAX_TITLE_LENGTH,
     InvalidItemURLError,
-    _safe_optional_url,
     normalise_entries,
     normalise_entry,
     normalise_published,
     normalise_url,
+    safe_optional_url,
     to_plain_text,
 )
 from app.ingest.parse import ParsedEntry
@@ -177,11 +177,11 @@ def test_an_unusable_link_drops_only_that_entry() -> None:
 
 
 def test_plain_https_image_url_passes_unchanged() -> None:
-    assert _safe_optional_url("https://example.org/cover.png") == "https://example.org/cover.png"
+    assert safe_optional_url("https://example.org/cover.png") == "https://example.org/cover.png"
 
 
 def test_image_url_host_case_is_not_load_bearing() -> None:
-    assert _safe_optional_url("HTTPS://Example.ORG/cover.png") == "https://example.org/cover.png"
+    assert safe_optional_url("HTTPS://Example.ORG/cover.png") == "https://example.org/cover.png"
 
 
 @pytest.mark.parametrize(
@@ -217,7 +217,7 @@ def test_image_url_host_case_is_not_load_bearing() -> None:
     ],
 )
 def test_hostile_image_urls_are_rejected(raw: str) -> None:
-    assert _safe_optional_url(raw) is None
+    assert safe_optional_url(raw) is None
 
 
 def test_rejected_image_url_still_lets_the_item_normalise() -> None:

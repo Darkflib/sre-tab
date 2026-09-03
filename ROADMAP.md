@@ -71,8 +71,8 @@ that.
   - An admin surface for `is_admin`, which nothing sets and nothing reads.
   - Search over the retained items — landed.
   - A data export, and OPML in the CLI.
-  - First-screen polish: source icons, mark-all-read, per-source freshness,
-    and a second mobile breakpoint.
+  - First-screen polish: mark-all-read, per-source freshness, and a second
+    mobile breakpoint. Source icons have landed.
   - A `/metrics` endpoint.
 - [Reading experience](#reading-experience)
   - The order the next seven land in, and the reason it is that order.
@@ -82,8 +82,8 @@ that.
     design and what building it settled are under [Product](#product).
   - Muted words — landed, with muted tags, which stay thin until the topic
     entry below lands.
-  - Channel images as the fallback when an item carries none; caching them
-    here is the larger, separate item.
+  - Channel images as the fallback when an item carries none — landed;
+    caching them here is the larger, separate item and is still open.
   - Non-English items — a language column and a predicate, with translation
     proper left as a positioning decision.
   - Topics that describe the article rather than its publisher.
@@ -1421,11 +1421,16 @@ difference between the two.
   seeded by `sre-tab seed` or assembled one `source add` at a time, and an
   import would turn standing an instance up around somebody's existing
   reading into a single command.
-- **Four things missing from the first screen, none of them deep.** Sources
-  render an icon and no source has one:
-  [ItemCard.tsx](frontend/src/components/ItemCard.tsx) returns early without
-  an `icon_url`, and the seed catalogue sets it on nothing, so the
-  affordance is built and never fires. There is no mark-all-read for the
+- **Four things missing from the first screen, none of them deep** — **one
+  of the four has landed.** Sources rendered an icon and no source had one:
+  [ItemCard.tsx](frontend/src/components/ItemCard.tsx) returned early
+  without an `icon_url`, and the seed catalogue set it on nothing, so the
+  affordance was built and never fired. Ingest now discovers the channel's
+  own artwork and the API coalesces it behind the operator's value, so the
+  affordance fires without the catalogue having to carry a URL per source —
+  see the entry under [Reading experience](#reading-experience) for why the
+  discovered value is held apart from the configured one. There is no
+  mark-all-read for the
   current filter, which is the first control a reader with an unread filter
   reaches for. Per-source freshness is operator-only — `sre-tab status`
   knows when each source last fetched and no API field carries it, so a user
@@ -1562,18 +1567,33 @@ gets for nothing.
   answer to "no football, ever" only after topics describe the item rather
   than its publisher.
 
-- **Feeds carry a channel image and nothing reads it.** `ParsedFeed` holds a
-  version, a title, and entries ([parse.py](app/ingest/parse.py)); `_image`
-  is per-entry only. feedparser exposes the channel's own artwork, and
-  `sources.icon_url` is already on the model, already in `FeedSourceRef`,
-  already rendered by `SourceIcon`, and set by nothing at all — so capturing
-  it at parse time closes the source-icon half of the first-screen entry
-  under [Product](#product) in the same change, and the card-level fallback
-  for an item with no image of its own is then a couple of lines in
-  [ItemCard.tsx](frontend/src/components/ItemCard.tsx).
+- **Feeds carry a channel image and nothing reads it** — **landed.**
+  `ParsedFeed` now carries the channel's artwork alongside its version and
+  title ([parse.py](app/ingest/parse.py)): RSS `<image><url>`, Atom `<logo>`
+  then `<icon>`, made safe by the same guard every other feed-supplied URL
+  goes through. Cards fall back to it, and the source-icon quarter of the
+  first-screen entry under [Product](#product) closes with it.
 
-  **Caching those images on this server is a separate item and a larger
-  one.** It would be the first write path that stores third-party bytes:
+  **It went to `source_status`, not to `sources`, and that was the whole
+  decision.** `sources.icon_url` existed and was the obvious target, and
+  writing it from the refresh loop would have broken the two properties
+  `source_status` was split out to protect: that the operator and the
+  refresh loop never contend for a row, and that `sources.updated_at` keeps
+  meaning "the operator changed the configuration" rather than "a feed was
+  polled". So `source_status.discovered_icon_url` holds what a fetch found,
+  `sources.icon_url` holds what an operator set, and the API coalesces in
+  that order — which also gives the operator an override for free, and
+  lets them clear one without losing what the feed says about itself.
+
+  The cost is one more column on a join the feed already makes: outer,
+  because `source_status` only exists once a source has been polled, and an
+  inner join there would drop every item from a source whose first refresh
+  had not finished — a feed silently losing a publication rather than an
+  icon.
+
+  **Caching those images on this server is still a separate item and a
+  larger one, and is not part of what landed.** It would be the first write
+  path that stores third-party bytes:
   a volume, hash-addressed retrieval, magic-byte validation, a size cap, and
   an explicit declaration that the store is disposable — which it is, being
   re-fetchable, and which is what keeps it out of backup scope. It should

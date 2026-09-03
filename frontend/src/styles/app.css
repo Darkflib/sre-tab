@@ -625,6 +625,17 @@
   background: var(--surface-2);
 }
 
+/* The channel's own artwork, standing in for an item that has none. A
+   logo is square-ish and branded where an article image is wide and
+   photographic, so `cover` at the height above crops it to a slice of
+   gradient. Shorter, `contain`, and padded: it reads as a mark rather
+   than as a picture of the story, which is what it is. */
+.card__image--channel {
+  height: 4.5rem;
+  object-fit: contain;
+  padding: 0.6rem;
+}
+
 .card__title {
   margin: 0;
   font-size: 1rem;

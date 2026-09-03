@@ -3,6 +3,86 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+<a id="channel-artwork"></a>
+## 2026-09-03 — The artwork a feed declares about itself
+
+The fourth [Reading experience](ROADMAP.md) item, and the one that also
+closes a quarter of the first-screen entry that has been open since v1:
+`sources.icon_url` existed, `FeedSourceRef` carried it, `ItemCard`
+rendered it, and nothing had ever set it. The affordance was built and
+never fired.
+
+**The whole decision was which table it goes in, and the obvious answer
+was wrong.** `sources.icon_url` is right there and writing it from the
+refresh loop is two lines. It would also have broken both properties
+`source_status` was split out to protect, and those are written down in
+the model: that the operator and the refresh loop never contend for a
+row, and that `sources.updated_at` keeps meaning "the operator changed
+the configuration" rather than "a feed was polled". Writing only when the
+column is null avoids the second problem once per source and leaves the
+first, and makes an operator who clears an icon get it silently
+rediscovered.
+
+So `source_status.discovered_icon_url` holds what a fetch found,
+`sources.icon_url` holds what an operator set, and `source_icon()`
+coalesces in that order. Two answers kept intact rather than one
+overwriting the other, and an operator override falls out for free. What
+that cost is the widening of `source_status` from *when the refresh loop
+last ran* to *what the refresh loop learned* — an honest widening, since
+the reason the table exists is the writer rather than the subject, and it
+is recorded in the class docstring rather than left to be inferred.
+
+**The join had to be outer, and getting that wrong would have lost
+articles rather than icons.** `source_status` is 1:1 with `sources` and
+exists only once a source has been polled, so an inner join drops every
+item from a source whose first refresh has not finished. There is a test
+for exactly that, and breaking the join to `.join()` fails it along with
+two others.
+
+It rides the join the source already needs — `contains_eager` chained off
+`contains_eager` — so the discovered icon costs no extra statement. A
+`selectinload` would have been one more per page and a lazy load one per
+card, which `lazy="raise"` turns into a failure rather than a slowdown,
+but only if a test happens to look. One does now.
+
+**Three smaller decisions, each with a test.** Atom's `<logo>` beats its
+`<icon>`, because the specification separates them by size and intent and
+this value is read at two sizes — only the larger one survives being a
+card's fallback. `None` from a parse is an absence rather than a value, so
+a refresh that finds no artwork leaves the last good icon alone: a missing
+`<image>` element is far more often a truncated fetch than a publisher
+retiring their logo, and blanking every card on one bad poll is the worse
+mistake. And an unchanged icon is reported rather than written, since
+every refresh of every source carries the same URL and an unconditional
+UPDATE would be a write per source per poll for a value that changes about
+never.
+
+**The channel image goes through the same URL guard as everything else**,
+which meant making `_safe_optional_url` public rather than adding a second
+copy of the rule. It is rendered in a browser with the reader's
+credentials ambient, so "it is only an icon" is not a reason to check it
+less carefully than an item's own image. Parametrised over loopback, a
+private address, `javascript:`, and a dotless host.
+
+**On the card it is styled as a mark, not as a photograph.** A logo is
+square-ish and branded where an article image is wide; `object-fit: cover`
+at the item image's height crops it to a slice of gradient. The fallback
+gets `contain` in a shorter padded box. Checked in a browser against the
+real stylesheet, light and dark.
+
+The failure state needed rethinking too. `ItemCard` tracked one boolean,
+which cannot say *which* of two candidates broke — so a dead item image
+would either take the fallback down with it or be retried forever. It
+tracks failed URLs now, and three tests cover the chain: fall through,
+give up, and do not retry.
+
+**A fixture name cost twenty minutes and is worth writing down.** This
+module defined a `source` fixture; the ingest conftest already owns that
+name and builds `source_ref` from it, so the end-to-end test silently
+pointed at a different feed and failed the SSRF guard rather than the
+assertion. It said so in the log, which is the only reason it took twenty
+minutes rather than an hour.
+
 <a id="what-the-review-of-the-mutes-found"></a>
 ## 2026-09-03 — What the review of the mutes found
 

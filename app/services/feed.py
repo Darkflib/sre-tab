@@ -109,6 +109,14 @@ def _base_query(user: User) -> Select[tuple[FeedItem, datetime, datetime]]:
     return (
         select(FeedItem, UserReadItem.read_at, Bookmark.created_at)
         .join(FeedItem.source)
+        # Outer, and on the join the source already rides rather than as a
+        # second query: `source_status` is 1:1 and exists only once a
+        # source has been polled, so an inner join would drop every item
+        # from a source whose first refresh has not finished. It carries
+        # the discovered channel artwork that `build_item_out` falls back
+        # to — one more column on a join already being made, not a
+        # statement per page and certainly not one per card.
+        .outerjoin(Source.status)
         .outerjoin(
             UserReadItem,
             and_(
@@ -126,7 +134,10 @@ def _base_query(user: User) -> Select[tuple[FeedItem, datetime, datetime]]:
         # Items from a disabled source stay in the database (ingest never
         # deletes on failure) but leave the feed.
         .where(Source.enabled.is_(True))
-        .options(contains_eager(FeedItem.source), selectinload(FeedItem.topics))
+        .options(
+            contains_eager(FeedItem.source).contains_eager(Source.status),
+            selectinload(FeedItem.topics),
+        )
         .order_by(FeedItem.published_at.desc(), FeedItem.id.desc())
     )
 
@@ -371,10 +382,26 @@ def mute_predicates(db: Session, user: User) -> list[ColumnElement[bool]]:
     return predicates
 
 
+def source_icon(source: Source) -> str | None:
+    """The icon to show for *source*: the operator's, else the feed's own.
+
+    ``sources.icon_url`` is configuration and wins where it exists; the
+    discovered value is what the last successful parse found in the
+    channel. Coalescing here rather than at either write keeps both
+    answers intact — an operator can set an icon without the refresh loop
+    overwriting it, and can clear one without losing what the feed says
+    about itself.
+
+    ``source.status`` must already be loaded; ``lazy="raise"`` makes a
+    miss loud rather than a query per card.
+    """
+    return source.icon_url or (source.status.discovered_icon_url if source.status else None)
+
+
 def build_item_out(item: FeedItem, *, read: bool, bookmarked: bool) -> FeedItemOut:
-    """Build the response card. ``item.source`` and ``item.topics`` must
-    already be loaded — ``lazy="raise"`` turns a miss here into a loud
-    failure rather than a per-card query."""
+    """Build the response card. ``item.source``, ``item.source.status``,
+    and ``item.topics`` must already be loaded — ``lazy="raise"`` turns a
+    miss here into a loud failure rather than a per-card query."""
     return FeedItemOut(
         id=item.id,
         canonical_url=item.canonical_url,
@@ -383,7 +410,7 @@ def build_item_out(item: FeedItem, *, read: bool, bookmarked: bool) -> FeedItemO
         image_url=item.image_url,
         published_at=as_utc(item.published_at),
         source=FeedSourceRef(
-            slug=item.source.slug, name=item.source.name, icon_url=item.source.icon_url
+            slug=item.source.slug, name=item.source.name, icon_url=source_icon(item.source)
         ),
         topics=sorted(topic.slug for topic in item.topics),
         read=read,
