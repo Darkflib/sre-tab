@@ -197,6 +197,167 @@
         }
       }
     },
+    "/api/v1/me/tokens": {
+      "get": {
+        "tags": [
+          "me",
+          "api-tokens"
+        ],
+        "summary": "List Api Tokens",
+        "description": "The caller's own tokens. Never anybody else's, and never a value.",
+        "operationId": "list_api_tokens_api_v1_me_tokens_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiTokenList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a signed-in session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "me",
+          "api-tokens"
+        ],
+        "summary": "Create Api Token",
+        "description": "Mint a token and return it. This response is the only sight of it.\n\nThe expiry is computed here rather than accepted as a timestamp: a\nclient sending an absolute moment would be asserting a shared clock,\nand the only clock that matters is the one the ``expires_at``\npredicate is evaluated against.",
+        "operationId": "create_api_token_api_v1_me_tokens_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiTokenCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiTokenCreated"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a signed-in session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/tokens/{token_id}": {
+      "delete": {
+        "tags": [
+          "me",
+          "api-tokens"
+        ],
+        "summary": "Revoke Api Token",
+        "description": "Revoke a token. Revoking one that is not yours is a 204 no-op.\n\nNot a 404, on the reasoning ``tests/api/test_isolation.py`` already\npins for bookmarks: answering differently for \"not yours\" and \"never\nexisted\" would confirm a guessed id. The revocation either happened\nor there was nothing of yours to revoke, and from outside those look\nthe same.",
+        "operationId": "revoke_api_token_api_v1_me_tokens__token_id__delete",
+        "parameters": [
+          {
+            "name": "token_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Token Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a signed-in session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me": {
       "get": {
         "tags": [
@@ -750,6 +911,148 @@
   },
   "components": {
     "schemas": {
+      "ApiTokenCreate": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Label",
+            "description": "What this token is for, in the owner's own words"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ApiTokenScope",
+            "description": "read: safe methods only. full: everything."
+          },
+          "expires_in_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 3650.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires In Days",
+            "description": "Optional lifetime in days; omit for a token that does not expire"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "scope"
+        ],
+        "title": "ApiTokenCreate"
+      },
+      "ApiTokenCreated": {
+        "properties": {
+          "token": {
+            "$ref": "#/components/schemas/ApiTokenOut"
+          },
+          "value": {
+            "type": "string",
+            "title": "Value",
+            "description": "The token itself. Shown once, at creation. Only a hash is stored, so it cannot be retrieved again."
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "value"
+        ],
+        "title": "ApiTokenCreated",
+        "description": "The one and only response carrying a raw token."
+      },
+      "ApiTokenList": {
+        "properties": {
+          "tokens": {
+            "items": {
+              "$ref": "#/components/schemas/ApiTokenOut"
+            },
+            "type": "array",
+            "title": "Tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tokens"
+        ],
+        "title": "ApiTokenList"
+      },
+      "ApiTokenOut": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ApiTokenScope"
+          },
+          "display_prefix": {
+            "type": "string",
+            "title": "Display Prefix",
+            "description": "The token's non-secret leading characters, for telling two tokens apart"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At",
+            "description": "When this token was last presented successfully; null if never"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At",
+            "description": "When it stops working; null if it does not"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "scope",
+          "display_prefix",
+          "created_at",
+          "last_used_at",
+          "expires_at"
+        ],
+        "title": "ApiTokenOut",
+        "description": "A token as its owner sees it. Never carries the token."
+      },
+      "ApiTokenScope": {
+        "type": "string",
+        "enum": [
+          "read",
+          "full"
+        ],
+        "title": "ApiTokenScope",
+        "description": "What a long-lived API token may do.\n\nTwo values rather than a boolean, and not a free string: the same\n``Enum(..., native_enum=False)`` treatment ``Theme`` and ``Layout``\nget, so the database refuses a value the application does not know\nand adding a third scope is a migration rather than a typo.\n\nThe split is about blast radius. A leaked ``READ`` token discloses\none user's feed, preferences, and reading history; a leaked ``FULL``\ntoken is that account. Most of what \"call it from another app\" means\nin practice is reading."
+      },
       "BookmarkOut": {
         "properties": {
           "item": {

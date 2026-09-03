@@ -2,7 +2,12 @@
 
 Thin handlers: the profile work belongs to ``app.services.preferences``
 (agent C), and account deletion is one statement leaning on the schema's
-``ondelete="CASCADE"``.
+``ondelete="CASCADE"`` — which now takes the user's API tokens with it
+as well, by the same one statement and with no code here to say so.
+
+API-token management hangs off this router rather than off the ``/api/v1``
+aggregator, which is Phase 0 property and frozen. See
+:mod:`app.api.v1.tokens`.
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser
+from app.api.v1 import tokens
 from app.api.v1.schemas import ErrorResponse, MeResponse, PreferencesOut, PreferencesPatch, UserOut
 from app.auth.sessions import clear_csrf_cookie, clear_session_cookie
 from app.db.models import User
@@ -23,6 +29,7 @@ from app.services import preferences
 from app.settings import Settings
 
 router = APIRouter(prefix="/me", tags=["me"])
+router.include_router(tokens.router)
 
 log = structlog.get_logger(__name__)
 

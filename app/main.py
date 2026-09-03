@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker as SessionMaker
 
 from app.api.v1.router import router as v1_router
+from app.auth.bearer import ApiTokenMiddleware
 from app.auth.csrf_middleware import CSRFMiddleware
 from app.db.engine import create_db_engine
 from app.db.session import build_session_factory
@@ -138,7 +139,17 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     # to the router so a rejection still travels back out through the
     # request-ID and security-header layers; headers therefore apply to
     # every response, including errors raised inside them.
+    #
+    # ApiTokenMiddleware wraps CSRF rather than the other way round, and
+    # the order is load-bearing in one direction only: it resolves the
+    # bearer credential and leaves the identity on the request, so a
+    # scope refusal is decided before the router is reached. It cannot
+    # change what CSRF does — it declines to authenticate any request
+    # carrying the session cookie, which is precisely the condition CSRF
+    # keys on — but having it outside means both middleware and route see
+    # the same resolved identity.
     application.add_middleware(CSRFMiddleware)
+    application.add_middleware(ApiTokenMiddleware)
     application.add_middleware(RequestIDMiddleware)
     application.add_middleware(SecurityHeadersMiddleware)
 
