@@ -31,8 +31,9 @@ shows up as a failure instead of being supplied silently by an ambient DOM.
 and `tokens.test.ts` parses `tokens.css` and recomputes WCAG contrast ratios.
 None of that wants a browser.
 
-Two files do. `src/api/client.test.ts` and
-`src/data/usePagedResource.effects.test.ts` each opt in with a docblock:
+Three files do. `src/api/client.test.ts`,
+`src/data/usePagedResource.effects.test.ts`, and
+`src/components/FilterBar.collapse.test.tsx` each opt in with a docblock:
 
 ```ts
 // @vitest-environment happy-dom
@@ -43,7 +44,8 @@ property of failing loudly when it reaches for a global it did not install.
 `happy-dom` is the only test-environment dependency; there is no
 request-mocking library (`globalThis.fetch` is stubbed with `vi.fn()`) and no
 renderer library (`usePagedResource.effects.test.ts` mounts the hook on
-`createRoot` with React 19's own `act`, in about thirty lines).
+`createRoot` with React 19's own `act`, in about thirty lines, and
+`FilterBar.collapse.test.tsx` mounts a component the same way).
 
 `client.ts` genuinely needs the DOM rather than merely liking it: the client
 is built with no `baseUrl`, so openapi-fetch constructs
@@ -141,8 +143,8 @@ src/
   catalogue/    GET /sources, shared by feed filters, onboarding, settings
   components/   shell, filter bar, item card, icons, shared states
   data/         cursor-pagination hook
-  feed/         filter model, volume analysis, feed/bookmark hooks
-  lib/          formatting and CSS helpers
+  feed/         filter model, collapse state, volume analysis, feed hooks
+  lib/          formatting, CSS, and localStorage helpers
   routes/       landing, onboarding, feed, bookmarks, settings, auth guard
   session/      GET /me, preference updates, sign-out, account deletion
   styles/       tokens, base, app
@@ -169,6 +171,18 @@ screen rather than a secondary one:
   loaded, with one-click *Only* and *Hide*.
 - When one source exceeds 35% of the loaded items, a notice says so and
   offers to hide or isolate it.
+- The chips collapse. That argument is about where the control lives, not
+  about how much of the viewport it keeps once a reader has used it — on a
+  phone it is most of the first screen, and after a selection is settled it
+  is noise on any screen. The bar is a disclosure with `aria-expanded` and
+  `aria-controls`, the state is kept per device in `localStorage` (see
+  `src/feed/collapse.ts`), and expanded is the default, so a first visit is
+  unchanged.
+- **A collapsed bar still says what it is filtering.** The badge, the
+  counts, and "Clear filters" never collapse, and a summary line names the
+  sources and topics the counts cannot — with `null` and `[]` kept apart, so
+  an un-overridden dimension contributes nothing and a deselect-everything
+  says "No sources selected" outright.
 
 ## Preferences
 

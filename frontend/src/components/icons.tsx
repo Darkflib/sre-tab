@@ -63,6 +63,16 @@ export function GitHubIcon({ className }: IconProps) {
   );
 }
 
+/** Points down when the region it controls is open, and the CSS rotates it
+ *  from the button's own `aria-expanded` rather than from a second prop. */
+export function ChevronIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="m3.5 6 4.5 4.5L12.5 6" />
+    </svg>
+  );
+}
+
 export function CrossIcon({ className }: IconProps) {
   return (
     <svg {...base(className)}>

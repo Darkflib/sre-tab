@@ -287,6 +287,54 @@
   margin-bottom: 0.6rem;
 }
 
+/* Collapsed, the head is the last thing in the box, so its gap to the chips
+   is padding nobody asked for. */
+.filters:has(.filters__body[hidden]) .filters__head {
+  margin-bottom: 0;
+}
+
+.filters__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  /* Pulled left by its own padding so the label sits on the section's edge
+     rather than indented from it. */
+  margin-left: -0.5rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.filters__toggle:hover {
+  background: var(--surface-2);
+}
+
+/* Driven by the button's own `aria-expanded` rather than by a class the
+   component would have to keep in step with it: the picture and the
+   announcement cannot then disagree. Rotation only — no transition, so
+   there is nothing here for `prefers-reduced-motion` to reduce. */
+.filters__chevron {
+  transform: rotate(-90deg);
+}
+
+.filters__toggle[aria-expanded='true'] .filters__chevron {
+  transform: none;
+}
+
+/* Which sources and topics, which the badge's counts cannot say. Shown only
+   while the chips are hidden. */
+.filters__summary {
+  margin: 0.4rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
 .filters__state {
   margin: 0;
   color: var(--text-muted);

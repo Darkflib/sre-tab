@@ -1,5 +1,12 @@
+import { useId, useState } from 'react';
+
 import type { PreferencesPatch, ReadFilter } from '../api/types';
 import { useCatalogue } from '../catalogue/useCatalogue';
+import {
+  readFiltersCollapsed,
+  rememberFiltersCollapsed,
+  summariseFilters,
+} from '../feed/collapse';
 import {
   effectiveSelection,
   EMPTY_FILTERS,
@@ -13,7 +20,7 @@ import { isHighVolume, type SourceShare } from '../feed/volume';
 import { cssVars } from '../lib/css';
 import { percent } from '../lib/format';
 import { useAuthenticatedSession } from '../session/useSession';
-import { CrossIcon } from './icons';
+import { ChevronIcon, CrossIcon } from './icons';
 
 interface FilterBarProps {
   filters: FeedFilters;
@@ -29,6 +36,12 @@ interface FilterBarProps {
  * of magnitude, so an unfiltered time-ordered feed belongs to the fastest
  * of them within the hour. Hence chips in the page flow rather than behind
  * a menu, a measured composition breakdown, and one-click narrowing.
+ *
+ * That argument is about where the control lives, not about how much of the
+ * viewport it is entitled to once a reader has used it. So the chips
+ * collapse, and the head — badge, counts, and the way back out — never
+ * does: a bar that hid what it was doing would be the failure this whole
+ * file is written against, just quieter.
  */
 export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarProps) {
   const { sources, topics } = useCatalogue();
@@ -37,6 +50,25 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
   const effective = effectiveSelection(filters, preferences, { sources, topics });
   const overridden = hasOverride(filters);
   const countBySlug = new Map(shares.map((entry) => [entry.slug, entry.count]));
+
+  const bodyId = useId();
+  // Read once on mount, so the answer survives a remount without the server
+  // knowing anything about it. Expanded when nothing is stored, and when
+  // storage cannot be read at all.
+  const [collapsed, setCollapsed] = useState(readFiltersCollapsed);
+
+  const toggleCollapsed = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    // Written outside the state updater on purpose: StrictMode calls that
+    // twice, and a side effect belongs with the event rather than with the
+    // render it schedules.
+    rememberFiltersCollapsed(next);
+  };
+
+  // Names, which the counts in the badge cannot give. Rendered only while
+  // the chips are hidden, because the chips are the better version of it.
+  const summary = summariseFilters(filters, { sources, topics });
 
   const setSources = (next: string[] | null) => {
     onChange({ ...filters, sources: next });
@@ -83,6 +115,23 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
   return (
     <section className="filters" aria-label="Feed filters">
       <div className="filters__head">
+        {/*
+          A disclosure, so a real button carrying the state: `aria-expanded`
+          is the state, and the CSS rotates the chevron from that attribute
+          rather than from a second prop, which is what stops the picture and
+          the announcement disagreeing.
+        */}
+        <button
+          type="button"
+          className="filters__toggle"
+          aria-expanded={!collapsed}
+          aria-controls={bodyId}
+          onClick={toggleCollapsed}
+        >
+          <ChevronIcon className="filters__chevron" />
+          Filters
+        </button>
+
         <p className="filters__state" role="status">
           {overridden ? (
             <>
@@ -135,96 +184,116 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
         ) : null}
       </div>
 
-      {nothingSelected ? (
-        <p className="filters__note" role="status">
-          Nothing is selected, so the feed is empty and there is no view to save. Pick a source or
-          topic below, or clear the filters to go back to your saved selection.
-        </p>
+      {/*
+        Collapsed and silently filtering is the failure to avoid, and the
+        badge alone does not close it: "3 of 8 sources" does not say which
+        three, and the chips that would are the thing that is hidden. An
+        un-overridden dimension contributes nothing here, so a bar nobody
+        has filtered summarises to nothing at all and keeps its "Your
+        selection" badge — `null` and `[]` are different states and this is
+        one of the places that has to keep them apart.
+      */}
+      {collapsed && summary.length > 0 ? (
+        <p className="filters__summary">{summary.join('. ')}.</p>
       ) : null}
 
-      <ReadStateGroup value={filters.readState} onChange={setReadState} />
+      {/*
+        `hidden` rather than an unmounted branch. `aria-controls` has to name
+        an element that exists, and the region keeps the composition panel's
+        open/closed state across a collapse instead of resetting it.
+      */}
+      <div className="filters__body" id={bodyId} hidden={collapsed}>
+        {nothingSelected ? (
+          <p className="filters__note" role="status">
+            Nothing is selected, so the feed is empty and there is no view to save. Pick a source or
+            topic below, or clear the filters to go back to your saved selection.
+          </p>
+        ) : null}
 
-      <FilterGroup
-        legend="Sources"
-        entries={sources.map((source) => ({
-          slug: source.slug,
-          name: source.name,
-          count: countBySlug.get(source.slug) ?? 0,
-          highVolume: isHighVolume(source),
-        }))}
-        selected={effective.sources}
-        onToggle={(slug) => {
-          setSources(toggle(effective.sources, slug));
-        }}
-        onOnly={(slug) => {
-          setSources([slug]);
-        }}
-        onAll={() => {
-          setSources(sources.map((source) => source.slug));
-        }}
-        onNone={() => {
-          setSources([]);
-        }}
-        showCounts={loadedCount > 0}
-      />
+        <ReadStateGroup value={filters.readState} onChange={setReadState} />
 
-      <FilterGroup
-        legend="Topics"
-        entries={topics.map((topic) => ({ slug: topic.slug, name: topic.name, count: 0, highVolume: false }))}
-        selected={effective.topics}
-        onToggle={(slug) => {
-          setTopics(toggle(effective.topics, slug));
-        }}
-        onOnly={(slug) => {
-          setTopics([slug]);
-        }}
-        onAll={() => {
-          setTopics(topics.map((topic) => topic.slug));
-        }}
-        onNone={() => {
-          setTopics([]);
-        }}
-        showCounts={false}
-      />
+        <FilterGroup
+          legend="Sources"
+          entries={sources.map((source) => ({
+            slug: source.slug,
+            name: source.name,
+            count: countBySlug.get(source.slug) ?? 0,
+            highVolume: isHighVolume(source),
+          }))}
+          selected={effective.sources}
+          onToggle={(slug) => {
+            setSources(toggle(effective.sources, slug));
+          }}
+          onOnly={(slug) => {
+            setSources([slug]);
+          }}
+          onAll={() => {
+            setSources(sources.map((source) => source.slug));
+          }}
+          onNone={() => {
+            setSources([]);
+          }}
+          showCounts={loadedCount > 0}
+        />
 
-      {shares.length > 1 ? (
-        <details className="composition">
-          <summary>
-            Feed composition — {loadedCount} loaded {loadedCount === 1 ? 'item' : 'items'}
-          </summary>
-          <ul className="composition__list">
-            {shares.map((entry) => (
-              <li key={entry.slug} className="composition__row">
-                <span className="composition__name">{entry.name}</span>
-                <span className="composition__bar" style={cssVars({ '--share': entry.share })} aria-hidden="true">
-                  <span className="composition__fill" />
-                </span>
-                <span className="composition__count">
-                  {entry.count} · {percent(entry.share)}
-                </span>
-                <button
-                  type="button"
-                  className="button button--tiny"
-                  onClick={() => {
-                    setSources([entry.slug]);
-                  }}
-                >
-                  Only
-                </button>
-                <button
-                  type="button"
-                  className="button button--tiny"
-                  onClick={() => {
-                    setSources(effective.sources.filter((slug) => slug !== entry.slug));
-                  }}
-                >
-                  Hide
-                </button>
-              </li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
+        <FilterGroup
+          legend="Topics"
+          entries={topics.map((topic) => ({ slug: topic.slug, name: topic.name, count: 0, highVolume: false }))}
+          selected={effective.topics}
+          onToggle={(slug) => {
+            setTopics(toggle(effective.topics, slug));
+          }}
+          onOnly={(slug) => {
+            setTopics([slug]);
+          }}
+          onAll={() => {
+            setTopics(topics.map((topic) => topic.slug));
+          }}
+          onNone={() => {
+            setTopics([]);
+          }}
+          showCounts={false}
+        />
+
+        {shares.length > 1 ? (
+          <details className="composition">
+            <summary>
+              Feed composition — {loadedCount} loaded {loadedCount === 1 ? 'item' : 'items'}
+            </summary>
+            <ul className="composition__list">
+              {shares.map((entry) => (
+                <li key={entry.slug} className="composition__row">
+                  <span className="composition__name">{entry.name}</span>
+                  <span className="composition__bar" style={cssVars({ '--share': entry.share })} aria-hidden="true">
+                    <span className="composition__fill" />
+                  </span>
+                  <span className="composition__count">
+                    {entry.count} · {percent(entry.share)}
+                  </span>
+                  <button
+                    type="button"
+                    className="button button--tiny"
+                    onClick={() => {
+                      setSources([entry.slug]);
+                    }}
+                  >
+                    Only
+                  </button>
+                  <button
+                    type="button"
+                    className="button button--tiny"
+                    onClick={() => {
+                      setSources(effective.sources.filter((slug) => slug !== entry.slug));
+                    }}
+                  >
+                    Hide
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+      </div>
     </section>
   );
 }
