@@ -69,11 +69,25 @@ that.
     and the quadlets.
   - A denied sign-in should land on the page, not on a JSON 403.
   - An admin surface for `is_admin`, which nothing sets and nothing reads.
-  - Search over the retained items.
+  - Search over the retained items — landed.
   - A data export, and OPML in the CLI.
-  - First-screen polish: source icons, mark-all-read, per-source freshness,
-    and a second mobile breakpoint.
+  - First-screen polish: mark-all-read, per-source freshness, and a second
+    mobile breakpoint. Source icons have landed.
   - A `/metrics` endpoint.
+- [Reading experience](#reading-experience)
+  - The order the next seven land in, and the reason it is that order.
+  - Wide screens wasted space at a 1180px cap — landed; the page size stays
+    coupled to the column count, which is noted rather than fixed.
+  - Search first, as the text predicate the two below reuse — landed; the
+    design and what building it settled are under [Product](#product).
+  - Muted words — landed, with muted tags, which stay thin until the topic
+    entry below lands.
+  - Channel images as the fallback when an item carries none — landed;
+    caching them here is the larger, separate item and is still open.
+  - Non-English items — a language column and a predicate, with translation
+    proper left as a positioning decision.
+  - Topics that describe the article rather than its publisher.
+  - Telling the reader that new items have arrived.
 
 <a id="supply-chain-hygiene"></a>
 ## Supply-chain hygiene
@@ -1370,16 +1384,35 @@ difference between the two.
   adds a feed. This is that route. Each of those findings changes severity
   the day it merges, and the route being admin-only is not a detail of the
   design but the thing that decides how far each one moves.
-- **Ninety days of retained items and no way to search them.**
-  `feed_retention_days` defaults to 90, so there is a real corpus behind the
-  feed and the only way to reach anything in it is to scroll. The shape that
-  fits what is already here is a `tsvector` over title and summary with a
-  GIN index on PostgreSQL, and FTS5 or a `LIKE` on SQLite for development,
-  applied as one more predicate inside the existing keyset query rather than
-  as a second endpoint beside it. That is how the read-state filter went in
-  and for the same reason: a predicate in the `WHERE` of the statement that
-  already runs keeps pages full and cursors honest, where filtering the
-  page after it comes back does neither.
+- **Ninety days of retained items and no way to search them** — **landed,
+  as specified.** `feed_retention_days` defaults to 90, so there was a real
+  corpus behind the feed and the only way to reach anything in it was to
+  scroll. `GET /feed?q=` is a `tsvector` over title and summary with a GIN
+  index on PostgreSQL and a case-folded `LIKE` per term on SQLite, applied
+  as one more predicate inside the existing keyset query rather than as a
+  second endpoint beside it — the read-state filter's shape and, for the
+  same reason: a predicate in the `WHERE` of the statement that already
+  runs keeps pages full and cursors honest, where filtering the page after
+  it comes back does neither.
+
+  Two things settled while building it that the entry above did not
+  anticipate. `plainto_tsquery` rather than `websearch_to_tsquery`, because
+  the latter's quoted phrases and `-` exclusions have no honest counterpart
+  in the SQLite branch, and an engine divergence in *semantics* is worse
+  than the one in recall that stemming already costs. And the ordering
+  stays `published_at` descending rather than becoming relevance: the cursor
+  *is* `(published_at, id)`, so ranking needs a different key and
+  invalidates every cursor already issued.
+
+  The index is the part that needed a guard rather than a test.
+  PostgreSQL uses an expression index only when the indexed expression
+  matches the query's character for character, and a divergence between the
+  two produces no error anywhere — the index builds, `CREATE INDEX` reports
+  success, and every query is a sequential scan. `tests/postgres/test_search.py`
+  therefore asserts the *plan*, with `enable_seqscan` off so the question is
+  "can this index serve this query" rather than "does the planner prefer it
+  on a small table". Confirmed by diverging the expression on purpose and
+  watching it go red.
 - **The pitch is that the data lives on your own server, and there is no way
   to get it out.** `DELETE /api/v1/me` exists, so an account can be
   destroyed, and nothing exports it first. `GET /api/v1/me/export` returning
@@ -1388,11 +1421,16 @@ difference between the two.
   seeded by `sre-tab seed` or assembled one `source add` at a time, and an
   import would turn standing an instance up around somebody's existing
   reading into a single command.
-- **Four things missing from the first screen, none of them deep.** Sources
-  render an icon and no source has one:
-  [ItemCard.tsx](frontend/src/components/ItemCard.tsx) returns early without
-  an `icon_url`, and the seed catalogue sets it on nothing, so the
-  affordance is built and never fires. There is no mark-all-read for the
+- **Four things missing from the first screen, none of them deep** — **one
+  of the four has landed.** Sources rendered an icon and no source had one:
+  [ItemCard.tsx](frontend/src/components/ItemCard.tsx) returned early
+  without an `icon_url`, and the seed catalogue set it on nothing, so the
+  affordance was built and never fired. Ingest now discovers the channel's
+  own artwork and the API coalesces it behind the operator's value, so the
+  affordance fires without the catalogue having to carry a URL per source —
+  see the entry under [Reading experience](#reading-experience) for why the
+  discovered value is held apart from the configured one. There is no
+  mark-all-read for the
   current filter, which is the first control a reader with an unread filter
   reaches for. Per-source freshness is operator-only — `sre-tab status`
   knows when each source last fetched and no API field carries it, so a user
@@ -1419,3 +1457,207 @@ difference between the two.
   scraper to run. What a `/metrics` endpoint would add over it is history and
   a graph rather than a page at the moment of failure — worth having, and
   worth less than it was a change ago.
+
+<a id="reading-experience"></a>
+## Reading experience
+
+Seven asks from 3 September 2026, recorded with the order they should land
+in rather than as seven independent entries, because the order is the part
+that took thinking and most of the items are obvious once placed.
+
+One structural fact decides it. Six of the seven are the same shape:
+[`_apply_filters`](app/services/feed.py) is the only place the feed narrows,
+it is private with exactly one caller, and search, muted words, muted tags,
+and a language filter all belong inside it — predicates in the `WHERE` of the
+statement that already runs, which is how the read-state filter went in and
+for the reason given there. So the question is not which of these is most
+wanted. It is which predicate to build first, and what the next one then
+gets for nothing.
+
+- **Wide screens waste space, and it is not a layout problem** — **landed.**
+  [app.css](frontend/src/styles/app.css) capped `.shell__main` at 1180px and
+  lays the grid out as `repeat(auto-fill, minmax(20rem, 1fr))`. Eleven
+  hundred and eighty over three hundred and twenty is three. The columns are
+  not the constraint and the empty margin is not a gap in the design — both
+  are that one cap, so the change is one declaration plus a decision about
+  whether the ceiling is a constant, a second breakpoint, or a preference
+  beside `layout`.
+
+  The cap is now `--shell-max`, at 106rem — five columns and the shell's own
+  padding — so the bar and the grid still share an edge and a 2560px display
+  gets five columns rather than seven. Measured against the real stylesheet
+  at 1920×1080: 1180px was three columns, 106rem is five, and the shell goes
+  from 61% of the viewport to 88%.
+
+  **What it collides with is real, smaller than it first looked, and left as
+  it is.** `max_visible_cards` doubles as the page size
+  ([FeedPage.tsx](frontend/src/routes/FeedPage.tsx)), and the sentinel that
+  triggers `loadMore` carries a 400px root margin — so shortening a page by
+  widening it moves the sentinel up. Measured rather than reasoned about,
+  because the first estimate here was wrong in both directions: at 1920×1080
+  a 25-item page is five rows and 1361px, which leaves the sentinel 54px
+  *inside* the trigger zone, so the second page is fetched on arrival with no
+  scrolling at all. It is not the runaway that suggests. Fifty items is
+  2739px and puts the next trigger 1324px below the fold, so it fires exactly
+  once and settles.
+
+  One extra request on arrival, for a viewport that genuinely holds more than
+  five rows, is close enough to correct that changing it needs its own
+  argument. What it does mean is that the preference and the column count are
+  coupled and only one of them is visible to the reader — which is the
+  argument, when someone wants to make it.
+
+- **Search is the keystone, not the first feature** — **landed.** The
+  design was already specified under [Product](#product), and that entry now
+  carries what building it settled. What this one claimed was its
+  *position*: built as a reusable text predicate rather than as a search
+  feature that happens to contain one, it is most of the muted-words work as
+  well, and the two differ by a negation. Built the other way round — muting
+  first, search second — the same expression gets written twice, and the
+  second copy has to agree with the first about stemming, case folding, and
+  what a word boundary is on two engines.
+
+  `search_predicate` is that shared piece, and muting is now the smaller
+  half of the entry below rather than the whole of it.
+
+- **Muted words, which is that predicate negated** — **landed, both
+  kinds.** `user_muted_terms(user_id, kind, term)` follows the shape
+  `user_preference_topics` already sets, and `PreferencesPatch` carries
+  `muted_words` and `muted_tags` as replace-the-whole-list fields beside
+  `topics` and `sources` — the contract those two already have.
+
+  What building it added to the entry above is mostly about the direction
+  a mistake runs. A search that matches too little shows a reader an empty
+  page they asked for; a mute that matches too much removes items
+  *silently*, with nothing on screen to say which or why. Three things
+  follow. Terms that normalise to nothing are dropped rather than stored,
+  because an empty term is a substring of every item and the API's length
+  bound cannot catch it — validation runs before normalisation, so `"   "`
+  arrives valid and leaves empty. A muted tag naming no topic is a 422,
+  unlike a muted word, because a preference that reports success and mutes
+  nothing is worse than a refusal. And bookmarks are never muted, which is
+  the argument `prune_feed_items` already makes for exempting them from
+  retention.
+
+  It also forced the shared predicate to be built properly rather than
+  claimed. `search_predicate` had been raw `text()`, which cannot be
+  negated — `~` on a `TextClause` trips an assertion inside SQLAlchemy —
+  so the PostgreSQL branch was rebuilt from expressions with
+  `literal_column`, which renders identically and therefore still matches
+  the index. The plan assertion is what confirmed that, rather than the
+  resemblance.
+
+  The remaining half is that muting is the one narrowing with no evidence
+  of itself on the feed. The filter bar now says how much is muted
+  whenever anything is, and says something stronger when every word of the
+  current search is also a muted word — provable rather than heuristic, so
+  the reader is told the page is necessarily empty rather than left to
+  wonder.
+
+  **Muting by tag shipped with it and is nearly useless until the tag entry
+  below lands.** Topic links come from the *source*, asserted onto every
+  item of every batch by
+  [`upsert_items`](app/ingest/store.py), so `uk-news` is on everything the
+  Guardian publishes including the ones about Nvidia. The first tag anybody
+  mutes is therefore a tag that mutes an entire publication — which the
+  source filter has always done — and the honest conclusion a reader draws
+  from that is that muting does not work. Words first, and the Settings
+  screen leads with them and says so where the topics are: "topics come
+  from the source rather than from the article". Tags become the durable
+  answer to "no football, ever" only after topics describe the item rather
+  than its publisher.
+
+- **Feeds carry a channel image and nothing reads it** — **landed.**
+  `ParsedFeed` now carries the channel's artwork alongside its version and
+  title ([parse.py](app/ingest/parse.py)): RSS `<image><url>`, Atom `<logo>`
+  then `<icon>`, made safe by the same guard every other feed-supplied URL
+  goes through. Cards fall back to it, and the source-icon quarter of the
+  first-screen entry under [Product](#product) closes with it.
+
+  **It went to `source_status`, not to `sources`, and that was the whole
+  decision.** `sources.icon_url` existed and was the obvious target, and
+  writing it from the refresh loop would have broken the two properties
+  `source_status` was split out to protect: that the operator and the
+  refresh loop never contend for a row, and that `sources.updated_at` keeps
+  meaning "the operator changed the configuration" rather than "a feed was
+  polled". So `source_status.discovered_icon_url` holds what a fetch found,
+  `sources.icon_url` holds what an operator set, and the API coalesces in
+  that order — which also gives the operator an override for free, and
+  lets them clear one without losing what the feed says about itself.
+
+  The cost is one more column on a join the feed already makes: outer,
+  because `source_status` only exists once a source has been polled, and an
+  inner join there would drop every item from a source whose first refresh
+  had not finished — a feed silently losing a publication rather than an
+  icon.
+
+  **Caching those images on this server is still a separate item and a
+  larger one, and is not part of what landed.** It would be the first write
+  path that stores third-party bytes:
+  a volume, hash-addressed retrieval, magic-byte validation, a size cap, and
+  an explicit declaration that the store is disposable — which it is, being
+  re-fetchable, and which is what keeps it out of backup scope. It should
+  not be bundled with the fallback, which needs none of that.
+
+  The payoff, when it does come, is not the missing thumbnails. `img-src`
+  is `'self' https:` in both [middleware.py](app/middleware.py) and
+  [deploy/Caddyfile](deploy/Caddyfile), so every card on the page currently
+  fires a request at the publisher's CDN and every reader's address reaches
+  a third party as the price of a picture. Serving the images from here is
+  what allows `https:` to come *out* of that directive. For a project whose
+  pitch is that the data lives on your own server, that is the argument.
+
+- **Non-English items, where the ask is translation and the answer is
+  probably detection.** An occasional Portuguese post in a developer feed is
+  unwanted rather than untranslated: a `feed_items.language` column set at
+  ingest, plus one more predicate, removes it, and costs a fraction of what
+  the alternative costs.
+
+  Translation proper is a positioning decision and should be taken as one
+  rather than discovered halfway through building it. An external
+  translation API is the first thing in this system that would send a
+  reader's content off the host, which contradicts the pitch unless it is
+  operator-keyed, documented, and off by default. A local model — Argos,
+  CTranslate2 — keeps the promise and is a large dependency to weigh against
+  a unit capped at `MemoryMax=768M`. Neither is ruled out. Both are more
+  than "occasionally there is a German headline" is asking for.
+
+- **Topics describe the publisher, not the article.**
+  [`upsert_items`](app/ingest/store.py) re-asserts the source's topics onto
+  every item in every batch, which is why a story about a chip company
+  carries `uk-news`. The cheapest credible fix is a keyword ruleset over
+  title and summary at ingest, additive to the source's topics:
+  deterministic, testable, no new dependency, and nothing leaves the host.
+
+  Two things need deciding before any of it is written. Nothing in the store
+  ever *removes* a topic link, so reclassification — a rule corrected, a
+  ruleset extended — has no path today and needs one, and the ninety days of
+  retained items behind the feed are a backfill rather than a migration.
+  And `_effective_topics` skips narrowing whenever a selection covers every
+  enabled topic, on the stated grounds that an unclassified item vanishing
+  from a source the reader explicitly enabled "would read as data loss
+  rather than as a filter" ([feed.py](app/services/feed.py)). Under
+  source-derived topics that comment is defensive. Under content-derived
+  ones it is load-bearing, because items that match no rule become ordinary
+  rather than hypothetical.
+
+  This entry also gets a large assist from the ingest work below, and that is
+  a reason to sequence the two together rather than a reason to defer this.
+
+- **The page never says that anything new has arrived.** It should, and it
+  is last of the seven for a structural reason rather than a priority one: a
+  count that does not apply the reader's filters will announce forty new
+  items when thirty-eight of them are muted football, and every predicate
+  above changes the answer.
+
+  That is a sequencing hazard rather than a hard dependency, and naming the
+  mitigation is the point of writing it down: built as a count that calls
+  `_apply_filters` rather than growing a second copy of the narrowing, it
+  inherits each predicate above as that predicate lands, and can be built at
+  any point after the first of them. The query itself is cheap — items newer
+  than the newest one held is the same `(published_at, id)` seek the feed
+  already makes, in the other direction. The banner has a precedent in the
+  volume notice, and `reload` and the `r` shortcut already exist to act on
+  it. Nothing should poll faster than a few minutes:
+  `source_default_refresh_minutes` is thirty, so a tighter interval asks a
+  question whose answer cannot have changed.

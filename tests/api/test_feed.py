@@ -314,4 +314,7 @@ def test_state_folding_does_not_scale_with_page_size(
         feed_service.get_feed_page(db_session, test_user, limit=10)
 
     assert len(large) == len(small)
-    assert len(large) <= 4
+    # Five, not four, since muting added one lookup of the caller's muted
+    # terms. It is a constant, which is what the equality above asserts and
+    # what this test is actually about.
+    assert len(large) <= 5

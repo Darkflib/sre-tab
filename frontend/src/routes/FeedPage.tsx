@@ -40,8 +40,10 @@ export function FeedPage() {
   const [actionError, setActionError] = useState<ApiError | null>(null);
 
   const setFilters = useCallback(
-    (next: FeedFilters) => {
-      setSearchParams(applyFiltersToParams(searchParams, next), { replace: false });
+    (next: FeedFilters, options?: { replace?: boolean }) => {
+      setSearchParams(applyFiltersToParams(searchParams, next), {
+        replace: options?.replace ?? false,
+      });
     },
     [searchParams, setSearchParams],
   );

@@ -26,6 +26,8 @@ export interface FeedQuery {
   sources?: string[];
   /** Omitted means `all`; the server's default and the client's agree. */
   read_state?: ReadFilter;
+  /** Full-text search over title and summary. Omitted means no narrowing. */
+  q?: string;
   cursor?: string;
   limit?: number;
   signal?: AbortSignal;

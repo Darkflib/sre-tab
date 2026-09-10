@@ -88,6 +88,11 @@ class ParsedEntry:
 class ParsedFeed:
     version: str
     title: str | None
+    #: The channel's own artwork, if it declares any. Raw and unvalidated
+    #: here, like every other string on this dataclass — it comes from an
+    #: untrusted document, and :mod:`app.ingest.normalise` is where feed
+    #: URLs are made safe.
+    image_url: str | None
     entries: tuple[ParsedEntry, ...]
 
 
@@ -199,11 +204,36 @@ def parse_feed(content: bytes) -> ParsedFeed:
         raise ParseError(f"malformed feed: {type(bozo).__name__ if bozo else 'unknown'}")
 
     entries = tuple(_entry(raw) for raw in list(parsed.entries)[:MAX_ENTRIES])
+    channel = parsed.feed if parsed.get("feed") else {}
     return ParsedFeed(
         version=version,
-        title=_text(parsed.feed.get("title")) if parsed.get("feed") else None,
+        title=_text(channel.get("title")),
+        image_url=_channel_image(channel),
         entries=entries,
     )
+
+
+def _channel_image(channel: Any) -> str | None:
+    """The channel's artwork, in decreasing order of usefulness.
+
+    Three spellings for one idea, and feedparser keeps them apart: RSS
+    ``<image><url>`` arrives as ``feed.image.href``, Atom ``<logo>`` as
+    ``feed.logo``, and Atom ``<icon>`` as ``feed.icon``.
+
+    ``logo`` before ``icon`` because the Atom specification distinguishes
+    them by shape and by intent — a logo is the publication's banner and
+    an icon is a favicon-sized mark — and this is read at two sizes: a
+    16px mark beside the source name, and the fallback filling a card that
+    carries no image of its own. Only the larger one survives the second
+    use, so the larger one is preferred and the small one is the last
+    resort rather than the first choice.
+    """
+    image = channel.get("image")
+    if isinstance(image, dict):
+        href = _text(image.get("href")) or _text(image.get("url"))
+        if href:
+            return href
+    return _text(channel.get("logo")) or _text(channel.get("icon"))
 
 
 def _entry(raw: Any) -> ParsedEntry:

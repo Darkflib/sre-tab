@@ -416,4 +416,10 @@ def test_filtering_does_not_add_a_query_per_item(
         feed_service.get_feed_page(db_session, test_user, read_state=ReadFilter.UNREAD, limit=10)
 
     assert len(large) == len(small)
-    assert len(large) <= 4
+    # The bound is a constant rather than a tight one, and the first
+    # assertion is the load-bearing half: a page of ten costs exactly what a
+    # page of one costs, which is what "not a lookup per card" means. The
+    # constant went from four to five when muting added its own single
+    # lookup of the caller's muted terms — one statement whatever the page
+    # size, which is why the equality above did not move.
+    assert len(large) <= 5

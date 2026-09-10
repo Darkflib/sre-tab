@@ -53,6 +53,8 @@ ENTITY_TABLES = {
     "source_status",
     # Long-lived per-user API credentials.
     "api_tokens",
+    # Words and tags a user does not want to see.
+    "user_muted_terms",
 }
 
 

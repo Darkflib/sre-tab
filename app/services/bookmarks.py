@@ -23,7 +23,7 @@ from sqlalchemy import Select, and_, delete, select, tuple_
 from sqlalchemy.orm import Session, contains_eager, selectinload
 
 from app.api.v1.schemas import BookmarkOut, BookmarkPage
-from app.db.models import Bookmark, FeedItem, User, UserReadItem
+from app.db.models import Bookmark, FeedItem, Source, User, UserReadItem
 from app.services.errors import ItemNotFoundError
 from app.services.feed import build_item_out
 from app.services.pagination import as_utc, decode_cursor, encode_cursor
@@ -117,6 +117,10 @@ def _card_query(user: User) -> Select[tuple[FeedItem, datetime, datetime]]:
     return (
         select(FeedItem, Bookmark.created_at, UserReadItem.read_at)
         .join(FeedItem.source)
+        # Outer, and for the reason `app.services.feed._base_query` gives:
+        # `source_status` is 1:1 and only exists once a source has been
+        # polled, and `build_item_out` reads the discovered icon off it.
+        .outerjoin(Source.status)
         .join(
             Bookmark,
             and_(Bookmark.feed_item_id == FeedItem.id, Bookmark.user_id == user.id),
@@ -128,5 +132,8 @@ def _card_query(user: User) -> Select[tuple[FeedItem, datetime, datetime]]:
                 UserReadItem.user_id == user.id,
             ),
         )
-        .options(contains_eager(FeedItem.source), selectinload(FeedItem.topics))
+        .options(
+            contains_eager(FeedItem.source).contains_eager(Source.status),
+            selectinload(FeedItem.topics),
+        )
     )

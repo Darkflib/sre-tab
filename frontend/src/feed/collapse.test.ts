@@ -152,7 +152,7 @@ const TOPICS: NamedEntry[] = [
 const CATALOGUE = { sources: SOURCES, topics: TOPICS };
 
 function filters(overrides: Partial<FeedFilters> = {}): FeedFilters {
-  return { topics: null, sources: null, readState: 'all', ...overrides };
+  return { topics: null, sources: null, readState: 'all', query: '', ...overrides };
 }
 
 describe('summariseFilters', () => {
@@ -232,18 +232,18 @@ describe('summariseFilters', () => {
   });
 
   it('names a read-state narrowing, in both directions', () => {
-    expect(summariseFilters(filters({ readState: 'unread' }), CATALOGUE)).toEqual(['Unread only']);
-    expect(summariseFilters(filters({ readState: 'read' }), CATALOGUE)).toEqual(['Read only']);
+    expect(summariseFilters(filters({ readState: 'unread', query: '' }), CATALOGUE)).toEqual(['Unread only']);
+    expect(summariseFilters(filters({ readState: 'read', query: '' }), CATALOGUE)).toEqual(['Read only']);
   });
 
   it('says nothing about read state when it is not narrowing', () => {
-    expect(summariseFilters(filters({ readState: 'all' }), CATALOGUE)).toEqual([]);
+    expect(summariseFilters(filters({ readState: 'all', query: '' }), CATALOGUE)).toEqual([]);
   });
 
   it('reports every narrowed dimension, sources then topics then read state', () => {
     expect(
       summariseFilters(
-        filters({ sources: ['hn'], topics: ['kernel'], readState: 'unread' }),
+        filters({ sources: ['hn'], topics: ['kernel'], readState: 'unread', query: '' }),
         CATALOGUE,
       ),
     ).toEqual(['Sources: Hacker News', 'Topics: Kernel', 'Unread only']);

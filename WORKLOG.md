@@ -3,6 +3,363 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+<a id="channel-artwork"></a>
+## 2026-09-03 — The artwork a feed declares about itself
+
+The fourth [Reading experience](ROADMAP.md) item, and the one that also
+closes a quarter of the first-screen entry that has been open since v1:
+`sources.icon_url` existed, `FeedSourceRef` carried it, `ItemCard`
+rendered it, and nothing had ever set it. The affordance was built and
+never fired.
+
+**The whole decision was which table it goes in, and the obvious answer
+was wrong.** `sources.icon_url` is right there and writing it from the
+refresh loop is two lines. It would also have broken both properties
+`source_status` was split out to protect, and those are written down in
+the model: that the operator and the refresh loop never contend for a
+row, and that `sources.updated_at` keeps meaning "the operator changed
+the configuration" rather than "a feed was polled". Writing only when the
+column is null avoids the second problem once per source and leaves the
+first, and makes an operator who clears an icon get it silently
+rediscovered.
+
+So `source_status.discovered_icon_url` holds what a fetch found,
+`sources.icon_url` holds what an operator set, and `source_icon()`
+coalesces in that order. Two answers kept intact rather than one
+overwriting the other, and an operator override falls out for free. What
+that cost is the widening of `source_status` from *when the refresh loop
+last ran* to *what the refresh loop learned* — an honest widening, since
+the reason the table exists is the writer rather than the subject, and it
+is recorded in the class docstring rather than left to be inferred.
+
+**The join had to be outer, and getting that wrong would have lost
+articles rather than icons.** `source_status` is 1:1 with `sources` and
+exists only once a source has been polled, so an inner join drops every
+item from a source whose first refresh has not finished. There is a test
+for exactly that, and breaking the join to `.join()` fails it along with
+two others.
+
+It rides the join the source already needs — `contains_eager` chained off
+`contains_eager` — so the discovered icon costs no extra statement. A
+`selectinload` would have been one more per page and a lazy load one per
+card, which `lazy="raise"` turns into a failure rather than a slowdown,
+but only if a test happens to look. One does now.
+
+**Three smaller decisions, each with a test.** Atom's `<logo>` beats its
+`<icon>`, because the specification separates them by size and intent and
+this value is read at two sizes — only the larger one survives being a
+card's fallback. `None` from a parse is an absence rather than a value, so
+a refresh that finds no artwork leaves the last good icon alone: a missing
+`<image>` element is far more often a truncated fetch than a publisher
+retiring their logo, and blanking every card on one bad poll is the worse
+mistake. And an unchanged icon is reported rather than written, since
+every refresh of every source carries the same URL and an unconditional
+UPDATE would be a write per source per poll for a value that changes about
+never.
+
+**The channel image goes through the same URL guard as everything else**,
+which meant making `_safe_optional_url` public rather than adding a second
+copy of the rule. It is rendered in a browser with the reader's
+credentials ambient, so "it is only an icon" is not a reason to check it
+less carefully than an item's own image. Parametrised over loopback, a
+private address, `javascript:`, and a dotless host.
+
+**On the card it is styled as a mark, not as a photograph.** A logo is
+square-ish and branded where an article image is wide; `object-fit: cover`
+at the item image's height crops it to a slice of gradient. The fallback
+gets `contain` in a shorter padded box. Checked in a browser against the
+real stylesheet, light and dark.
+
+The failure state needed rethinking too. `ItemCard` tracked one boolean,
+which cannot say *which* of two candidates broke — so a dead item image
+would either take the fallback down with it or be retried forever. It
+tracks failed URLs now, and three tests cover the chain: fall through,
+give up, and do not retry.
+
+**A fixture name cost twenty minutes and is worth writing down.** This
+module defined a `source` fixture; the ingest conftest already owns that
+name and builds `source_ref` from it, so the end-to-end test silently
+pointed at a different feed and failed the SSRF guard rather than the
+assertion. It said so in the log, which is the only reason it took twenty
+minutes rather than an hour.
+
+<a id="what-the-review-of-the-mutes-found"></a>
+## 2026-09-03 — What the review of the mutes found
+
+Four findings on [PR #34](https://github.com/Darkflib/sre-tab/pull/34),
+all P2, all real, and all the same shape: a guard or a claim that was true
+of something *next to* what it described. That is the failure AGENTS.md
+names, and it is worth recording that it survived a change in which every
+guard had already been made to fail on purpose. Breaking a guard proves it
+can fail. It does not prove its subject is the thing you care about.
+
+**`casefold` is not length-preserving.** Sixty-four `ß` satisfy the
+schema's `max_length` and become a hundred and twenty-eight `s` before
+anything stores them. On PostgreSQL that reaches `VARCHAR(64)` and raises
+`DataError`, which is not a `ValueError`, so the route's 422 mapping does
+not catch it and the reader gets a 500. On SQLite, which does not enforce
+the width, the row was stored and the *response* failed validating —
+which surfaced as a 422 only because `pydantic.ValidationError` subclasses
+`ValueError`, with a body reading "1 validation error for PreferencesOut"
+at a client that had never heard of `PreferencesOut`.
+
+The first test written for this asserted the status code, and passed
+before the fix existed. It now asserts the message too. The PostgreSQL
+suite carries the other half: that the column really does refuse the
+value, so the guard is about something that can happen, and that the
+service never gets there.
+
+**A topic an operator disables strands the mutes on it.** The catalogue
+returns only enabled topics; the feed's mute predicate matches slugs and
+never consults `topics.enabled`. So the mute went on hiding items and its
+checkbox disappeared with the topic. Validating a patch against *enabled*
+topics completed the trap: since the field is replace-the-whole-list,
+every patch changing any other mute carried the retired slug and was
+refused. Fixed at both ends — the patch validates against every topic, and
+Settings lists a muted slug the catalogue no longer knows, named by the
+slug and marked retired.
+
+Two candidate fixes, and the one not taken is worth naming: making the
+predicate skip disabled topics would have *unmuted* something the reader
+asked to hide, with no action from them. The items really do carry that
+topic and the reader really did mute it; what was broken was the control,
+not the behaviour.
+
+**`mutesBlocking` analysed a different query from the one the request
+makes.** It built its word set from the whole query while the server
+searches the first `MAX_SEARCH_TERMS` and no more, so a muted word past
+the cutoff produced a definitive "nothing can match" over a page that
+could return rows. The client now applies the same cap. This one is the
+purest example of the pattern: the function was correct, its tests passed,
+and it was answering about a query nobody would run.
+
+**Every committed search replaced its history entry, including the
+first.** So a reader who started typing on an unfiltered feed lost the
+unfiltered feed, and Back left the page — contradicting the resynchronising
+behaviour `SearchBox` documents. Editing replaces, entering and leaving
+push; `shouldReplaceHistory` is that rule with its own tests.
+
+**A second reviewer found two more, and one of them is the same lesson
+again.** A whitespace-only term normalised to nothing and was *dropped*,
+which is safe in the sense that mattered — an empty term is a substring of
+every item and must never be stored — and unsafe in a way its own test
+could not see. Dropping turns `["  "]` into `[]`, which is the wire form
+of "unmute everything": a request that looks like adding one mute removed
+every mute the reader had. The test started from an empty list, where
+dropping and clearing give the same answer. It now starts from a populated
+one, and terms that normalise to nothing are refused rather than dropped.
+
+Twice in one change, then, a test passed for a reason unrelated to its
+subject, and neither was caught by the discipline of breaking the guard:
+both broke correctly, and both were about the wrong thing. What catches
+this is asking what the assertion would say if the subject were *absent*
+rather than wrong — an empty starting list, a status code with no message,
+a query word past a cap. That is already the second question AGENTS.md
+asks, and it is the harder one to remember.
+
+The other was smaller: `TagList` had no equivalent of the `MAX_TERMS`
+guard `WordList` carries, so at a hundred muted topics checking one more
+sent a hundred and one and the API answered 422 — a failed save and a
+checkbox springing back, for a limit the screen never mentioned. Only the
+unchecked controls go dead now; a cap that also blocked removal would be a
+trap rather than a limit.
+
+<a id="muted-words-and-tags"></a>
+## 2026-09-03 — Muted words and tags
+
+The third item of [Reading experience](ROADMAP.md), and the one the second
+was sequenced to make cheap.
+
+**It was cheap, and then it was not, and the reason is worth writing
+down.** Muting is `_text_match` negated, which was the whole argument for
+landing search first. The negation did not work. `search_predicate` had
+been built from `text()`, and a `TextClause` cannot be negated — `~` on
+one trips an assertion inside SQLAlchemy rather than producing `NOT (…)`.
+Raw SQL was fine while it had one caller and wrong the moment it had two.
+
+So the PostgreSQL branch was rebuilt from expressions —
+`func.to_tsvector(literal_column("'english'"), literal_column(SEARCH_DOCUMENT_SQL))`
+and `bool_op("@@")` — which negates, and which renders character for
+character what the raw string did. That last part is the whole risk of the
+change and is not something to eyeball: the expression has to keep
+matching the index, and a mismatch is silent. The plan assertion in
+`tests/postgres/test_search.py` is what settled it, and was re-broken on
+purpose afterwards to confirm it still bites.
+
+**One table, one revision, deliberately.** `user_muted_terms`, primary key
+`(user_id, kind, term)` — the composite-key idempotence
+`user_preference_topics` has, so saving a mute twice is one row. `kind`
+carries a CHECK constraint for the reason `api_tokens.scope` records.
+There is no index beyond the primary key: every read is "this user's
+terms", which the leading column already serves.
+
+**The direction a mistake runs is different here, and it shaped the
+tests.** A search that matches too little shows the reader an empty page
+they asked for and can undo by typing something else. A mute that matches
+too much removes items silently, permanently, with nothing on screen. So
+the tests that earn their place are the over-matching ones rather than the
+matching ones, which `test_feed_search.py` already covers:
+
+- **An empty term is the worst available bug** — it is a substring of
+  every item, so storing one empties the feed with no visible cause. The
+  schema cannot catch it: pydantic validates before the service
+  normalises, so `"   "` satisfies `min_length=1` and is empty by the time
+  it would be stored. Dropped in `normalise_terms`, and the comment in the
+  schema was rewritten when it turned out to claim the opposite order.
+- **A metacharacter in a mute** — without `autoescape`, muting
+  `snake_case` also hides `snakeXcase`. Same guard as search, higher
+  stakes, and a decoy in the corpus so the test can see the difference.
+- **Bookmarks are not muted**, the argument `prune_feed_items` already
+  makes for exempting them from retention.
+- **An untagged item survives a muted tag** — `NOT IN` over the topic
+  subquery must not take items carrying no topics, which is the failure
+  `_effective_topics` records for the positive direction, inverted.
+
+**A muted tag naming no topic is a 422; a muted word is never validated.**
+The asymmetry is the point of each. Muting language the catalogue has
+never heard of is what word-muting is *for*; a muted tag that matches no
+topic is a typo that would report success and mute nothing.
+
+**Two statement-count guards had to move from four to five**, and that is
+the honest cost: the mute lookup is one query per request. The equality
+beside each bound — a page of ten costs what a page of one costs — did not
+move, which is what those tests are actually about.
+
+**Muting is the one narrowing with no evidence of itself.** A deselected
+source is a chip you can see; a search is text in a box above the results;
+a mute simply removes things. So the filter bar says how much is muted
+whenever anything is, and Settings lists every term with a one-click
+removal on each rather than a textarea of comma-separated words — which
+would have been fewer components and would have made "why am I not seeing
+anything about Rust?" an editing exercise.
+
+There is a second message for the case where muting is actively confusing
+rather than merely invisible: the reader searches for a word they have
+muted and gets nothing. `mutesBlocking` names the mutes that guarantee it,
+and the claim is provable rather than approximate — a search requires
+every word it names, a mute excludes any item carrying all of its own, so
+a mute whose words are a subset of the query's removes everything the
+query could match.
+
+**A guard was written, found to change no test, and removed rather than
+kept.** `mutesBlocking` had an early return for the empty query;
+deleting it broke nothing, because `every` over a term's words is already
+false when none were asked for. The test stayed — the behaviour is worth
+pinning — and the branch went, because a line that cannot fail is
+decoration.
+
+**`alembic check` reports a false positive on SQLite, and it predates this
+work.** It reports `ck_api_tokens_api_token_scope` as a removed constraint
+against a database that has it, and now `ck_user_muted_terms_mute_kind`
+too: SQLAlchemy does not reflect a non-native enum's CHECK constraint on
+SQLite, so autogenerate believes every one of them is missing. Confirmed
+by stashing this change and running it against the previous commit, where
+the api_tokens constraint alone is reported. Nothing in CI runs it and the
+migration tests exercise the real thing in both directions, so it is a
+tool limitation rather than a defect — but the claim in the Phase 0
+entry below that `alembic check` was verified stopped being true when
+`create_constraint=True` first appeared, and that is worth knowing before
+anyone reaches for it as a gate.
+
+<a id="feed-search-and-a-wider-shell"></a>
+## 2026-09-03 — Feed search, and a shell the screen's width can reach
+
+The first two items of the new
+[Reading experience](ROADMAP.md) section, which was written the same day
+and orders the rest.
+
+**Six of the seven asks turned out to be one shape, and that decided the
+order rather than any judgement about which was most wanted.**
+`_apply_filters` in `app/services/feed.py` is the only place the feed
+narrows and it is private with a single caller, so search, muted words,
+muted tags, and a language filter all belong inside it. The question was
+therefore which predicate to build first and what the next one gets for
+nothing — search, because muting is the same expression negated, and
+building muting first means writing that expression twice and making the
+second copy agree with the first about stemming, case folding, and word
+boundaries on two engines.
+
+**The wide-screen fix was a `max-width`, and measuring it corrected a claim
+made about it an hour earlier.** `.shell__main` and `.shell__bar` were
+capped at 1180px, which against a `minmax(20rem, 1fr)` grid is three
+columns and then an empty margin on anything above a laptop. Both now take
+`--shell-max`, at 106rem — five columns plus the shell's padding — so the
+header and the grid still share an edge and a 2560px display does not get
+seven columns.
+
+The roadmap entry had asserted that widening without raising the page size
+"turns infinite scroll into a loop". Measured against the real stylesheet
+in a browser rather than reasoned about, it is wrong in both directions: at
+1920×1080 a 25-item page is five rows and 1361px, which leaves the
+`loadMore` sentinel 54px *inside* its 400px root margin — so the second
+page is fetched on arrival with no scrolling at all, which is worse than
+the estimate — and 50 items is 2739px, putting the next trigger 1324px
+below the fold, so it fires exactly once and settles, which is much better
+than a loop. One extra request for a viewport that genuinely holds more
+than five rows is close enough to correct to leave alone. The entry now
+says that, with the numbers.
+
+**Search: `plainto_tsquery` over `websearch_to_tsquery`, and publication
+order over relevance.** The first because `websearch_to_tsquery`'s quoted
+phrases and `-` exclusions have no honest counterpart in the SQLite branch,
+and an engine divergence in *semantics* is worse than the one in recall
+that stemming already costs. The second because the cursor *is*
+`(published_at, id)`: ranking needs a different key and invalidates every
+cursor already issued, to reorder a corpus a reader is searching by
+recency anyway.
+
+The two engines do differ, and the docstring says so rather than implying
+they agree. PostgreSQL stems, so `bookmarks` finds "bookmark" and `cat`
+does not find "catalogue"; SQLite matches substrings, so it does. That is
+a thing to know before reading a search result on a laptop as evidence
+about production.
+
+**The index is a guard, not a test, and it is the kind this repository has
+shipped six times under other names.** PostgreSQL uses an expression index
+only when the indexed expression matches the query's character for
+character. Diverge them and nothing anywhere reports a problem: the index
+builds, `CREATE INDEX` succeeds, every result is correct, and every query
+is a sequential scan with a `to_tsvector` call per row. So
+`tests/postgres/test_search.py` asserts the *plan*, with `enable_seqscan`
+off — which is deliberately not cheating, because the question is "can this
+index serve this query at all" rather than "does the planner prefer it on a
+small table", and the latter would make the test flap with the row count.
+Confirmed by pointing the migration's expression at `feed_items.title`
+alone and watching it report `Seq Scan on feed_items … Disabled: true`.
+
+**Two guards were written, believed, and then found to be answering the
+wrong question.** The `LIKE`-metacharacter tests — that `%` and `_` are
+literals rather than wildcards — passed with `autoescape=True` removed.
+They asserted that searching for `snake_case` finds "snake_case", which is
+true whether or not the underscore is a wildcard. A wildcard is only
+visible against something it would *wrongly* reach, so the corpus now
+carries a decoy differing from each metacharacter item exactly where the
+wildcard would match: `snakeXcase` beside `snake_case`, and
+`100% overnight` beside `100%overnight`. Escaped, the search finds one;
+unescaped, both. Both tests now go red without the escape.
+
+Every other guard in the change was made to fail on purpose too — the
+search predicate disabled (eleven failures, each naming its own
+behaviour), and each of the search box's three effects removed in turn
+(one failure each, and only its own, rather than a cascade).
+
+**The search box is in the filter head, which never collapses.** A search
+is the narrowing a reader is likeliest to have forgotten they left on — a
+few words in a box rather than a chip they can see — so putting it behind
+the disclosure would be the failure `FilterBar.tsx` is written against, in
+its worst form. It is debounced at 300ms because each commit is a new
+`filterKey`, which discards every loaded page and refetches from the top;
+per keystroke that is eight requests and eight thrown-away feeds to type
+one word. Its committed value and its typed value are separate state for
+the same reason, and the effect that resynchronises them compares against
+what the box itself last committed — echoing its own commit back into the
+input would reset the caret mid-word for anyone still typing.
+
+**Everything the new dimension touched, the type checker found.** Adding
+`query` to `FeedFilters` failed the build at fourteen call sites across
+three test files, which is the argument for the field being required
+rather than optional.
+
 <a id="per-user-api-tokens"></a>
 ## 2026-09-03 — Per-user API tokens
 

@@ -220,6 +220,10 @@ export interface paths {
         /**
          * Get Feed
          * @description Deduplicated feed ordered by publication time, newest first.
+         *
+         *     ``q`` narrows inside the same statement as every other filter, so it
+         *     composes with them and pages stay full. Results stay in publication
+         *     order rather than relevance order — see ``app.services.feed``.
          */
         get: operations["get_feed_api_v1_feed_get"];
         put?: never;
@@ -495,6 +499,16 @@ export interface components {
              * @description Enabled source slugs
              */
             sources: string[];
+            /**
+             * Muted Words
+             * @description Words and phrases hidden from the feed, normalised and sorted
+             */
+            muted_words: string[];
+            /**
+             * Muted Tags
+             * @description Topic slugs hidden from the feed, sorted
+             */
+            muted_tags: string[];
         };
         /**
          * PreferencesPatch
@@ -512,6 +526,10 @@ export interface components {
             topics?: string[] | null;
             /** Sources */
             sources?: string[] | null;
+            /** Muted Words */
+            muted_words?: string[] | null;
+            /** Muted Tags */
+            muted_tags?: string[] | null;
         };
         /** ProbeStatus */
         ProbeStatus: {
@@ -1029,6 +1047,8 @@ export interface operations {
                 sources?: string[] | null;
                 /** @description Narrow by the caller's read state; omit or 'all' for every item */
                 read_state?: components["schemas"]["ReadFilter"];
+                /** @description Full-text search over title and summary; omit for no narrowing */
+                q?: string | null;
                 /** @description Opaque cursor from a previous page */
                 cursor?: string | null;
                 limit?: number;

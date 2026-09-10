@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser
 from app.api.v1.schemas import ErrorResponse, FeedPage
-from app.api.v1.schemas.feed import FEED_DEFAULT_PAGE_SIZE, FEED_MAX_PAGE_SIZE, ReadFilter
+from app.api.v1.schemas.feed import (
+    FEED_DEFAULT_PAGE_SIZE,
+    FEED_MAX_PAGE_SIZE,
+    FEED_MAX_QUERY_LENGTH,
+    ReadFilter,
+)
 from app.db.session import get_db
 from app.services import feed as feed_service
 from app.services.errors import InvalidCursorError
@@ -38,10 +43,22 @@ def get_feed(
         ReadFilter,
         Query(description="Narrow by the caller's read state; omit or 'all' for every item"),
     ] = ReadFilter.ALL,
+    q: Annotated[
+        str | None,
+        Query(
+            max_length=FEED_MAX_QUERY_LENGTH,
+            description="Full-text search over title and summary; omit for no narrowing",
+        ),
+    ] = None,
     cursor: Annotated[str | None, Query(description="Opaque cursor from a previous page")] = None,
     limit: Annotated[int, Query(ge=1, le=FEED_MAX_PAGE_SIZE)] = FEED_DEFAULT_PAGE_SIZE,
 ) -> FeedPage:
-    """Deduplicated feed ordered by publication time, newest first."""
+    """Deduplicated feed ordered by publication time, newest first.
+
+    ``q`` narrows inside the same statement as every other filter, so it
+    composes with them and pages stay full. Results stay in publication
+    order rather than relevance order — see ``app.services.feed``.
+    """
     try:
         return feed_service.get_feed_page(
             db,
@@ -49,6 +66,7 @@ def get_feed(
             topics=topics,
             sources=sources,
             read_state=read_state,
+            query=q,
             cursor=cursor,
             limit=limit,
         )

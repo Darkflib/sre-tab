@@ -15,16 +15,19 @@ commit.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from sqlalchemy import Select, delete, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.schemas import PreferencesOut, PreferencesPatch
 from app.db.models import (
+    MAX_MUTED_TERM_LENGTH,
+    MuteKind,
     Source,
     Topic,
     User,
+    UserMutedTerm,
     UserPreferences,
     UserPreferenceSource,
     UserPreferenceTopic,
@@ -85,7 +88,8 @@ def apply_patch(db: Session, user: User, patch: PreferencesPatch) -> Preferences
 
     Absent fields are untouched; an explicit empty list clears that
     selection. Unknown or disabled topic/source slugs are rejected with
-    ``ValueError`` — agent A maps that to HTTP 422.
+    ``ValueError`` — agent A maps that to HTTP 422 — and so is a muted tag
+    naming no topic, for the reason recorded at that branch.
     """
     profile = _get_or_create_profile(db, user)
 
@@ -123,10 +127,114 @@ def apply_patch(db: Session, user: User, patch: PreferencesPatch) -> Preferences
             [{"user_id": user.id, "source_id": source_id} for source_id in source_ids],
         )
 
+    if patch.muted_words is not None:
+        _replace_mutes(db, user, MuteKind.WORD, _mute_terms(patch.muted_words))
+
+    if patch.muted_tags is not None:
+        terms = _mute_terms(patch.muted_tags)
+        # Validated against the catalogue, unlike words. A muted word the
+        # catalogue has never heard of is the point; a muted *tag* that
+        # matches no topic is a typo that would silently mute nothing, and
+        # a preference which reports success and does nothing is worse than
+        # a 422. `_resolve` is reused for the error it raises, not for the
+        # ids — mutes store slugs, so a topic renamed out from under one
+        # stops applying rather than silently muting something else.
+        #
+        # Every topic, not only the enabled ones, and that is the fix for a
+        # trap rather than a loosening. The feed's mute predicate matches
+        # slugs and never consults `topics.enabled`, so a topic an operator
+        # retires goes on hiding items. Validating against enabled topics
+        # then made every patch carrying that slug a 422 — and since the
+        # field is replace-the-whole-list, that is every patch changing any
+        # *other* mute. The mute kept working and could not be removed.
+        # Accepting the retired slug is what makes the state the API
+        # already stores a state the API will still take back.
+        known = _slug_ids(db, select(Topic.slug, Topic.id))
+        _resolve(known, terms, "topic")
+        _replace_mutes(db, user, MuteKind.TAG, terms)
+
     # Flush, never commit: the read-back below has to see the update, but
     # the transaction boundary belongs to the caller (agent A's route).
     db.flush()
     return _to_out(db, user, profile)
+
+
+def normalise_terms(terms: Iterable[str]) -> list[str]:
+    """Case-folded, whitespace-collapsed, deduplicated, sorted.
+
+    Normalising rather than storing what was typed is what makes the
+    table's ``(user_id, kind, term)`` primary key mean what a reader would
+    expect: muting "Football" and then "football" is one mute, not two,
+    and neither is a second row that does the same job.
+
+    Purely a normaliser: it can return the empty string, and deciding what
+    that means belongs to :func:`_mute_terms`.
+    """
+    return sorted({" ".join(term.split()).casefold() for term in terms})
+
+
+def _mute_terms(terms: Iterable[str]) -> list[str]:
+    """Normalised, and re-checked against the column the result must fit.
+
+    The re-check is not belt and braces. ``casefold`` is not
+    length-preserving — ``"ß"`` becomes ``"ss"`` — so sixty-four characters
+    of it satisfy the schema's ``max_length`` on the way in and are a
+    hundred and twenty-eight by the time anything stores them. Past
+    ``VARCHAR(64)``: PostgreSQL raises ``DataError``, which is not a
+    ``ValueError`` and is therefore a 500, and SQLite (which does not
+    enforce the width) takes the row and fails building the *response*
+    instead. That failure happened to surface as a 422, because
+    ``pydantic.ValidationError`` subclasses ``ValueError`` and the route
+    maps that — a right answer for a wrong reason, with a body naming
+    ``PreferencesOut`` at a client that never mentioned it.
+
+    Refused rather than truncated: a shortened mute matches more than the
+    reader asked for, and does so silently, which is the failure mode this
+    whole feature is written against.
+
+    A term that normalises to *nothing* is refused for the same reason and
+    a sharper one. It was dropped at first, which is safe in the sense
+    that matters — an empty term is a substring of every item and must
+    never be stored — and unsafe in a way the test for it could not see:
+    dropping turns ``["  "]`` into ``[]``, which is the wire form of
+    "unmute everything". A request that looks like adding one mute removed
+    every mute the reader had. Refusing keeps the list untouched, which is
+    what a reader who typed a space by accident would expect of it.
+    """
+    normalised = normalise_terms(terms)
+    if "" in normalised:
+        raise ValueError("a muted term cannot be empty; send an empty list to unmute everything")
+    over = [term for term in normalised if len(term) > MAX_MUTED_TERM_LENGTH]
+    if over:
+        raise ValueError(
+            f"muted term is longer than {MAX_MUTED_TERM_LENGTH} characters once "
+            f"case-folded: {over[0][:32]!r}…"
+        )
+    return normalised
+
+
+def _replace_mutes(db: Session, user: User, kind: MuteKind, terms: Sequence[str]) -> None:
+    """Replace this user's mutes of one kind. Delete-then-insert, like the
+    topic and source selections above: a patch carries the whole list, so
+    reconciling additions and removals separately would be more code to
+    reach the same rows."""
+    db.execute(
+        delete(UserMutedTerm).where(UserMutedTerm.user_id == user.id, UserMutedTerm.kind == kind)
+    )
+    insert_ignore(
+        db,
+        UserMutedTerm,
+        [{"user_id": user.id, "kind": kind, "term": term} for term in terms],
+    )
+
+
+def muted_terms(user_id: int, kind: MuteKind) -> Select[tuple[str]]:
+    """This user's muted terms of one kind, ordered for stability."""
+    return (
+        select(UserMutedTerm.term)
+        .where(UserMutedTerm.user_id == user_id, UserMutedTerm.kind == kind)
+        .order_by(UserMutedTerm.term)
+    )
 
 
 def selected_topic_slugs(user_id: int) -> Select[tuple[str]]:
@@ -196,6 +304,8 @@ def _to_out(db: Session, user: User, profile: UserPreferences) -> PreferencesOut
         onboarding_completed=profile.onboarding_completed,
         topics=list(db.scalars(selected_topic_slugs(user.id)).all()),
         sources=list(db.scalars(selected_source_slugs(user.id)).all()),
+        muted_words=list(db.scalars(muted_terms(user.id, MuteKind.WORD)).all()),
+        muted_tags=list(db.scalars(muted_terms(user.id, MuteKind.TAG)).all()),
     )
 
 

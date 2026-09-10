@@ -503,7 +503,7 @@
           "feed"
         ],
         "summary": "Get Feed",
-        "description": "Deduplicated feed ordered by publication time, newest first.",
+        "description": "Deduplicated feed ordered by publication time, newest first.\n\n``q`` narrows inside the same statement as every other filter, so it\ncomposes with them and pages stay full. Results stay in publication\norder rather than relevance order \u2014 see ``app.services.feed``.",
         "operationId": "get_feed_api_v1_feed_get",
         "parameters": [
           {
@@ -558,6 +558,25 @@
               "default": "all"
             },
             "description": "Narrow by the caller's read state; omit or 'all' for every item"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Full-text search over title and summary; omit for no narrowing",
+              "title": "Q"
+            },
+            "description": "Full-text search over title and summary; omit for no narrowing"
           },
           {
             "name": "cursor",
@@ -1360,6 +1379,26 @@
             "type": "array",
             "title": "Sources",
             "description": "Enabled source slugs"
+          },
+          "muted_words": {
+            "items": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 1
+            },
+            "type": "array",
+            "title": "Muted Words",
+            "description": "Words and phrases hidden from the feed, normalised and sorted"
+          },
+          "muted_tags": {
+            "items": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 1
+            },
+            "type": "array",
+            "title": "Muted Tags",
+            "description": "Topic slugs hidden from the feed, sorted"
           }
         },
         "type": "object",
@@ -1369,7 +1408,9 @@
           "max_visible_cards",
           "onboarding_completed",
           "topics",
-          "sources"
+          "sources",
+          "muted_words",
+          "muted_tags"
         ],
         "title": "PreferencesOut"
       },
@@ -1446,6 +1487,40 @@
               }
             ],
             "title": "Sources"
+          },
+          "muted_words": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "minLength": 1
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Words"
+          },
+          "muted_tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "minLength": 1
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Tags"
           }
         },
         "type": "object",

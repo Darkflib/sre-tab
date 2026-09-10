@@ -240,8 +240,8 @@ def _feed_url_host(raw_host: bytes | None) -> str | None:
     """Shared host rules for any URL taken from an untrusted feed.
 
     Applies to both the canonical item URL (:func:`normalise_url`, which
-    raises on rejection) and the optional image URL
-    (:func:`_safe_optional_url`, which returns ``None``): the two must
+    raises on rejection) and the optional image URLs
+    (:func:`safe_optional_url`, which returns ``None``): they must
     not disagree about what a feed-supplied host is allowed to be, so
     both call this rather than keeping their own copy of the rule.
 
@@ -262,7 +262,14 @@ def _feed_url_host(raw_host: bytes | None) -> str | None:
     return host
 
 
-def _safe_optional_url(raw: str | None) -> str | None:
+def safe_optional_url(raw: str | None) -> str | None:
+    """An optional feed-supplied URL, or ``None`` if it cannot be trusted.
+
+    Public because two callers now need it: an entry's image, and the
+    channel's own artwork. Both are decorative URLs from an untrusted
+    document, and both must answer to the same host rules the canonical
+    URL answers to — see :func:`_feed_url_host`.
+    """
     if not raw:
         return None
     try:
@@ -313,7 +320,7 @@ def normalise_entry(entry: ParsedEntry, *, fetched_at: datetime) -> NormalisedIt
         title=_truncate(title, MAX_TITLE_LENGTH),
         summary=_truncate(summary, MAX_SUMMARY_LENGTH) if summary else None,
         published_at=normalise_published(entry.published, fetched_at=fetched_at),
-        image_url=_safe_optional_url(entry.image_url),
+        image_url=safe_optional_url(entry.image_url),
     )
 
 

@@ -1,12 +1,13 @@
-"""ORM models for the twelve PRD entities, plus ``api_tokens``.
+"""ORM models for the twelve PRD entities, plus ``api_tokens`` and
+``user_muted_terms``.
 
 Phase 0 property. The parallel build's rule was that no Phase 1 agent
 edits this file and a schema gap is escalated rather than patched
 (AGENTS.md); what survives that build is the narrower rule the same
 paragraph gives, which is that a revision is never generated *without
-meaning to*. ``api_tokens`` is the one addition since — one class, one
-enum, one revision, added deliberately for a feature that genuinely
-needs a table.
+meaning to*. ``api_tokens`` and ``user_muted_terms`` are the additions
+since — each one class, one revision, added deliberately for a feature
+that genuinely needs a table.
 
 Contract decisions encoded here:
 
@@ -113,6 +114,14 @@ class ApiTokenScope(enum.StrEnum):
 
 def _values(enum_cls: type[enum.Enum]) -> list[str]:
     return [str(member.value) for member in enum_cls]
+
+
+#: Column width for a muted term, and the bound the API validates against.
+#: Long enough for a phrase — "premier league football" is twenty-three
+#: characters — and short enough that it is plainly a term rather than a
+#: paste. The API's own bound is this same number so the two cannot drift
+#: into a 500 where a 422 was meant.
+MAX_MUTED_TERM_LENGTH = 64
 
 
 class User(TimestampMixin, Base):
@@ -249,6 +258,64 @@ class UserPreferences(TimestampMixin, Base):
     user: Mapped[User] = relationship(back_populates="preferences", lazy="raise")
 
 
+class MuteKind(enum.StrEnum):
+    """What a muted term is matched against."""
+
+    #: Matched against the item's title and summary.
+    WORD = "word"
+    #: Matched against the item's topic slugs.
+    TAG = "tag"
+
+
+class UserMutedTerm(Base):
+    """A term whose items this user does not want to see.
+
+    A table rather than a JSON column on ``user_preferences``, and for the
+    reason every other collection here is one: the predicate that uses it
+    runs in SQL, inside the feed's own statement, and a JSON array cannot
+    be joined or indexed without the database growing an opinion about
+    JSON that differs between the two engines this project supports.
+
+    The primary key is ``(user_id, kind, term)``, which is the same
+    composite-key idempotence ``user_preference_topics`` has: muting a
+    term twice is one row, so a client that retries a save cannot create
+    duplicates.
+
+    ``kind`` carries ``create_constraint=True`` for the reason
+    :class:`ApiTokenScope` records — ``Enum(native_enum=False)`` renders
+    as a bare ``VARCHAR`` and emits no constraint of its own, so without
+    it a restore or a hand-written ``UPDATE`` could store a kind the
+    application does not know, and the row would fail to materialise with
+    ``LookupError`` on the next feed request.
+
+    Terms are stored normalised — case-folded and stripped by
+    ``app.services.preferences`` before they arrive — so the uniqueness
+    the primary key promises is uniqueness a reader would recognise
+    rather than uniqueness of bytes. A tag term is a topic slug and is
+    validated against the catalogue at write time; a word term is free
+    text and is deliberately not validated against anything, because the
+    whole point is muting language the catalogue has never heard of.
+    """
+
+    __tablename__ = "user_muted_terms"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    kind: Mapped[MuteKind] = mapped_column(
+        Enum(
+            MuteKind,
+            name="mute_kind",
+            native_enum=False,
+            length=16,
+            values_callable=_values,
+            create_constraint=True,
+        ),
+        primary_key=True,
+    )
+    term: Mapped[str] = mapped_column(String(MAX_MUTED_TERM_LENGTH), primary_key=True)
+
+
 class UserPreferenceTopic(Base):
     __tablename__ = "user_preference_topics"
 
@@ -298,6 +365,13 @@ class Source(TimestampMixin, Base):
     topics: Mapped[list[Topic]] = relationship(
         secondary="source_topics", viewonly=True, lazy="raise"
     )
+    #: One row or none — ``source_status`` is 1:1 and only exists once a
+    #: source has been polled. Declared so the feed can reach the
+    #: discovered icon through the join it already makes, rather than
+    #: through a second query per page.
+    status: Mapped[SourceStatus | None] = relationship(
+        back_populates="source", cascade="all, delete-orphan", passive_deletes=True, lazy="raise"
+    )
 
 
 class SourceStatus(Base):
@@ -316,6 +390,16 @@ class SourceStatus(Base):
     schedule living only in one process's memory: a restart or a second
     replica reads when the source was last attempted instead of treating
     every source as due immediately.
+
+    ``discovered_icon_url`` widens what this table holds from *when the
+    refresh loop last ran* to *what the refresh loop learned*, and it
+    belongs here for the reason above rather than despite it. A feed's
+    own artwork is something a fetch discovers, not something an operator
+    configured, so putting it on ``sources`` beside ``icon_url`` would
+    make the refresh loop a writer of the configuration table and would
+    bump ``sources.updated_at`` on a poll — the exact two properties this
+    separation exists to keep. Kept apart, ``sources.icon_url`` stays the
+    operator's answer and wins where both exist.
     """
 
     __tablename__ = "source_status"
@@ -323,12 +407,16 @@ class SourceStatus(Base):
     source_id: Mapped[int] = mapped_column(
         ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True
     )
+    source: Mapped[Source] = relationship(back_populates="status", lazy="raise")
     #: Last attempt, successful or not.
     last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_class: Mapped[str | None] = mapped_column(String(64))
     last_error_detail: Mapped[str | None] = mapped_column(String(500))
     consecutive_failures: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)
+    #: The channel's own artwork, as the last successful parse found it.
+    #: Never overwrites ``sources.icon_url``; see the class docstring.
+    discovered_icon_url: Mapped[str | None] = mapped_column(String(2048))
 
 
 class SourceTopic(Base):

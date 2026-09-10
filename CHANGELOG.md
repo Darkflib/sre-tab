@@ -8,6 +8,130 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Cards fall back to the feed's own artwork when an item has no image of
+  its own**, which for Hacker News, Lobsters and LWN is almost every item.
+  Ingest reads the channel image a feed declares — RSS `<image><url>`, Atom
+  `<logo>` then `<icon>` — through the same URL guard every other
+  feed-supplied URL goes through, and the card renders it as a mark rather
+  than as a photograph: `contain` in a shorter box, so a square logo is not
+  cropped to a slice of itself.
+
+  This also closes the long-standing gap where sources rendered an icon and
+  no source had one: the affordance shipped in v1 and nothing had ever set
+  `icon_url`.
+
+  **The discovered value is held apart from the operator's.**
+  `source_status.discovered_icon_url` is what the last successful parse
+  found and `sources.icon_url` is what an operator set; the API prefers the
+  operator's. Keeping them in separate tables is what stops the refresh loop
+  writing the configuration table and moving `sources.updated_at` on every
+  poll — and it means an operator can set an icon without it being
+  overwritten, or clear one without losing what the feed says about itself.
+
+  A refresh that finds no artwork leaves the previous value alone. A missing
+  `<image>` element is far more often a truncated fetch than a publisher
+  retiring their logo.
+
+- **Muted words and topics, so a feed can be told what not to show.**
+  `PATCH /api/v1/me/preferences` gains `muted_words` and `muted_tags`, both
+  replace-the-whole-list like `topics` and `sources`, and Settings gains
+  the list that manages them. Anything muted leaves the feed everywhere.
+
+  **It is the search predicate negated**, which is why search landed
+  first: one `_text_match` serves both, so the two cannot drift apart
+  about stemming, case folding, or what a word boundary is. Words match
+  the item's title and summary; a muted phrase needs all of its words, so
+  "premier league" hides the league and not every mention of a premier.
+  Topics match the item's topic slugs.
+
+  **Bookmarks are never muted.** A bookmark is an explicit "keep this" —
+  the argument that already exempts bookmarked items from retention.
+
+  **A muted topic is validated against the catalogue and a muted word is
+  not**, and the asymmetry is deliberate: muting language the catalogue
+  has never heard of is what word-muting is for, while a muted topic
+  matching nothing is a typo that would report success and mute nothing.
+
+  Terms are case-folded, whitespace-collapsed and deduplicated, and a term
+  that normalises to nothing is dropped rather than stored — an empty term
+  is a substring of every item, so storing one would empty the feed with
+  nothing on screen to say why.
+
+  **Muting is the only narrowing with no evidence of itself on the feed**,
+  so the filter bar now says how much is muted whenever anything is. When
+  every word of the current search is also a muted word it says something
+  stronger, because that page is provably empty before the request is
+  made — the reader is told rather than left to wonder.
+
+  Four defects found in review before this shipped, all of them the same
+  kind — a guard, or a claim, that was true of something adjacent to what
+  it described. A term can grow past its column while being normalised,
+  because `casefold` is not length-preserving and sixty-four `ß` become a
+  hundred and twenty-eight `s`; the length is now re-checked after
+  normalising rather than only before, which on PostgreSQL is the
+  difference between a 422 and a 500. The "nothing can match" notice
+  analysed every word of a query when the server searches only the first
+  eight. The first committed search replaced the history entry it started
+  from, so Back left the feed instead of returning to it unsearched. And a
+  topic an operator disabled kept hiding items for anyone who had muted
+  it, with no control left anywhere to turn it off — muted topics are now
+  listed and removable whether the catalogue still carries them or not.
+
+  Two more from a second reviewer. A whitespace-only term normalised to
+  nothing and was dropped, which turned `["  "]` into the wire form of
+  "unmute everything" — so a request that looked like adding one mute
+  removed every mute the reader had; such terms are refused now. And the
+  topic list had no equivalent of the hundred-term limit the word list
+  carries, so checking one more topic at the limit produced a failed save
+  and a checkbox that sprang back.
+
+- **Search over the retained items — `GET /api/v1/feed?q=`, and a box in the
+  filter bar.** `feed_retention_days` defaults to 90, so there has always
+  been a real corpus behind the feed and no way to reach anything in it but
+  to scroll.
+
+  **It is one more predicate in the query that already runs, not a second
+  endpoint.** `search_predicate` joins the read-state and source filters
+  inside `_apply_filters`, so the `LIMIT` is taken after the narrowing:
+  pages stay full, a cursor still names a row that satisfies the filter, and
+  a search composes with every other control rather than replacing them.
+  That is also what makes it the right thing to build first — muting words,
+  which is next, is this expression negated.
+
+  **Two engines, and the difference is documented rather than smoothed
+  over.** PostgreSQL matches `plainto_tsquery` against a `to_tsvector` of
+  title and summary, backed by a GIN index (revision `b7c1e0a94f6d`);
+  SQLite, which is development only, requires each term as a case-folded
+  substring. So PostgreSQL stems — `bookmarks` finds "bookmark", and `cat`
+  does not find "catalogue" — and SQLite does not. `plainto_tsquery` rather
+  than `websearch_to_tsquery` because that one's quoted phrases and `-`
+  exclusions have no honest counterpart in the SQLite branch, and a
+  divergence in *semantics* between the engine a developer runs and the one
+  that serves anybody is worse than one in recall.
+
+  **Results stay in publication order.** The cursor *is* `(published_at,
+  id)`, so relevance ranking needs a different key and would invalidate
+  every cursor already issued.
+
+  **The index is verified by its query plan, not by its results.**
+  PostgreSQL uses an expression index only when the indexed expression
+  matches the query's character for character, and a divergence is silent
+  in every direction that can be observed cheaply: the index builds,
+  `CREATE INDEX` reports success, results are correct, and every query is a
+  sequential scan. `tests/postgres/test_search.py` therefore asserts the
+  plan with `enable_seqscan` off, so the question is whether the index *can*
+  serve the query rather than whether the planner prefers it on a small
+  table.
+
+- **The feed uses the width the screen has.** `.shell__main` and
+  `.shell__bar` were capped at 1180px, which against the card grid is three
+  columns and then an empty margin on anything wider than a laptop. Both now
+  take `--shell-max`, at 106rem — five columns plus the shell's own padding,
+  set in `rem` so it tracks the root font size the cards are already sized
+  against. Measured at 1920×1080: three columns to five, and 61% of the
+  viewport to 88%. `.settings` and `.bookmarks` keep their 60rem reading
+  measure and are now centred rather than left-aligned.
+
 - A social preview image, which closes the last of the discoverability items
   and the whole Repository section of `ROADMAP.md`. Its source is committed
   at `docs/images/github-social-preview.png`, and the reason that is worth
