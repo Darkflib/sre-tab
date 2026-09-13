@@ -30,7 +30,7 @@
 # --- Frontend -------------------------------------------------------------
 # Node 24 covers frontend/package.json's ">=20.19" floor (Vite 8's minimum)
 # with room to spare.
-FROM node:24-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0 AS frontend
+FROM node:24-trixie-slim@sha256:6950b66b4c0cb0151ce89fa75074673850763d096b044f422c6729b588dd4956 AS frontend
 
 WORKDIR /build
 
@@ -51,7 +51,7 @@ RUN npm run build
 FROM ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 AS uv
 
 # --- Python build ---------------------------------------------------------
-FROM python:3.14-slim-trixie@sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9 AS builder
+FROM python:3.14-slim-trixie@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS builder
 
 COPY --from=uv /uv /bin/uv
 
@@ -72,7 +72,7 @@ COPY app ./app
 RUN uv sync --frozen --no-dev --no-editable
 
 # --- Runtime --------------------------------------------------------------
-FROM python:3.14-slim-trixie@sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9
+FROM python:3.14-slim-trixie@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
