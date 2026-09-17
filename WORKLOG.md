@@ -101,6 +101,23 @@ had an empty list, so the new check alone would have kept it passing. It
 now carries a usable entry, and it was confirmed red with
 `sys.set_int_max_str_digits(0)`.
 
+**CI then caught a test that only held on the machine it was written on.**
+The deep-nesting test asserted that 99,990 nested brackets raise
+`RecursionError`. They do on the macOS main thread. On the Linux runner the
+same document parsed. Python 3.14's recursion guard for C code measures the
+stack rather than counting frames, so where it fires depends on how much
+stack the thread has: the same document raised on a 512 KiB thread and
+parsed on a 256 MiB one, in 30 ms and 9 MB. Both outcomes are safe, and the
+node ceiling bounds the cost either way, as it bounds nesting on the XML
+side. So the test was asserting a property of the platform, not of the
+adapter, and the "handler removed" mutation above had only been caught
+because the tests ran on a Mac. It is now two tests: a real deep document is
+refused as a `ParseError` whichever path the stack takes, confirmed on a
+256 MiB thread; and the handler is pinned by a stubbed `json.loads` that
+raises, which fails if the handler goes. The same run also failed
+`smoke.sh` on a seven-source literal the first sweep missed, because it was
+spelt `-eq 7` beside a different message.
+
 <a id="channel-artwork"></a>
 ## 2026-09-03 — The artwork a feed declares about itself
 

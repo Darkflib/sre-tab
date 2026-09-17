@@ -637,7 +637,7 @@ if "$ENGINE" exec sre-tab-app sre-tab sources add-medium-tag ../../etc/passwd \
     fail "the CLI accepted a path-traversal Medium tag"
 fi
 still=$(psql_db --command "SELECT count(*) FROM sources" | tr -d ' ')
-[ "$still" -eq 7 ] || fail "a refused source was written anyway"
+[ "$still" -eq 8 ] || fail "a refused source was written anyway"
 echo "  hostile feed URL and hostile Medium tag both refused, nothing written"
 
 step "Front-door behaviour"

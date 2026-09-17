@@ -75,6 +75,12 @@ def parse_kev_catalogue(content: bytes) -> ParsedFeed:
         # Bytes, so json detects the encoding and tolerates a UTF-8 BOM.
         document = json.loads(content)
     except RecursionError as exc:
+        # Where this fires depends on the stack, not on a count: 99,990
+        # levels, the deepest the node ceiling admits, raised here on the
+        # main thread and on a 512 KiB thread under macOS, and parsed on
+        # the Linux CI runner and on a 256 MiB thread, in 30 ms and 9 MB.
+        # Both outcomes are safe. The ceiling is what bounds the cost, as
+        # it bounds nesting on the XML side.
         raise DocumentTooComplexError("JSON nested too deeply") from exc
     except ValueError as exc:
         # Covers malformed JSON, undecodable bytes, and an integer past

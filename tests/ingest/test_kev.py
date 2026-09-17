@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -265,10 +266,27 @@ def test_a_catalogue_with_nothing_usable_is_a_failure_not_an_empty_success(body:
         parse_kev_catalogue(body)
 
 
-def test_deep_nesting_inside_the_ceiling_is_refused_cleanly() -> None:
+def test_deep_nesting_inside_the_ceiling_is_refused_on_any_stack() -> None:
+    """Whether this depth parses depends on the stack it runs on: it raises
+    ``RecursionError`` on the macOS main thread and parsed on the Linux CI
+    runner. Either way it is refused, by the recursion handler in the
+    first case and by the empty-catalogue check in the second, since
+    nested lists yield no entries."""
     body = b'{"vulnerabilities": ' + b"[" * (MAX_NODES - 10) + b"]" * (MAX_NODES - 10) + b"}"
-    with pytest.raises(DocumentTooComplexError):
+    with pytest.raises(ParseError):
         parse_kev_catalogue(body)
+
+
+def test_a_recursion_error_is_reported_as_too_complex(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The handler, pinned without depending on how deep a given stack
+    goes before the interpreter refuses."""
+
+    def overflow(_: bytes) -> Any:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(kev, "json", SimpleNamespace(loads=overflow))
+    with pytest.raises(DocumentTooComplexError, match="nested too deeply"):
+        parse_kev_catalogue(catalogue(vulnerability("CVE-2026-0015", "2026-09-16")))
 
 
 # --- through the refresh path ---------------------------------------------
