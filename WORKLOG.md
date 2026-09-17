@@ -3,6 +3,69 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+<a id="release-tag-version"></a>
+## 2026-09-17 — A release tag has to match the manifests
+
+The half of #41's version review that was deferred there: the parity test
+keeps the four copies of the version in line with each other, and nothing
+checked any of them against the tag being released.
+
+**The resolver reads the files itself, and a missing one is a refusal.**
+`--pyproject` and `--package-json` default to the checkout's paths, which is
+where the publish job runs, and the workflow now passes them explicitly as
+well. Defaults can hide a skipped check, so two tests cover them.
+Run from the repository root with no arguments, the resolver accepts the
+repository's own version and refuses `v99.0.0`, naming both files. The
+refusal is the evidence that the defaults are read. Run from an empty
+directory, it refuses with "cannot read pyproject.toml". Both mismatches
+are reported in one run, so a release that forgot both files hears about
+both.
+
+**No `packaging`, so a subset of PEP 440 written out.** The script imports
+only the standard library, which is why it can run on the runner image's
+interpreter with no setup step. It therefore cannot borrow the parity
+test's `Version`. A release version here is MAJOR.MINOR.PATCH with an
+optional a, b, or rc, with PEP 440's aliases (alpha, beta, c, pre,
+preview), its separators, and an implicit zero. Epochs, post-releases, dev
+releases, and local versions are refused as things this project does not
+tag. A pyproject version of "1.2" is refused as well, although PEP 440
+would call it equal to 1.2.0. Tags always have three parts, and matching a
+tag against two would be leniency nothing needs.
+
+**That narrowed the tags that can be released, deliberately.** The tag
+pattern accepts every legal semver pre-release, and
+`test_a_legal_pre_release_identifier_is_accepted` existed to stop the
+pattern overshooting and refusing `-rc01`. Three of its five examples (`-0alpha`, `-0`, and
+`-x-y-z.1`) have no PEP 440 spelling, so `pyproject.toml` could never carry
+them, and a build of one could never report the version it is published
+as. They are now refused, and the test is split in two. The two
+expressible tags must be accepted. The other three must be refused with
+the PEP 440 reason, and must not be refused for their shape. That second
+assertion keeps what the original test was for.
+
+**The interpreter this now depends on had never been run.** `tomllib` needs
+3.11, and `publish` runs the script with whatever `python3` the runner
+image ships. The only jobs that run on a pull request replace that
+interpreter with `setup-python`. So the `python` job's first step, placed
+before `setup-python`, runs the resolver against the checkout's own version
+with the image's `python3`. Run locally with a current interpreter it
+passed. Pointed at macOS's system Python 3.9.6, it failed with
+`No module named 'tomllib'`, which is the failure it exists to raise.
+
+**Checked by breaking it.** Seven mutations, each caught:
+
+- the check never called;
+- versions compared as strings;
+- the pre-release number ignored;
+- a missing pyproject read as agreeing;
+- package.json skipped;
+- any pre-release accepted;
+- the default paths removed.
+
+The string comparison was caught only by the spelling test, and the
+ignored number only by `rc.2` against `rc1`. Both are narrow, which is why
+those parametrisations exist.
+
 <a id="build-version"></a>
 ## 2026-09-17 — The build's own commit, in the footer
 

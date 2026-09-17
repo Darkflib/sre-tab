@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Resolve a git tag into the three things a release build needs to know.
+"""Resolve a git tag into the four things a release build needs to know.
 
-All three are knowable before a single byte reaches the registry, which is
+All four are knowable before a single byte reaches the registry, which is
 why they are asked here rather than at the step that would use them:
 
 1. **Is this a tag this project publishes?** ``vMAJOR.MINOR.PATCH``, with an
@@ -17,6 +17,16 @@ why they are asked here rather than at the step that would use them:
    empty release body: a Release with no notes is a green check that verified
    nothing, which is the failure mode this repository has already shipped six
    times under other names.
+4. **Do the manifests carry this version?** ``pyproject.toml`` is what the
+   application reports as its version, and ``frontend/package.json`` is what
+   the page footer shows. A tag that neither was bumped for would publish an
+   image named ``1.2.0`` that calls itself ``1.1.0`` everywhere it says
+   anything. The comparison is on PEP 440 versions, because Python and npm
+   spell a pre-release differently. A tag whose pre-release PEP 440 cannot
+   express at all, such as ``-x.7``, is refused for that reason, since no
+   build of it could report its own version. ``tests/test_version_parity.py``
+   keeps the npm lockfile and the installed distribution in line with these
+   two on every push.
 
 Doing all of this before the push matters. A tag whose shape is wrong, or
 whose version nobody wrote up, fails a job that has not yet signed, attested,
@@ -26,7 +36,9 @@ image behind with no Release to explain it.
 Usage::
 
     python3 .github/scripts/release-metadata.py --tag v1.1.0 \\
-        [--changelog CHANGELOG.md] [--notes-out notes.md] [--print-notes]
+        [--changelog CHANGELOG.md] [--pyproject pyproject.toml] \\
+        [--package-json frontend/package.json] [--notes-out notes.md] \\
+        [--print-notes]
 
 Writes a human-readable summary to stdout, the extracted notes to
 ``--notes-out`` when given, and ``version`` / ``image-tags`` / ``prerelease``
@@ -37,9 +49,11 @@ non-zero, with the reason on stderr, for every refusal above.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
+import tomllib
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -120,6 +134,135 @@ def parse_tag(tag: str) -> tuple[str, bool]:
         )
     version = tag[1:]
     return version, match.group("prerelease") is not None
+
+
+# PEP 440's pre-release signifiers, and the spellings it normalises to each.
+# The standard library has no PEP 440 parser and this script imports nothing
+# else, so the subset a release can use is written out here: MAJOR.MINOR.PATCH
+# with an optional a, b or rc and an optional number. Epochs, post-releases,
+# dev releases and local versions are not things this project tags.
+PEP440_SIGNIFIERS = {
+    "a": "a",
+    "alpha": "a",
+    "b": "b",
+    "beta": "b",
+    "rc": "rc",
+    "c": "rc",
+    "pre": "rc",
+    "preview": "rc",
+}
+_PRE_RELEASE = r"(?P<signifier>alpha|a|beta|b|rc|c|preview|pre)[-_.]?(?P<number>[0-9]+)?"
+
+# A semver pre-release that PEP 440 can also spell: `rc1`, `rc.1`, `rc-1`,
+# `rc01`, `alpha`, `beta.2`. Case is not significant to PEP 440.
+PEP440_COMPATIBLE_PRE_RELEASE_RE = re.compile(rf"^{_PRE_RELEASE}$", re.IGNORECASE)
+
+PEP440_RELEASE_RE = re.compile(
+    rf"^v?(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.(?P<patch>[0-9]+)(?:[-_.]?{_PRE_RELEASE})?$",
+    re.IGNORECASE,
+)
+
+#: ``(major, minor, patch, signifier, number)``, with the last two ``None``
+#: for a final release: a version as PEP 440 compares it.
+ReleaseVersion = tuple[int, int, int, str | None, int | None]
+
+
+def _pep440(version: ReleaseVersion) -> str:
+    major, minor, patch, signifier, number = version
+    return f"{major}.{minor}.{patch}" + (f"{signifier}{number}" if signifier else "")
+
+
+def _from_match(match: re.Match[str], pre_release: re.Match[str] | None) -> ReleaseVersion:
+    release = (int(match.group("major")), int(match.group("minor")), int(match.group("patch")))
+    if pre_release is None:
+        return (*release, None, None)
+    signifier = PEP440_SIGNIFIERS[pre_release.group("signifier").lower()]
+    return (*release, signifier, int(pre_release.group("number") or 0))
+
+
+def semver_release_version(version: str, source: str) -> ReleaseVersion:
+    """The PEP 440 reading of a semver version, or ``ReleaseError``.
+
+    Used for the tag and for ``package.json``, which npm requires to be
+    semver. *source* opens the refusal and says which value it is about.
+    """
+    match = SEMVER_RE.match(f"v{version}")
+    if match is None:
+        raise ReleaseError(f"{source}: not MAJOR.MINOR.PATCH semver")
+    pre_release = match.group("prerelease")
+    if pre_release is None:
+        return _from_match(match, None)
+    compatible = PEP440_COMPATIBLE_PRE_RELEASE_RE.match(pre_release)
+    if compatible is None:
+        raise ReleaseError(
+            f"{source}: the pre-release {pre_release!r} has no PEP 440 spelling — "
+            "PEP 440 knows only a, b and rc (or alpha, beta, c, pre, preview), "
+            "each with an optional number — so pyproject.toml could never carry it. "
+            "Use a pre-release such as -rc.1."
+        )
+    return _from_match(match, compatible)
+
+
+def _pyproject_version(path: Path) -> tuple[ReleaseVersion, str]:
+    try:
+        with path.open("rb") as handle:
+            document = tomllib.load(handle)
+    except OSError as exc:
+        raise ReleaseError(f"cannot read {path}: {exc}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ReleaseError(f"{path} is not valid TOML: {exc}") from exc
+    project = document.get("project")
+    raw = project.get("version") if isinstance(project, dict) else None
+    if not isinstance(raw, str):
+        # A dynamic version would be computed by the build backend, and
+        # nothing here should guess what it computes to.
+        raise ReleaseError(f"{path} has no static [project] version to compare the tag with")
+    match = PEP440_RELEASE_RE.match(raw.strip())
+    if match is None:
+        raise ReleaseError(
+            f"{path} carries {raw!r}, which is not MAJOR.MINOR.PATCH with an optional "
+            "a, b or rc pre-release, so no release tag can match it"
+        )
+    pre_release = match if match.group("signifier") else None
+    return _from_match(match, pre_release), raw
+
+
+def _package_json_version(path: Path) -> tuple[ReleaseVersion, str]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ReleaseError(f"cannot read {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ReleaseError(f"{path} is not valid JSON: {exc}") from exc
+    raw = document.get("version") if isinstance(document, dict) else None
+    if not isinstance(raw, str):
+        raise ReleaseError(f"{path} has no version to compare the tag with")
+    return semver_release_version(raw, f"{path} carries {raw!r}"), raw
+
+
+def check_manifests(version: str, *, pyproject: Path, package_json: Path) -> None:
+    """Refuse a tag the manifests do not carry.
+
+    Both files are read and both mismatches reported, so a release that
+    forgot one learns about the other in the same run. A file that is
+    missing is a refusal: an absent manifest would otherwise read as an
+    agreeing one.
+    """
+    wanted = semver_release_version(version, f"refusing v{version}")
+    mismatches = [
+        f"{path} says {raw!r}"
+        for path, (found, raw) in (
+            (pyproject, _pyproject_version(pyproject)),
+            (package_json, _package_json_version(package_json)),
+        )
+        if found != wanted
+    ]
+    if mismatches:
+        raise ReleaseError(
+            f"refusing v{version}: {'; '.join(mismatches)}, not {_pep440(wanted)}. "
+            "Bump the version before tagging, or the image would report a version "
+            "other than the one it is published as."
+        )
 
 
 def _final_release_versions(tags: Sequence[str]) -> list[tuple[int, int, int]]:
@@ -281,6 +424,18 @@ def main(argv: list[str] | None = None) -> int:
         help="the Keep a Changelog file to read (default: CHANGELOG.md)",
     )
     parser.add_argument(
+        "--pyproject",
+        type=Path,
+        default=Path("pyproject.toml"),
+        help="the manifest whose version the application reports (default: pyproject.toml)",
+    )
+    parser.add_argument(
+        "--package-json",
+        type=Path,
+        default=Path("frontend/package.json"),
+        help=("the manifest whose version the page footer shows (default: frontend/package.json)"),
+    )
+    parser.add_argument(
         "--notes-out",
         type=Path,
         default=None,
@@ -305,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         version, is_prerelease = parse_tag(args.tag)
+        check_manifests(version, pyproject=args.pyproject, package_json=args.package_json)
         known = _read_git_tags(args.git_tags_file, args.tag)
         tags = image_tags(version, is_prerelease, known)
         notes = changelog_notes(args.changelog, version)
@@ -328,6 +484,7 @@ def main(argv: list[str] | None = None) -> int:
         f"tag          {args.tag}\n"
         f"version      {version}\n"
         f"pre-release  {'yes' if is_prerelease else 'no'}\n"
+        f"manifests    {args.pyproject} and {args.package_json} agree\n"
         f"image tags   {' '.join(tags)}\n"
         f"notes        {len(notes.splitlines())} line(s) from "
         f"{args.changelog} [{version}]\n"

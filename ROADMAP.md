@@ -42,8 +42,7 @@ that.
 - [Operations](#operations)
   - Release hygiene: the machinery is in place and has never been run. No
     `v1.1.0` tag has been pushed, so no Release object and no versioned image
-    tag exist yet. A tag is also not yet checked against the version the
-    manifests carry.
+    tag exist yet.
   - Frontend coverage for the components and routes — `src/api/client.ts`
     and `usePagedResource`'s effects are covered now; nothing under
     `src/components/` or `src/routes/` is.
@@ -787,17 +786,25 @@ prerequisite for going past it.
   through its refusals by `tests/test_release_metadata.py`. A tag build does
   not move `:latest`, and a pre-release does not move the floating `:1.1`.
 
-  **The tag is not compared with the version in the manifests.**
-  `release-metadata.py` refuses a tag the changelog does not describe, but
-  not one `pyproject.toml` disagrees with, so `v1.2.0` pushed without a bump
-  would publish an image whose API and page footer both say 1.1.0. Since
-  17 September, `tests/test_version_parity.py` holds `pyproject.toml`, the
-  installed distribution, `frontend/package.json`, and its lockfile to one
-  version on every push, which covers a release that bumped some of them
-  and not others. Comparing that version with the tag belongs in the
-  resolver and is still open. The one design question is pre-releases:
-  PEP 440 and npm spell them differently, so the comparison has to be on
-  parsed versions, as the parity test's already is.
+  **The tag is compared with the version in the manifests** — **landed.**
+  Until 17 September, `release-metadata.py` refused a tag the changelog did
+  not describe but not one `pyproject.toml` disagreed with, so `v1.2.0`
+  pushed without a bump would have published an image whose API and page
+  footer both said 1.1.0. It now refuses a tag unless `pyproject.toml` and
+  `frontend/package.json` both carry its version, before anything is
+  written or pushed. `tests/test_version_parity.py` keeps the lockfile and
+  the installed distribution in line with those two on every push.
+
+  Pre-releases were the design question, and settling it narrowed which
+  tags can be released. The comparison is on PEP 440 versions, so
+  `v1.2.0-rc.1`, `1.2.0rc1`, and `1.2.0-rc.1` are one version. But semver
+  allows pre-releases PEP 440 has no spelling for, such as `-x.7` or `-0`,
+  and `pyproject.toml` could never carry one, so no build of such a tag
+  could report its own version. Those tags are now refused with that
+  reason; the shape check still accepts them, and a test pins that
+  distinction. The resolver runs on the runner image's own `python3` and
+  now needs 3.11 for `tomllib`, which the `python` job checks on every push,
+  before `setup-python` replaces that interpreter.
 
   **What has not changed is that none of it has run.** No `v1.1.0` tag has
   been pushed, so there is still no Release object anywhere in this
