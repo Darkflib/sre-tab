@@ -36,7 +36,7 @@ ContainerName=sre-tab-prune-sessions
 # because a list written here goes stale the next time a unit is added and
 # nothing checks prose. Change the pin with promote.sh — never by hand.
 # See sre-tab.container for why Pull=missing rather than newer.
-Image=ghcr.io/darkflib/sre-tab:sha-ba4cc179455bc8becb5b1352ccf1bcb53dc7ade9@sha256:33d42822516464c61f83987a6b399a6d06a994d87f1e2e7865c7552dff57fc79
+Image=ghcr.io/darkflib/sre-tab:sha-b734388df3ef86f75cffe4b3f214169c02e87fbf@sha256:f2c15e75ddca1aac138b432cbc09679b60eb6f978dd0a0b5a999f510762ca361
 Pull=missing
 Network=sre-tab.network
 
