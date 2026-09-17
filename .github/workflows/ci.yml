@@ -335,6 +335,24 @@ jobs:
         run: npm run build
         working-directory: frontend
 
+      # The control for the container job's footer check. That job greps the
+      # image's bundle for this commit and this repository's URL, and the
+      # grep is evidence only if the values can get there by no other route
+      # than the build arguments. This build received none, so neither may
+      # appear in it. A GitHub link added anywhere in the frontend would
+      # otherwise satisfy the URL grep in every image, including one whose
+      # footer had lost its link.
+      - name: A bundle built without arguments names no commit or repository
+        run: |
+          set -euo pipefail
+          for value in "$GITHUB_SHA" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"; do
+            if grep -rqF --include='*.js' "$value" dist; then
+              echo "::error::dist names $value without being given it, so the container job's footer check proves nothing."
+              exit 1
+            fi
+          done
+        working-directory: frontend
+
   container:
     name: Container build and deployment smoke
     runs-on: ubuntu-latest
@@ -401,8 +419,13 @@ jobs:
           jq -e --arg want "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             '(.Labels // .Config.Labels)["org.opencontainers.image.source"] == $want' \
             /tmp/image.json > /dev/null
-          podman run --rm sre-tab:ci \
-            grep -rqF --include='*.js' "$GITHUB_SHA" /opt/sre-tab/web/assets
+          # Both values, not just the commit: without the source URL the
+          # footer still shows the commit but links it nowhere. The frontend
+          # job shows that a bundle built without arguments contains neither.
+          for value in "$GITHUB_SHA" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"; do
+            podman run --rm sre-tab:ci \
+              grep -rqF --include='*.js' "$value" /opt/sre-tab/web/assets
+          done
 
       # sre-tab.container cannot set NoNewPrivileges=true — podman's AppArmor
       # profile denies signal delivery under no_new_privs on Debian 13, and

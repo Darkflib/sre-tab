@@ -48,6 +48,33 @@ drops the link, or drops the commit altogether. The link carries
 `noopener noreferrer`, because following it should not tell the code host
 which instance the reader came from.
 
+**Review found two checks that could pass for the wrong reason.**
+
+- *The footer's link had no check.* CI searched the image's bundle for the
+  commit only, so a frontend stage that stopped passing the source URL
+  would have kept every check green while the footer lost its link. Both
+  values are now searched for. A match proves something only if nothing
+  else puts them there, and a GitHub link added anywhere in the frontend
+  would satisfy a URL search in every image. The frontend job's build
+  receives no arguments, so it now asserts that the bundle contains
+  neither value. That control checks what reaches the bundle, not how
+  Vite spells it; Vite writes the value as a key followed by a backtick
+  string, and matching that shape would break at the next bundler
+  upgrade. Both steps were run locally with the job's variables. The
+  control passed on a bundle built without arguments and failed on one
+  given either value. The container step passed on the real image and
+  exited 1 on an image whose frontend stage dropped only the source URL.
+- *The footer's version was checked only against itself.* The first test
+  compared `BUILD.version` with `package.json`, its own source, so a
+  release that bumped `pyproject.toml` alone would have passed and shipped
+  a footer naming the previous version. `tests/test_version_parity.py`
+  now holds `pyproject.toml`, the installed distribution,
+  `frontend/package.json`, and its lockfile to one PEP 440 version, and it
+  failed as expected with either frontend file set back to 1.0.9. The
+  review also asked for the tag to be compared, which belongs in the
+  release resolver, handles pre-release spellings, and is recorded in
+  ROADMAP.md rather than done here.
+
 `package.json`'s version reaches the bundle through `define` rather than a
 JSON import, which would have shipped the whole manifest. The Containerfile
 header's `docker build --tag sre-tab:dev .` failed on Docker Desktop here,

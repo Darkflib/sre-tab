@@ -18,7 +18,7 @@ export interface BuildEnv {
 }
 
 export interface BuildInfo {
-  /** `package.json`'s version, which moves in step with `pyproject.toml`. */
+  /** `package.json`'s version, held to `pyproject.toml`'s by tests/test_version_parity.py. */
   version: string;
   /** The full commit, or `null` when the build was not told one. */
   commit: string | null;
