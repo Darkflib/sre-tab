@@ -91,20 +91,55 @@
   box-shadow: none;
 }
 
+/* Anchored to the bottom of the viewport. The feed loads more as the reader
+   nears its end, so a footer that waits after the content is one nobody
+   reaches. Sticky rather than fixed: it keeps its place in the flow, so on a
+   page that does end it comes to rest below the content instead of over the
+   last card. It costs its height on every screen, so it is one line at any
+   width: on a phone the note gives way to an ellipsis and the build stamp
+   stays whole. Wrapped, it measured 75px at 375px wide.
+
+   The safe-area inset is zero today, because index.html does not opt into
+   `viewport-fit=cover` and the browser keeps the page clear of a home bar
+   itself. It is here so that opting in later does not put the footer under
+   one. */
 .shell__footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: center;
+  align-items: baseline;
+  gap: 1.25rem;
+  background: var(--surface);
   border-top: 1px solid var(--border);
-  padding: 1rem;
-  text-align: center;
+  padding: 0.4rem 1rem calc(0.4rem + env(safe-area-inset-bottom, 0px));
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 0.8rem;
 }
 
 .shell__footer p {
   margin: 0;
 }
 
+.shell__note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The list keyboard moves focus card by card, and focusing a card scrolls it
+   into view. Without this, `j` can bring a card to rest underneath the
+   footer: 4 of 12 steps did, by up to 18px. The footer's own line plus some
+   air, and the same safe-area inset the footer pads itself with. */
+html {
+  scroll-padding-bottom: calc(3rem + env(safe-area-inset-bottom, 0px));
+}
+
 .build-stamp {
-  margin-top: 0.25rem;
+  flex-shrink: 0;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
