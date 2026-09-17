@@ -64,8 +64,8 @@ that.
     the upgrade sequence, still unexecuted.
 - [Product](#product)
   - Per-device preferences (v2).
-  - Non-RSS sources, beyond the CISA KEV catalogue, and a per-source
-    format column once there is a second one.
+  - Non-RSS sources beyond the CISA KEV catalogue, which is now in
+    production, and a per-source format column once there is a second one.
   - Richer authorisation.
   - A `compose.yaml`, for the deployment that sits between the quickstart
     and the quadlets.
@@ -1331,23 +1331,30 @@ difference between the two.
   `(user_id, device_id)` holding only explicit overrides, merged over the
   account profile on read. The v1 schema keeps account preferences separate
   from sessions precisely so this stays cheap.
-- **Non-RSS sources** — **one has landed.** Hashnode needs sitemap parsing
-  or GraphQL; anything else requiring a bespoke adapter follows the same
-  rule. The fetcher rejects these at configuration time today rather than
-  growing special cases.
+- **Non-RSS sources** — **one has landed and is in production.** Hashnode
+  needs sitemap parsing or GraphQL; anything else requiring a bespoke
+  adapter follows the same rule. The fetcher rejects these at configuration
+  time today rather than growing special cases.
 
   The CISA Known Exploited Vulnerabilities catalogue is the exception, and
   the shape it took is the part worth keeping. It is one JSON document of
   every entry CISA has added, and [app/ingest/kev.py](app/ingest/kev.py)
   turns each entry into an item linked to CISA's own record of that CVE;
   retention keeps the last ninety days, which on 17 September 2026 was
-  ninety items. The
-  parser is looked up by the source's configured `feed_url`, an exact
-  match in `ADAPTERS` in
-  [app/ingest/service.py](app/ingest/service.py), rather than inferred
-  from the response. That needed no migration, and it keeps the property
-  the RSS-only rule was protecting: what a body looks like never decides
-  how it is parsed.
+  ninety items. The parser is looked up by the source's configured
+  `feed_url`, an exact match in `ADAPTERS` in
+  [app/ingest/service.py](app/ingest/service.py), rather than inferred from
+  the response. That needed no migration, and it keeps the property the
+  RSS-only rule was protecting: what a body looks like never decides how it
+  is parsed.
+
+  **Deployed on 17 September 2026.** The merge (#39, `b734388`) was
+  promoted to the reference host as `sha-b734388` by `7ef7b95`, the commit a
+  rollback would revert. `sre-tab seed` then added `cisa-kev`, since a
+  seeded source reaches an existing instance only when the seed is run
+  again. Its first scheduled refresh, at 14:05 UTC, reported `ok`. That
+  promotion was the first since 3 September, so it also shipped search,
+  muted terms, and channel artwork, with their three migrations.
 
   **A URL key is right for one adapter and wrong for several.** It works
   here because the adapter reads exactly one document at exactly one
