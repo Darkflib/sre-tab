@@ -106,6 +106,13 @@ def parse_kev_catalogue(content: bytes) -> ParsedFeed:
             if len(entries) == MAX_ENTRIES:
                 break
 
+    if not entries:
+        # The catalogue only ever grows, so an empty one is never real.
+        # Nothing usable means the document or its schema changed, and
+        # reporting that as a success would keep the source green while
+        # new entries stopped arriving and retention emptied the feed.
+        raise ParseError(f"none of {len(vulnerabilities)} KEV catalogue entries is usable")
+
     return ParsedFeed(
         version=FORMAT,
         title=_text(document.get("title")),

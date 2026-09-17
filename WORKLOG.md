@@ -84,6 +84,23 @@ The seven-source literals in `test_operations.py`, `test_seeded_ingest.py`
 and `smoke.sh` became eight rather than `len(SOURCES)`, because a count
 derived from the catalogue would still pass if the catalogue were empty.
 
+**Review found the silent pass that had been missed.** A catalogue with an
+empty `vulnerabilities` list, or one where every entry had become unreadable
+because CISA renamed a field, parsed to zero entries and was reported as a
+success. The failure count reset, `sre-tab status` said `ok`, new entries
+stopped arriving, and within ninety days retention would have removed every
+card. It is the first of AGENTS.md's two questions, what a guard says when
+its subject is empty, asked of a parser, and the mutation pass above never
+asked it because none of the nine mutations produced an empty result. The
+catalogue only grows, so zero usable entries is now a `ParseError`. One
+existing test had leaned on the old behaviour: the ceiling test used a
+document of nothing but `{}`. It now pads a document with one real entry to
+exactly the ceiling, which also makes the boundary exact rather than
+approximate. A second test needed the opposite change: the digit-limit case
+had an empty list, so the new check alone would have kept it passing. It
+now carries a usable entry, and it was confirmed red with
+`sys.set_int_max_str_digits(0)`.
+
 <a id="channel-artwork"></a>
 ## 2026-09-03 — The artwork a feed declares about itself
 

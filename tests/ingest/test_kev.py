@@ -191,7 +191,12 @@ def test_a_bom_is_tolerated() -> None:
         b"[]",
         b'{"items": []}',
         b'{"vulnerabilities": {"CVE-2026-0001": {}}}',
-        b'{"vulnerabilities": [], "count": ' + b"9" * 5000 + b"}",
+        # A usable entry, so the digit limit is the only thing that can
+        # refuse it rather than the empty-catalogue check.
+        catalogue(vulnerability("CVE-2026-0014", "2026-09-16"))[:-1]
+        + b', "extra": '
+        + b"9" * 5000
+        + b"}",
     ],
     ids=[
         "empty",
@@ -218,13 +223,46 @@ def test_a_document_over_the_node_ceiling_is_refused_before_it_is_parsed() -> No
         parse_kev_catalogue(body)
 
 
-def test_a_document_just_inside_the_ceiling_is_parsed() -> None:
-    """The ceiling is a count, not an estimate: a well-formed document one
-    node under it goes through."""
-    padding = b",".join([b"{}"] * ((MAX_NODES - 2) // 2))
-    body = b'{"vulnerabilities": [' + padding + b"]}"
-    assert body.count(b"{") + body.count(b"[") + body.count(b",") <= MAX_NODES
-    assert parse_kev_catalogue(body).entries == ()
+def _padded_to(nodes: int) -> bytes:
+    """A well-formed catalogue holding one usable entry, padded with bare
+    numbers — which the adapter skips — to exactly *nodes*."""
+    head = (
+        b'{"vulnerabilities": [' + json.dumps(vulnerability("CVE-2026-0011", "2026-09-16")).encode()
+    )
+    counted = head.count(b"{") + head.count(b"[") + head.count(b",")
+    body = head + b",0" * (nodes - counted) + b"]}"
+    assert body.count(b"{") + body.count(b"[") + body.count(b",") == nodes
+    return body
+
+
+def test_a_document_exactly_at_the_ceiling_is_parsed() -> None:
+    """The ceiling is a count, not an estimate."""
+    (entry,) = parse_kev_catalogue(_padded_to(MAX_NODES)).entries
+    assert entry.entry_id == "CVE-2026-0011"
+
+
+def test_a_well_formed_document_one_node_over_the_ceiling_is_refused() -> None:
+    with pytest.raises(DocumentTooComplexError):
+        parse_kev_catalogue(_padded_to(MAX_NODES + 1))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        catalogue(),
+        catalogue(
+            {"cve": "CVE-2026-0012", "date_added": "2026-09-16"},
+            {"cve": "CVE-2026-0013", "date_added": "2026-09-15"},
+        ),
+    ],
+    ids=["empty", "renamed-fields"],
+)
+def test_a_catalogue_with_nothing_usable_is_a_failure_not_an_empty_success(body: bytes) -> None:
+    """The catalogue only grows. Parsing to nothing means it or its schema
+    changed, and a quiet success would leave the source reporting ``ok``
+    while new entries stopped and retention emptied the feed."""
+    with pytest.raises(ParseError, match="none of"):
+        parse_kev_catalogue(body)
 
 
 def test_deep_nesting_inside_the_ceiling_is_refused_cleanly() -> None:
@@ -376,6 +414,25 @@ def test_the_kev_source_does_not_fall_back_to_rss(
     assert status.consecutive_failures == 1
     assert status.last_error_class == "ParseError"
     assert _stored(db_session) == {}
+
+
+@respx.mock
+def test_an_emptied_catalogue_counts_as_a_failure_and_keeps_what_is_stored(
+    service: IngestService, kev_source: SourceRef, db_session: Session
+) -> None:
+    route = respx.get(KEV_PINNED_URL).mock(
+        return_value=httpx.Response(
+            200, content=catalogue(vulnerability("CVE-2026-40001", "2026-09-14"))
+        )
+    )
+    service.refresh_source(kev_source, now=NOW)
+
+    route.mock(return_value=httpx.Response(200, content=catalogue()))
+    status = service.refresh_source(kev_source, now=NOW)
+
+    assert status.consecutive_failures == 1
+    assert status.last_error_class == "ParseError"
+    assert set(_stored(db_session)) == {f"{PAGE}CVE-2026-40001"}
 
 
 def test_the_seeded_source_is_the_one_the_adapter_is_keyed_on() -> None:

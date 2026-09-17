@@ -19,6 +19,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   release take the release time rather than midnight, so this evening's
   additions sit with this evening's news.
 
+  A catalogue that yields nothing is a failed refresh, not an empty success.
+  It only ever grows, so an empty `vulnerabilities` list, or one where no
+  entry can be read after a schema change, means something upstream broke.
+  `sre-tab status` then shows the source failing, where it would otherwise
+  have stayed `ok` while new entries stopped and retention cleared the feed.
+
   **This is the first source that is not RSS or Atom**, and it gets there
   without making the RSS parser any less strict. The catalogue is JSON, and
   its parser in `app/ingest/kev.py` is chosen by the source's configured
