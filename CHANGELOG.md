@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The footer says which build is running**: `sre-tab 1.1.0 · b734388`,
+  with the short commit linked to its page in the repository. CI passes
+  the commit and repository URL to the image build as `SRE_TAB_COMMIT` and
+  `SRE_TAB_SOURCE_URL`. Vite writes them into the bundle, and the image
+  also carries them as `org.opencontainers.image.revision` and `.source`
+  labels, so `podman image inspect` answers the same question. A build
+  given neither, such as `npm run dev` or a plain `podman build`, says
+  "development build" rather than guessing. The commit is shown only if it
+  is a full 40-character SHA, and linked only if the source is a plain
+  `https` URL.
+
+  The commit is not a secret. It is written into a public JavaScript bundle,
+  and on this project the deployed build is already public in every
+  `deploy: promote` commit. An operator who does not want it visible can
+  build without the arguments.
+
 - **Newly added CISA Known Exploited Vulnerabilities arrive in the feed,
   one card per CVE.** The seed catalogue gains `cisa-kev`, topic
   `security`, refreshed hourly. Each card is titled with the CVE ID and

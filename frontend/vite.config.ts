@@ -1,5 +1,13 @@
+import { readFileSync } from 'node:fs';
+
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
+
+// Only the version string reaches the bundle. Importing package.json from
+// application code would ship the whole manifest.
+const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
+  version: string;
+};
 
 // The app is served same-origin with the API in every deployment: either
 // FastAPI mounts `dist/` at `/`, or a reverse proxy serves `dist/` and
@@ -11,6 +19,9 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   base: '/',
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(version),
+  },
   build: {
     outDir: 'dist',
     sourcemap: true,

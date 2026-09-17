@@ -42,7 +42,8 @@ that.
 - [Operations](#operations)
   - Release hygiene: the machinery is in place and has never been run. No
     `v1.1.0` tag has been pushed, so no Release object and no versioned image
-    tag exist yet.
+    tag exist yet. A tag is also not yet checked against the version the
+    manifests carry.
   - Frontend coverage for the components and routes — `src/api/client.ts`
     and `usePagedResource`'s effects are covered now; nothing under
     `src/components/` or `src/routes/` is.
@@ -785,6 +786,18 @@ prerequisite for going past it.
   before anything is pushed — `.github/scripts/release-metadata.py`, exercised
   through its refusals by `tests/test_release_metadata.py`. A tag build does
   not move `:latest`, and a pre-release does not move the floating `:1.1`.
+
+  **The tag is not compared with the version in the manifests.**
+  `release-metadata.py` refuses a tag the changelog does not describe, but
+  not one `pyproject.toml` disagrees with, so `v1.2.0` pushed without a bump
+  would publish an image whose API and page footer both say 1.1.0. Since
+  17 September, `tests/test_version_parity.py` holds `pyproject.toml`, the
+  installed distribution, `frontend/package.json`, and its lockfile to one
+  version on every push, which covers a release that bumped some of them
+  and not others. Comparing that version with the tag belongs in the
+  resolver and is still open. The one design question is pre-releases:
+  PEP 440 and npm spell them differently, so the comparison has to be on
+  parsed versions, as the parity test's already is.
 
   **What has not changed is that none of it has run.** No `v1.1.0` tag has
   been pushed, so there is still no Release object anywhere in this
