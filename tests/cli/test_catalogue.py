@@ -69,6 +69,7 @@ def test_refresh_intervals_match_the_plan() -> None:
         "ars-technica": 30,
         "bbc-news": 15,
         "guardian-uk": 30,
+        "cisa-kev": 60,
     }
 
 

@@ -44,9 +44,10 @@ class UnsafeTargetError(IngestError):
 class SourceConfigurationError(IngestError):
     """The source cannot be fetched as configured.
 
-    v1 parses RSS and Atom only; a source needing sitemap crawling,
-    GraphQL, or any bespoke adapter is rejected here rather than growing
-    a parser special case (PLAN, "Deferred to v2").
+    Ingest parses RSS and Atom, plus the one adapter in
+    :mod:`app.ingest.kev`; a source needing sitemap crawling, GraphQL, or
+    any other bespoke adapter is rejected here rather than growing a
+    parser special case (PLAN, "Deferred to v2").
     """
 
 

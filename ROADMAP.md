@@ -63,7 +63,8 @@ that.
     the upgrade sequence, still unexecuted.
 - [Product](#product)
   - Per-device preferences (v2).
-  - Non-RSS sources.
+  - Non-RSS sources, beyond the CISA KEV catalogue, and a per-source
+    format column once there is a second one.
   - Richer authorisation.
   - A `compose.yaml`, for the deployment that sits between the quickstart
     and the quadlets.
@@ -1317,9 +1318,31 @@ difference between the two.
   `(user_id, device_id)` holding only explicit overrides, merged over the
   account profile on read. The v1 schema keeps account preferences separate
   from sessions precisely so this stays cheap.
-- **Non-RSS sources.** Hashnode needs sitemap parsing or GraphQL; anything
-  else requiring a bespoke adapter follows the same rule. The fetcher rejects
-  these at configuration time today rather than growing special cases.
+- **Non-RSS sources** — **one has landed.** Hashnode needs sitemap parsing
+  or GraphQL; anything else requiring a bespoke adapter follows the same
+  rule. The fetcher rejects these at configuration time today rather than
+  growing special cases.
+
+  The CISA Known Exploited Vulnerabilities catalogue is the exception, and
+  the shape it took is the part worth keeping. It is one JSON document of
+  every entry CISA has added, and [app/ingest/kev.py](app/ingest/kev.py)
+  turns each entry into an item linked to CISA's own record of that CVE;
+  retention keeps the last ninety days, which on 17 September 2026 was
+  ninety items. The
+  parser is looked up by the source's configured `feed_url`, an exact
+  match in `ADAPTERS` in
+  [app/ingest/service.py](app/ingest/service.py), rather than inferred
+  from the response. That needed no migration, and it keeps the property
+  the RSS-only rule was protecting: what a body looks like never decides
+  how it is parsed.
+
+  **A URL key is right for one adapter and wrong for several.** It works
+  here because the adapter reads exactly one document at exactly one
+  address, so the URL *is* the format. Hashnode would be a format served
+  from many addresses, one per blog. The second adapter is the point to add
+  a `sources.format` column, constrained the way `api_tokens.scope` is,
+  with `sources add --format` to set it, and to move the KEV source onto it
+  in the same revision.
 - **Richer authorisation.** v1 is a static allow-list of GitHub numeric IDs
   behind a single seam, so org or team resolution can replace it without
   disturbing the OAuth flow around it.

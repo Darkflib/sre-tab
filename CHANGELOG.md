@@ -8,6 +8,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Newly added CISA Known Exploited Vulnerabilities arrive in the feed,
+  one card per CVE.** The seed catalogue gains `cisa-kev`, topic
+  `security`, refreshed hourly. Each card is titled with the CVE ID and
+  CISA's name for the flaw, carries the description, a note if the flaw is
+  known to be used in ransomware campaigns, and the federal remediation
+  date, and links to CISA's own catalogue entry. Only entries added inside
+  `feed_retention_days` are kept, so the feed shows what is new rather than
+  the 1,700-entry back catalogue. Entries added on the day of a catalogue
+  release take the release time rather than midnight, so this evening's
+  additions sit with this evening's news.
+
+  A catalogue that yields nothing is a failed refresh, not an empty success.
+  It only ever grows, so an empty `vulnerabilities` list, or one where no
+  entry can be read after a schema change, means something upstream broke.
+  `sre-tab status` then shows the source failing, where it would otherwise
+  have stayed `ok` while new entries stopped and retention cleared the feed.
+
+  **This is the first source that is not RSS or Atom**, and it gets there
+  without making the RSS parser any less strict. The catalogue is JSON, and
+  its parser in `app/ingest/kev.py` is chosen by the source's configured
+  URL, never by the response, so no other upstream can reach it by serving
+  JSON. `json.loads` is not bounded by the 5 MiB fetch cap the way it looks
+  to be: a body of empty objects inside that cap peaked at 132 MB, so the
+  adapter counts brackets and commas first and refuses anything past
+  100,000, which holds the worst case to about 16 MB. The real catalogue
+  counts 26,921 and would fit inside the fetch cap three times over, and
+  parsing and normalising all of it takes 75 ms.
+
+  **Existing instances need `sre-tab seed` once after upgrading** to pick
+  the source up. The seed only adds what is missing, so it leaves every
+  other source as the operator left it.
+
 - **Cards fall back to the feed's own artwork when an item has no image of
   its own**, which for Hacker News, Lobsters and LWN is almost every item.
   Ingest reads the channel image a feed declares — RSS `<image><url>`, Atom

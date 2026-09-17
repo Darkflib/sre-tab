@@ -221,7 +221,9 @@ class FeedFetcher:
         # gets a chance to look. `Accept-Encoding: identity` asks for none,
         # and this refuses one sent anyway -- the ask is a courtesy, this is
         # the enforcement. Measured against the shipped catalogue: all seven
-        # feeds honour identity, at a cost of ~554 KB per full refresh.
+        # feeds honour identity, at a cost of ~554 KB per full refresh. The
+        # CISA KEV catalogue, seeded since, honours it too, and at ~1.7 MB
+        # is three times the other seven put together.
         #
         # This check must stay ahead of the first read. It works because the
         # caller streams: with `client.stream(...)` the headers land before

@@ -10,7 +10,7 @@ and nothing in a failure branch deletes.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -21,13 +21,20 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.models import Source, SourceTopic
 from app.ingest.errors import IngestError
 from app.ingest.fetch import FeedFetcher, FetchResult
+from app.ingest.kev import CISA_KEV_FEED_URL, parse_kev_catalogue
 from app.ingest.normalise import NormalisedItem, normalise_entries, safe_optional_url
-from app.ingest.parse import parse_feed
+from app.ingest.parse import ParsedFeed, parse_feed
 from app.ingest.status import SourceStatus, SourceStatusRegistry
 from app.ingest.store import prune_feed_items, record_discovered_icon, upsert_items
 from app.settings import Settings
 
 log = structlog.get_logger("app.ingest")
+
+#: Parsers chosen by a source's configured URL, never by what the URL
+#: returns. Anything not listed is RSS or Atom.
+ADAPTERS: Mapping[str, Callable[[bytes], ParsedFeed]] = {
+    CISA_KEV_FEED_URL: parse_kev_catalogue,
+}
 
 
 @dataclass(frozen=True)
@@ -100,7 +107,7 @@ class IngestService:
         bound = log.bind(source_id=source.id, source_slug=source.slug)
         try:
             result = self._fetch(source)
-            parsed = parse_feed(result.content)
+            parsed = ADAPTERS.get(source.feed_url, parse_feed)(result.content)
             items = normalise_entries(
                 parsed.entries,
                 fetched_at=moment,

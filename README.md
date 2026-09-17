@@ -4,9 +4,10 @@
 [![Docs](https://github.com/Darkflib/sre-tab/actions/workflows/docs.yml/badge.svg)](https://github.com/Darkflib/sre-tab/actions/workflows/docs.yml)
 
 One private place for developer news. **sre-tab** is a small self-hosted
-service that pulls a curated set of RSS and Atom feeds into a single
-filtered stream, and keeps your topic selections, your bookmarks, and
-what you have already read on a server you run.
+service that pulls a curated set of RSS and Atom feeds, and CISA's Known
+Exploited Vulnerabilities catalogue, into a single filtered stream, and
+keeps your topic selections, your bookmarks, and what you have already read
+on a server you run.
 
 | Light | Dark |
 | --- | --- |
@@ -149,7 +150,11 @@ enabled source is failing so a monitoring job can call it and mean it.
   `HttpOnly`, `Secure`, `SameSite=Lax` cookie; only a hash of the token is
   stored. Mutating routes require a signed double-submit CSRF token bound to
   the session it was issued for.
-- **Ingest** — RSS and Atom only. Every fetch runs an SSRF guard first:
+- **Ingest** — RSS and Atom, plus one adapter for the CISA Known Exploited
+  Vulnerabilities catalogue, which is JSON and becomes one item per CVE. The
+  adapter is chosen by the source's configured URL, never by what a response
+  looks like, and its parse is bounded as the XML one is. Every fetch runs
+  an SSRF guard first:
   https only, DNS resolved and private, link-local, and reserved ranges
   refused, every redirect hop re-checked, short timeouts, a response-size cap
   counted in wire bytes, and summaries sanitised to text rather than rendered

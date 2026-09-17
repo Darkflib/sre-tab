@@ -5,6 +5,7 @@ Public surface, in the order a refresh uses it:
 ``urlguard``   validate a target before any socket is opened
 ``fetch``      stream a bounded body, re-validating every redirect hop
 ``parse``      defused XML, RSS and Atom only
+``kev``        the CISA KEV catalogue, the one source that is neither
 ``normalise``  plain-text summaries, UTC timestamps, canonical URLs
 ``store``      idempotent upsert on ``feed_items.canonical_url``
 ``status``     per-source outcome for the operator surface
