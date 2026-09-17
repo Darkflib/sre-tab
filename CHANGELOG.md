@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A release tag must match the version the manifests carry.** The
+  release resolver now refuses a tag unless `pyproject.toml` and
+  `frontend/package.json` both carry its version. Otherwise `v1.2.0`
+  pushed without a bump would have published an image whose API and page
+  footer both said 1.1.0. Pre-releases are compared as PEP 440 versions,
+  so `v1.2.0-rc.1` matches `1.2.0rc1` in Python and `1.2.0-rc.1` for npm.
+  A semver pre-release that PEP 440 cannot spell, such as `-x.7`, is now
+  refused, because no build of it could report its own version. The
+  check runs before anything is written or pushed, and treats a missing or
+  unreadable manifest as a refusal.
+
 - **The footer says which build is running**: `sre-tab 1.1.0 · b734388`,
   with the short commit linked to its page in the repository. CI passes
   the commit and repository URL to the image build as `SRE_TAB_COMMIT` and

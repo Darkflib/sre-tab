@@ -62,6 +62,28 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Before setup-python on purpose. `publish` runs release-metadata.py
+      # with the runner image's own python3, which nothing else in this
+      # workflow exercises and which setup-python is about to shadow. The
+      # resolver needs 3.11 for tomllib, and a tag build is the wrong place
+      # to find out the image's interpreter is older. The run is a real
+      # one: this checkout's manifests, against a tag of their own version.
+      #
+      # The tag is built from package.json, not pyproject.toml. A tag is
+      # semver, and so is npm's version, but PEP 440 writes a pre-release as
+      # `1.2.0rc1`, and `v1.2.0rc1` is not a tag the resolver accepts. The
+      # resolver still reads pyproject.toml, and so still imports tomllib,
+      # which is what this step exists to try.
+      - name: The runner's python3 can run the release resolver
+        run: |
+          set -euo pipefail
+          python3 --version
+          version=$(python3 -c 'import json; print(json.load(open("frontend/package.json"))["version"])')
+          printf '# Changelog\n\n## [%s]\n\n- Resolver check.\n' "$version" > "$RUNNER_TEMP/CHANGELOG.md"
+          python3 .github/scripts/release-metadata.py \
+            --tag "v$version" --changelog "$RUNNER_TEMP/CHANGELOG.md"
+
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version-file: .python-version
@@ -652,9 +674,10 @@ jobs:
       - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
 
       # First, before anything is downloaded, loaded, or pushed. A tag can be
-      # wrong in exactly two ways and both are knowable from the repository
-      # alone: its shape, and whether CHANGELOG.md describes the version it
-      # names. Asking here costs a second and fails a job that has published
+      # wrong in exactly three ways and all are knowable from the repository
+      # alone: its shape, whether pyproject.toml and frontend/package.json
+      # carry the version it names, and whether CHANGELOG.md describes it.
+      # Asking here costs a second and fails a job that has published
       # nothing; asking at the release step at the bottom would fail a job
       # that had already pushed a signed, attested, publicly pullable image
       # with no Release to explain it — and a registry tag, unlike a draft,
@@ -668,6 +691,8 @@ jobs:
       # python3 is the runner image's, not setup-python's — this job has no
       # interpreter step and the script imports nothing outside the standard
       # library, so adding one would buy a version pin nothing here needs.
+      # It does need 3.11, for tomllib, which the first step of the `python`
+      # job checks on every push against this same runner image.
       - name: Resolve the release version
         id: release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -676,6 +701,8 @@ jobs:
           git tag --list > "$RUNNER_TEMP/git-tags.txt"
           python3 .github/scripts/release-metadata.py \
             --tag "$GITHUB_REF_NAME" \
+            --pyproject pyproject.toml \
+            --package-json frontend/package.json \
             --git-tags-file "$RUNNER_TEMP/git-tags.txt" \
             --notes-out "$RUNNER_TEMP/release-notes.md"
 

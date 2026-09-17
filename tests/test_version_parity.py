@@ -10,7 +10,9 @@ every other check still green.
 Compared as PEP 440 versions rather than as strings, so a pre-release spelt
 ``1.2.0rc1`` in Python and ``1.2.0-rc.1`` for npm counts as one version.
 This runs on every push, including the push of a release tag, whose publish
-job waits on this suite.
+job waits on this suite. That job's release resolver then compares
+``pyproject.toml`` and ``package.json`` with the tag itself, which covers
+the release where all four were left at the previous version.
 """
 
 from __future__ import annotations
