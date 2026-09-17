@@ -1335,10 +1335,11 @@ difference between the two.
   RSS-only rule was protecting: what a body looks like never decides how it
   is parsed.
 
-  **Deployed on 17 September 2026.** The merge (#39) was promoted to the
-  reference host as `sha-b734388`, and `sre-tab seed` added `cisa-kev`,
-  since a seeded source reaches an existing instance only when the seed is
-  run again. Its first scheduled refresh, at 14:05 UTC, reported `ok`. That
+  **Deployed on 17 September 2026.** The merge (#39, `b734388`) was
+  promoted to the reference host as `sha-b734388` by `7ef7b95`, the commit a
+  rollback would revert. `sre-tab seed` then added `cisa-kev`, since a
+  seeded source reaches an existing instance only when the seed is run
+  again. Its first scheduled refresh, at 14:05 UTC, reported `ok`. That
   promotion was the first since 3 September, so it also shipped search,
   muted terms, and channel artwork, with their three migrations.
 
