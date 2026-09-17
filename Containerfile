@@ -12,8 +12,14 @@
 # (see .github/renovate.json5).
 #
 # Build:
-#   docker build --tag sre-tab:dev .
+#   docker build --file Containerfile --tag sre-tab:dev .
 #   podman build --format docker --tag sre-tab:dev .
+#
+# CI also passes the commit and the repository it came from, which the page
+# footer and the image's OCI labels report. A build without them is still a
+# working image, and its footer says "development build":
+#   --build-arg SRE_TAB_COMMIT="$(git rev-parse HEAD)"
+#   --build-arg SRE_TAB_SOURCE_URL=https://github.com/Darkflib/sre-tab
 #
 # `--format docker` matters for Podman: HEALTHCHECK is a Docker-schema field
 # with no OCI equivalent, so an OCI-format build silently drops it. The
@@ -44,7 +50,16 @@ COPY frontend/ ./
 
 # src/api/schema.d.ts is committed generated output, so a plain build needs
 # no codegen step and no network access.
-RUN npm run build
+#
+# The build arguments are declared here, after `npm ci` and the source copy,
+# because a new value misses the cache for every instruction after its
+# declaration. Every commit has a new value, so only the build step pays.
+# Vite writes them into the bundle for the footer (src/lib/build.ts).
+ARG SRE_TAB_COMMIT=""
+ARG SRE_TAB_SOURCE_URL=""
+RUN VITE_SRE_TAB_COMMIT="$SRE_TAB_COMMIT" \
+    VITE_SRE_TAB_SOURCE_URL="$SRE_TAB_SOURCE_URL" \
+    npm run build
 
 # --- uv -------------------------------------------------------------------
 # Binary donor only; nothing from this stage reaches the runtime image.
@@ -146,6 +161,14 @@ RUN find / -xdev -perm /6000 -type f -exec chmod a-s '{}' + \
            echo "$remaining" >&2; \
            exit 1; \
        fi
+
+# The same two values as the footer, for `podman image inspect`. After the
+# strip, so a new commit never re-runs it. A build argument is scoped to its
+# stage, hence the second declaration.
+ARG SRE_TAB_COMMIT=""
+ARG SRE_TAB_SOURCE_URL=""
+LABEL org.opencontainers.image.revision="$SRE_TAB_COMMIT" \
+      org.opencontainers.image.source="$SRE_TAB_SOURCE_URL"
 
 USER 10001:10001
 

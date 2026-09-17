@@ -103,6 +103,15 @@
   margin: 0;
 }
 
+.build-stamp {
+  margin-top: 0.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.build-stamp a {
+  color: inherit;
+}
+
 /* --- Landing and standalone screens --------------------------------- */
 
 .landing,

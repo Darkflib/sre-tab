@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from 'react-router-dom';
 
 import { useSession } from '../session/useSession';
+import { BuildStamp } from './BuildStamp';
 
 const NAV = [
   { to: '/feed', label: 'Feed' },
@@ -63,6 +64,7 @@ export function AppShell() {
 
       <footer className="shell__footer">
         <p>Self-hosted. No analytics, no third-party requests beyond article images.</p>
+        <BuildStamp />
       </footer>
     </div>
   );

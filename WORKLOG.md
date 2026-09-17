@@ -3,6 +3,57 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+<a id="build-version"></a>
+## 2026-09-17 — The build's own commit, in the footer
+
+Asked for straight after the KEV deploy. Until now, the build in service
+could be read only on the host, from the units' `Image=` line or from
+`podman inspect`.
+
+**Baked in at build time, not served by the API.** Two routes were
+available. The backend could read the commit from its environment and
+report it on `/api/v1/healthz` or `/me`, which would mean a new setting, a
+schema change, a regenerated `openapi.json` and `schema.d.ts`, and a
+request on page load. Or the image build could hand it to Vite, which
+writes it into the bundle as a literal. The assets and the application
+ship in one image, and CI refuses a promotion that leaves the units on
+different digests, so the bundle's commit is the server's commit. The
+second route needed no contract change. `/healthz` reporting its commit
+would still be useful to a script checking an upgrade, but nobody has
+asked for that, so it is not in this change.
+
+**Two stages, two declarations, one assertion each.** A build argument is
+scoped to its stage, so the frontend stage and the runtime stage each
+declare `SRE_TAB_COMMIT`, one for the bundle and one for the OCI labels.
+That makes the obvious CI check, the label, insufficient: with the frontend
+declaration removed, a local Docker build still carried the right revision
+label while the bundle had no commit in it and every page said "development
+build". The step in `ci.yml` therefore greps the built assets for the SHA as
+well as reading both labels. The labels are read as `.Labels` with
+`.Config.Labels` as the fallback; Docker populated only the latter, and a
+missing key compares as null and fails. Against an image built without the
+arguments the label comparison exited 1, as it should.
+
+**Declared late on purpose.** A changed argument value misses the cache for
+every instruction after the declaration, and the value changes on every
+commit. In the frontend stage the declaration comes after `npm ci` and the
+source copy, and in the runtime stage after the setuid strip, so only the
+Vite build and a metadata-only `LABEL` are rebuilt.
+
+**The values are checked even though our own build supplies them.** The
+commit must be exactly 40 lower-case hex characters after trimming. The
+source must parse as an `https` URL with no credentials, query, or
+fragment before it becomes an `href`. Anything else keeps the text and
+drops the link, or drops the commit altogether. The link carries
+`noopener noreferrer`, because following it should not tell the code host
+which instance the reader came from.
+
+`package.json`'s version reaches the bundle through `define` rather than a
+JSON import, which would have shipped the whole manifest. The Containerfile
+header's `docker build --tag sre-tab:dev .` failed on Docker Desktop here,
+which does not look for a `Containerfile`, so it now passes `--file`, as
+CONTRIBUTING.md already did.
+
 <a id="cisa-kev"></a>
 ## 2026-09-17 — CISA's Known Exploited Vulnerabilities, one card per CVE
 

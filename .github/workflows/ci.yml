@@ -359,7 +359,10 @@ jobs:
         id: build
         run: |
           set -euo pipefail
-          podman build --format docker --tag sre-tab:ci .
+          podman build --format docker \
+            --build-arg SRE_TAB_COMMIT="$GITHUB_SHA" \
+            --build-arg SRE_TAB_SOURCE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --tag sre-tab:ci .
           image_id=$(podman image inspect sre-tab:ci --format '{{.Id}}')
           echo "image-id=$image_id" >> "$GITHUB_OUTPUT"
           echo "built $image_id"
@@ -380,6 +383,26 @@ jobs:
             /tmp/image.json > /dev/null
           jq -e '.Config.User == "10001:10001"' /tmp/image.json > /dev/null
           test "$(podman run --rm sre-tab:ci id -u)" = "10001"
+
+      # The page footer and the OCI labels both claim to name this commit, and
+      # each is checked in the built image. They are fed by separate `ARG`
+      # declarations in separate stages, so a correct label proves nothing
+      # about the footer: drop the frontend stage's declaration and the label
+      # still passes while every page says "development build". Labels are
+      # read with Docker's spelling as a fallback, as above; absent from both,
+      # the comparison is against null and fails.
+      - name: Image names the commit it was built from
+        run: |
+          set -euo pipefail
+          podman image inspect sre-tab:ci --format '{{json .}}' > /tmp/image.json
+          jq -e --arg want "$GITHUB_SHA" \
+            '(.Labels // .Config.Labels)["org.opencontainers.image.revision"] == $want' \
+            /tmp/image.json > /dev/null
+          jq -e --arg want "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            '(.Labels // .Config.Labels)["org.opencontainers.image.source"] == $want' \
+            /tmp/image.json > /dev/null
+          podman run --rm sre-tab:ci \
+            grep -rqF --include='*.js' "$GITHUB_SHA" /opt/sre-tab/web/assets
 
       # sre-tab.container cannot set NoNewPrivileges=true — podman's AppArmor
       # profile denies signal delivery under no_new_privs on Debian 13, and
