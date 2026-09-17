@@ -94,7 +94,10 @@ assumption does not hold.
 So a report can skip ground that is covered, and so a gap in any of it is
 recognisable as a finding:
 
-- **Ingest** is RSS and Atom only, behind an SSRF guard: https on every hop
+- **Ingest** is RSS and Atom, plus a JSON adapter for the CISA KEV
+  catalogue that only that source's configured URL can reach and whose
+  parse is capped by node count before `json.loads` runs. All of it sits
+  behind an SSRF guard: https on every hop
   including redirects, DNS resolved with private, link-local, and reserved
   ranges refused, a response-size cap counted in wire bytes, short timeouts,
   and summaries sanitised to text rather than rendered as feed HTML.

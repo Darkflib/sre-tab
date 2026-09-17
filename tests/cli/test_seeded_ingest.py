@@ -208,7 +208,7 @@ def test_every_seeded_source_reaches_ingest_with_topics(
 ) -> None:
     """No seeded source may ingest untopiced items."""
     refs = ingest.enabled_sources()
-    assert len(refs) == 7
+    assert len(refs) == 8
     assert all(ref.topic_ids for ref in refs)
 
 

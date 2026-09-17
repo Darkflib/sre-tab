@@ -50,8 +50,8 @@ def test_seed_installs_the_catalogue_and_the_taxonomy(db_session: Session) -> No
 
     assert report.changed is True
     assert len(db_session.scalars(select(Topic)).all()) == 11
-    assert len(db_session.scalars(select(Source)).all()) == 7
-    assert len(db_session.scalars(select(SourceTopic)).all()) == 11
+    assert len(db_session.scalars(select(Source)).all()) == 8
+    assert len(db_session.scalars(select(SourceTopic)).all()) == 12
 
 
 def test_seeding_twice_changes_nothing(seeded: Session) -> None:
@@ -59,8 +59,8 @@ def test_seeding_twice_changes_nothing(seeded: Session) -> None:
     seeded.commit()
 
     assert report.changed is False
-    assert len(seeded.scalars(select(Source)).all()) == 7
-    assert len(seeded.scalars(select(SourceTopic)).all()) == 11
+    assert len(seeded.scalars(select(Source)).all()) == 8
+    assert len(seeded.scalars(select(SourceTopic)).all()) == 12
 
 
 def test_reseeding_does_not_undo_an_operator_decision(seeded: Session) -> None:
@@ -330,7 +330,7 @@ def test_add_topic_extends_the_taxonomy(seeded: Session) -> None:
 def test_status_lists_every_source_including_never_fetched(seeded: Session) -> None:
     views = ops.refresh_status(seeded)
     assert [view.slug for view in views] == sorted(view.slug for view in views)
-    assert len(views) == 7
+    assert len(views) == 8
     assert all(view.state == "never fetched" for view in views)
 
 
@@ -365,7 +365,7 @@ def test_status_reports_a_disabled_source_as_disabled(seeded: Session) -> None:
 
 def test_status_survives_a_source_with_no_status_row(seeded: Session) -> None:
     assert seeded.scalars(select(SourceStatus)).all() == []
-    assert len(ops.refresh_status(seeded)) == 7
+    assert len(ops.refresh_status(seeded)) == 8
 
 
 # --- the argparse front end ---------------------------------------------

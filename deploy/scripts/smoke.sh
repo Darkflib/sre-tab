@@ -540,7 +540,7 @@ step "Seeding the catalogue with the operator CLI"
 "$ENGINE" exec sre-tab-app sre-tab status
 
 seeded=$(psql_db --command "SELECT count(*) FROM sources" | tr -d ' ')
-[ "$seeded" -eq 7 ] || fail "expected 7 seeded sources, found $seeded"
+[ "$seeded" -eq 8 ] || fail "expected 8 seeded sources, found $seeded"
 topics=$(psql_db --command "SELECT count(*) FROM topics" | tr -d ' ')
 [ "$topics" -eq 11 ] || fail "expected 11 seeded topics, found $topics"
 # Every seeded source must carry default topics, or its items would be
@@ -561,8 +561,8 @@ defaults=$(psql_db --command \
 # anything or undo a local change.
 "$ENGINE" exec sre-tab-app sre-tab seed
 reseeded=$(psql_db --command "SELECT count(*) FROM sources" | tr -d ' ')
-[ "$reseeded" -eq 7 ] || fail "re-seeding changed the source count to $reseeded"
-echo "  7 sources, 11 topics, all topiced, seed is idempotent"
+[ "$reseeded" -eq 8 ] || fail "re-seeding changed the source count to $reseeded"
+echo "  8 sources, 11 topics, all topiced, seed is idempotent"
 
 step "Session sweep, as the application role"
 # deploy/quadlet/sre-tab-prune-sessions.container, run the way it runs: the

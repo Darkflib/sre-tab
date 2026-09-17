@@ -3,6 +3,87 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+<a id="cisa-kev"></a>
+## 2026-09-17 — CISA's Known Exploited Vulnerabilities, one card per CVE
+
+The request arrived with a suggested implementation attached: a standalone
+FastAPI app that fetched the catalogue with `httpx`, cached it with
+`async-lru`, and filtered it behind its own `/api/kev` endpoint. None of
+that fitted. This service already has a fetcher, and the fetcher is most of
+the security model: pinned addresses, redirects driven by hand, a wire-byte
+cap, a whole-fetch deadline. A second HTTP client beside it would have gone
+round all of it. The two new dependencies would have been a supply-chain
+decision taken for a cache the scheduler already makes unnecessary. What
+the request actually wanted was new KEV entries in the incoming feed, and
+that is a source.
+
+**Before a source, a check that an RSS source would not do.** CISA's
+`alerts.xml` does announce each batch, as "CISA Adds Two Known Exploited
+Vulnerabilities to Catalog", and seeding that would have needed no code at
+all. It was rejected on what it shows: a title with a count in it, and the
+CVEs one click away. The point is to see *which* vendor's flaw is being
+exploited, so the JSON catalogue it is.
+
+**Then the rule it breaks.** The plan defers every non-RSS source to v2
+and says the fetcher "does not grow special cases". What that rule protects
+is that no upstream decides how its own body is parsed, so that is the part
+kept. `parse_feed` is untouched and still refuses JSON. The KEV parser is a
+separate module, and `IngestService` looks the parser up in a dict keyed by
+the source's configured `feed_url`, falling back to `parse_feed`. Two tests
+pin the direction: a catalogue-shaped body from an ordinary source fails as
+RSS, and an RSS body from the KEV source fails as JSON rather than falling
+back. A `sources.format` column was the alternative and would be the right
+answer for Hashnode, where one format is served from many addresses. For one
+document at one address it would have been a migration to store a fact
+the URL already states. The roadmap now says the second adapter is where
+the column arrives.
+
+**`json.loads` is a DOM parser, and the fetch cap does not bound it.** It
+has no entities to defuse, which made it tempting to call it safe. Measured
+under 3.14.7 at the 5 MiB cap: `[{},{},…]` peaked at 132 MB, `[[],…]` at
+118 MB, a single object with half a million keys at 62 MB, and five million
+open brackets raised a clean `RecursionError` in 7 ms. The real catalogue
+peaked at 4.6 MB. Every array element and object member follows `{`, `[`
+or `,`, so counting those three bytes before the parse bounds what the
+parse can allocate. Strings are counted too, which only ever refuses
+more. At a ceiling of 100,000 the worst shapes tried peaked at 16 MB. The
+real document counts 26,921 at 1.73 MB, about 82,000 when scaled to the
+default byte cap, so a growing catalogue hits the byte cap before this
+gate.
+
+**Three details of the entry mapping that were not obvious.**
+
+- *The link is CISA's catalogue page filtered to the CVE, not NVD.*
+  `canonical_url` is the instance-wide dedup key and insert-or-ignore keeps
+  whichever row arrived first, so an NVD link would lose to, or beat,
+  any other source that linked the same CVE. The filtered page was checked
+  by hand: 200, and the CVE appears 298 times on it.
+- *Release time for entries added on release day.* `dateAdded` is a bare
+  date. At midnight, an entry CISA published at 18:47 UTC would sort below
+  everything the other sources published that day, which is where nobody
+  looks for something new. Comparing on the UTC date misses a release late
+  in the US evening, and that costs position, not correctness.
+- *Sort before capping.* `MAX_ENTRIES` is 500 and the catalogue is 1,713.
+  It is newest-first today; if CISA reversed that, trusting the order would
+  keep only the entries retention is about to discard.
+
+`requiredAction` is not in the summary. It is now mostly the same BOD 26-04
+boilerplate on every entry, up to 520 characters of it, and would push the
+description out of the card.
+
+**Checked by breaking it.** Nine mutations, each against the test meant to
+catch it: the node gate removed, the sort removed, the `RecursionError`
+handler removed, release time ignored, the parser chosen by sniffing the
+body, a fallback to RSS on failure, no routing at all, the CVE pattern
+unchecked, and the ransomware flag ignored. Every one went red. Then once
+for real, against cisa.gov through the production fetcher into a scratch
+SQLite database: 500 entries parsed, 90 inside retention, 90 inserted, then
+0 inserted on the second refresh, and `sre-tab status` reported `ok`.
+
+The seven-source literals in `test_operations.py`, `test_seeded_ingest.py`
+and `smoke.sh` became eight rather than `len(SOURCES)`, because a count
+derived from the catalogue would still pass if the catalogue were empty.
+
 <a id="channel-artwork"></a>
 ## 2026-09-03 — The artwork a feed declares about itself
 

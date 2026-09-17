@@ -22,6 +22,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from app.ingest.kev import CATALOGUE_PAGE_URL, CISA_KEV_FEED_URL
+
 #: Widened past developer news because the catalogue is: BBC and the
 #: Guardian are in it, so the taxonomy needs general-news topics too.
 TOPICS: tuple[tuple[str, str], ...] = (
@@ -105,6 +107,18 @@ SOURCES: tuple[SeedSource, ...] = (
         website_url="https://www.theguardian.com/uk",
         refresh_minutes=30,
         topics=("uk-news",),
+    ),
+    # Not from the plan, and not RSS: the one source with an adapter of
+    # its own (app.ingest.kev). The URL is imported rather than restated
+    # because the refresh path routes on an exact match against it, so a
+    # copy that drifted would send the catalogue to the RSS parser.
+    SeedSource(
+        slug="cisa-kev",
+        name="CISA Known Exploited Vulnerabilities",
+        feed_url=CISA_KEV_FEED_URL,
+        website_url=CATALOGUE_PAGE_URL,
+        refresh_minutes=60,
+        topics=("security",),
     ),
 )
 

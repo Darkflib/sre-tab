@@ -409,7 +409,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add.add_argument("--slug", required=True)
     add.add_argument("--name", required=True)
-    add.add_argument("--feed-url", required=True, help="RSS or Atom URL; https only.")
+    add.add_argument(
+        "--feed-url",
+        required=True,
+        help="RSS or Atom URL, or the CISA KEV catalogue's JSON URL; https only.",
+    )
     add.add_argument("--website-url", required=True)
     add.add_argument("--refresh-minutes", type=int, default=30)
     add.add_argument("--topics", help="Comma-separated topic slugs.")

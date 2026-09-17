@@ -348,7 +348,7 @@ flowchart TB
 
     guard["UrlGuard.validate<br/>see below"]
     fetch["FeedFetcher<br/>pinned address, redirects driven by hand,<br/>size capped on the wire, whole-fetch deadline"]
-    parse["parse_feed<br/>RSS and Atom only"]
+    parse["parse_feed, RSS and Atom<br/>or the KEV adapter, by configured URL"]
     norm["normalise_entries<br/>sanitise to text, drop items past retention"]
     store["upsert_items<br/>insert-or-ignore on canonical_url"]
 
@@ -362,7 +362,7 @@ flowchart TB
     guard --> fetch --> parse --> norm --> store --> ok
     guard -.->|"UnsafeTargetError"| fail
     fetch -.->|"timeout, 5xx, too large, too many hops"| fail
-    parse -.->|"malformed or hostile XML"| fail
+    parse -.->|"malformed, hostile, or oversized document"| fail
     store -.->|"database error"| fail
 ```
 
@@ -376,6 +376,17 @@ oversized body, hostile XML, a database error — is caught, classified,
 recorded against that source alone, and logged. One broken feed cannot stop
 the tick, cannot touch another source's items, and cannot delete anything:
 the write path is insert-or-ignore and no failure branch deletes.
+
+**The parser is chosen by configuration, not by content.** Every source is
+RSS or Atom except the CISA Known Exploited Vulnerabilities catalogue, which
+is JSON and has an adapter of its own in `app/ingest/kev.py`. The refresh
+path picks that adapter only when the source's configured `feed_url` is
+exactly the catalogue's URL. Sniffing the body would let any upstream move
+itself onto a different parser by changing what it serves; keying on
+configuration means a source's parser is whatever the operator chose. A
+JSON parse has no entities to defuse, but it allocates as a DOM parser does,
+so the adapter counts brackets and commas before `json.loads` and refuses a
+document past the ceiling, as `assert_safe_document` does for XML.
 
 **The lock is per source, not global.** The requirement is that two replicas
 never fetch the same source concurrently, not that one replica does all the

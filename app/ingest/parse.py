@@ -9,7 +9,10 @@ is rejected, which costs nothing in practice and removes the whole class.
 
 RSS and Atom only. Anything else — JSON Feed, CDF, a sitemap, an HTML
 page — is a configuration error the operator must fix, not a parser
-special case (PLAN, "Deferred to v2").
+special case (PLAN, "Deferred to v2"). The CISA KEV catalogue is the one
+exception, and it is not made here: :mod:`app.ingest.kev` is a separate
+parser, chosen by a source's configured URL before this module is
+consulted, so nothing in this one had to learn about JSON.
 """
 
 from __future__ import annotations
