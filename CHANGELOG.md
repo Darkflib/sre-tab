@@ -506,6 +506,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The footer stays on screen.** The feed loads more as you near its end,
+  so a footer after the content was one nobody reached. It is now anchored
+  to the bottom of the viewport, as the header is to the top. It is one line
+  at any width: on a phone the note is cut short with an ellipsis, and the
+  build stamp stays whole. Keyboard navigation scrolls a focused card clear
+  of the footer instead of stopping it underneath.
+
 - **`actions/attest-sbom` is deprecated; the SBOM attestation now uses
   `actions/attest`.** The old action still works — it is currently a wrapper
   around the new one, which is why the inputs are unchanged — but a

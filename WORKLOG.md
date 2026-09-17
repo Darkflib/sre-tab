@@ -3,6 +3,41 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+<a id="anchored-footer"></a>
+## 2026-09-17 — A footer that infinite scroll cannot push away
+
+Reported once the build stamp shipped. The feed loads more as the reader
+nears its end, so the footer, the stamp included, only appeared once
+everything had loaded.
+
+**Sticky, not fixed.** The header is already `position: sticky` at the top,
+and the same at the bottom keeps the footer in the flow. On a page that
+ends, it comes to rest below the content rather than over the last card.
+The feed's sentinel observes with a 400px root margin, so a footer over the
+bottom of the list does not change when the next page loads.
+
+**Checked in a browser, on a scratch instance.** Signing in needs a GitHub
+OAuth app, so a SQLite database was seeded with a user, a completed
+profile, and a session created through `create_session`. The session
+cookie was set by hand, and the four default sources were refreshed for
+80 real items. Port 8000 was taken by an unrelated local app and the Vite
+proxy is fixed to it, so the check used a temporary, uncommitted config
+override, on 8010 and 5183. What it found:
+
+- Scrolling loaded all 80 cards. At the true end, the "That is everything"
+  line sat 72px clear of the footer.
+- Stepping with `j`, whose `focus()` scrolls the browser, left 4 of 12
+  cards partly under the footer (up to 18px) until `scroll-padding-bottom`
+  was set. With it set, 30 steps left none.
+- At 375px the footer first wrapped to three lines, 75px, because the
+  privacy note wrapped by itself. It is now one line at every width, 34px:
+  the note truncates with an ellipsis and keeps its full text as a title,
+  and the stamp does not shrink. There was no horizontal overflow.
+
+The `env(safe-area-inset-bottom)` terms are inert for now. `index.html`
+does not set `viewport-fit=cover`, so the browser keeps the page clear of
+a home bar itself. They are there for the day it does.
+
 <a id="release-tag-version"></a>
 ## 2026-09-17 — A release tag has to match the manifests
 

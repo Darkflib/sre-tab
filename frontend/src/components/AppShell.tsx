@@ -3,6 +3,8 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { useSession } from '../session/useSession';
 import { BuildStamp } from './BuildStamp';
 
+const FOOTER_NOTE = 'Self-hosted. No analytics, no third-party requests beyond article images.';
+
 const NAV = [
   { to: '/feed', label: 'Feed' },
   { to: '/bookmarks', label: 'Bookmarks' },
@@ -63,7 +65,9 @@ export function AppShell() {
       </main>
 
       <footer className="shell__footer">
-        <p>Self-hosted. No analytics, no third-party requests beyond article images.</p>
+        <p className="shell__note" title={FOOTER_NOTE}>
+          {FOOTER_NOTE}
+        </p>
         <BuildStamp />
       </footer>
     </div>
