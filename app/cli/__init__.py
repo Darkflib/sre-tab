@@ -231,6 +231,37 @@ def _set_topic_enabled(args: argparse.Namespace, *, enabled: bool) -> int:
     return 0
 
 
+def _cmd_retag(args: argparse.Namespace) -> int:
+    """Bring the retained window into line with the current URL ruleset.
+
+    Ingest derives an item's topics from its URL once, when the item
+    arrives, so a change to ``app.ingest.topicrules`` describes nothing
+    that is already stored. This is the pass that fixes that, and it is
+    the reason ``feed_item_topics.origin`` exists: it deletes and
+    reinserts only the links the ruleset owns.
+
+    ``--dry-run`` reports the same counts and writes nothing, which is
+    the shape a ruleset change wants to be reviewed in before it is
+    applied to ninety days of items.
+    """
+    with _session(args.database_url) as session:
+        report = ops.retag_items(session, dry_run=args.dry_run)
+        if not args.dry_run:
+            session.commit()
+    examined = report.items_examined
+    scanned = f"examined {examined} item{'' if examined == 1 else 's'}"
+    if not report.changed:
+        print(f"{scanned}; every rule link is already correct")
+        return 0
+    added, removed = report.links_added, report.links_removed
+    prefix = "would add" if args.dry_run else "added"
+    suffix = "would remove" if args.dry_run else "removed"
+    print(scanned)
+    print(f"{prefix} {added} topic link{'' if added == 1 else 's'}")
+    print(f"{suffix} {removed} stale topic link{'' if removed == 1 else 's'}")
+    return 0
+
+
 def _cmd_sessions_prune(args: argparse.Namespace) -> int:
     """Sweep dead session rows. What sre-tab-prune-sessions.service runs.
 
@@ -343,6 +374,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     seed = commands.add_parser("seed", help="Install the v1 topic taxonomy and source catalogue.")
     seed.set_defaults(handler=_cmd_seed)
+
+    retag = commands.add_parser(
+        "retag",
+        help="Re-derive item topics from their URLs across the retained window.",
+        description=(
+            "Re-derive the topic links that come from an item's own URL. Only links "
+            "the ruleset owns are touched; topics inherited from a source are left "
+            "exactly as they are. Run it after changing app/ingest/topicrules.py."
+        ),
+    )
+    retag.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would change without writing anything.",
+    )
+    retag.set_defaults(handler=_cmd_retag)
 
     status = commands.add_parser(
         "status",

@@ -120,6 +120,14 @@ Feeds refresh on a timer once the application is running. `uv run sre-tab
 status` reports what each source last did, and exits non-zero when an
 enabled source is failing so a monitoring job can call it and mean it.
 
+An item's topics come from its source and, where the publisher puts a
+section in the link, from the URL itself — so a cricket video arriving
+through a news feed is tagged `sport` and can be muted as one. The rules
+live in [app/ingest/topicrules.py](app/ingest/topicrules.py) and apply as
+items arrive; after changing them, `uv run sre-tab retag` brings the
+already-stored window into line, and `--dry-run` says what it would do
+first.
+
 ## Architecture
 
 ```
