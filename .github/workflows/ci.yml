@@ -69,11 +69,17 @@ jobs:
       # resolver needs 3.11 for tomllib, and a tag build is the wrong place
       # to find out the image's interpreter is older. The run is a real
       # one: this checkout's manifests, against a tag of their own version.
+      #
+      # The tag is built from package.json, not pyproject.toml. A tag is
+      # semver, and so is npm's version, but PEP 440 writes a pre-release as
+      # `1.2.0rc1`, and `v1.2.0rc1` is not a tag the resolver accepts. The
+      # resolver still reads pyproject.toml, and so still imports tomllib,
+      # which is what this step exists to try.
       - name: The runner's python3 can run the release resolver
         run: |
           set -euo pipefail
           python3 --version
-          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          version=$(python3 -c 'import json; print(json.load(open("frontend/package.json"))["version"])')
           printf '# Changelog\n\n## [%s]\n\n- Resolver check.\n' "$version" > "$RUNNER_TEMP/CHANGELOG.md"
           python3 .github/scripts/release-metadata.py \
             --tag "v$version" --changelog "$RUNNER_TEMP/CHANGELOG.md"

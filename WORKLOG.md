@@ -52,6 +52,18 @@ with the image's `python3`. Run locally with a current interpreter it
 passed. Pointed at macOS's system Python 3.9.6, it failed with
 `No module named 'tomllib'`, which is the failure it exists to raise.
 
+That step first built its tag from `pyproject.toml`, and review caught
+the problem. PEP 440 writes a release candidate as `1.2.0rc1`, which
+made the tag `v1.2.0rc1`, and the resolver refuses that shape. So an
+ordinary pre-release bump would have failed the `python` job before its
+tests ran. The step now takes the version from `package.json`, which npm
+keeps in semver, and the resolver still reads `pyproject.toml` and imports
+`tomllib`. The step was run against scratch checkouts at 1.1.0, at
+1.2.0rc1 with 1.2.0-rc.1, and at 1.2.0b2 with 1.2.0-beta.2. The last two
+failed with the old line and all three pass with the new one. Pointed at
+Python 3.9.6, it still fails on the import. The first CI run of the step
+reported the runner image's interpreter as Python 3.12.3.
+
 **Checked by breaking it.** Seven mutations, each caught:
 
 - the check never called;
