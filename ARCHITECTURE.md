@@ -331,6 +331,18 @@ insert-or-ignore.** Re-fetching a feed cannot duplicate an item and cannot
 overwrite one; topic links are re-asserted for the whole batch, so a source
 that gains a topic picks it up without any item row being rewritten.
 
+**`feed_item_topics` has two writers, and `origin` says which one.** A link
+is either the source's — every item of that feed inherits it — or a rule's,
+derived from the item's own URL by `app/ingest/topicrules.py`, which is how
+a cricket video from a news feed comes to carry `sport`. The discriminator
+is not bookkeeping: nothing here ever removed a topic link, which was
+survivable while a source's configured topics were the only input and is
+not once a ruleset an operator iterates on is a second one. `sre-tab retag`
+deletes and reinserts exactly the rows marked `rule` and cannot touch the
+operator's, so a corrected rule has a way back. Where both writers name the
+same pair the source's row wins, on conflict and on purpose — otherwise a
+later re-tag would carry an operator's assertion off with the rule's.
+
 **Every relationship declares `lazy="raise"`.** An implicit lazy load in a
 request path is not a slow query here, it is an exception — which is how a
 sync-only slip is caught in the test suite rather than discovered during a

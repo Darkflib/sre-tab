@@ -174,8 +174,9 @@ function TagList({
     <fieldset className="settings__field">
       <legend>Topics</legend>
       <p className="settings__hint">
-        Topics come from the source rather than from the article, so muting one hides everything
-        that source publishes under it. Muting words is usually the narrower tool.
+        Topics come from the source, and a publisher&rsquo;s section in the article&rsquo;s link
+        can add more — so muting <em>sport</em> hides the football, and muting a topic a source
+        carries hides everything it publishes.
       </p>
       {full ? (
         <p className="settings__hint" id="mute-tag-problem" role="status">

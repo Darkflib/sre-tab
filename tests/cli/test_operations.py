@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from alembic import command
 from app.cli import main
 from app.cli import operations as ops
-from app.cli.catalogue import InvalidMediumTag
+from app.cli.catalogue import TOPICS, InvalidMediumTag
 from app.db.engine import create_db_engine
 from app.db.models import Source, SourceStatus, SourceTopic, Topic
 from app.db.session import build_session_factory
@@ -49,7 +49,7 @@ def test_seed_installs_the_catalogue_and_the_taxonomy(db_session: Session) -> No
     db_session.commit()
 
     assert report.changed is True
-    assert len(db_session.scalars(select(Topic)).all()) == 11
+    assert len(db_session.scalars(select(Topic)).all()) == len(TOPICS)
     assert len(db_session.scalars(select(Source)).all()) == 8
     assert len(db_session.scalars(select(SourceTopic)).all()) == 12
 

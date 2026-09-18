@@ -316,6 +316,16 @@ class UserMutedTerm(Base):
     term: Mapped[str] = mapped_column(String(MAX_MUTED_TERM_LENGTH), primary_key=True)
 
 
+class TopicOrigin(enum.StrEnum):
+    """Why a feed item carries a topic."""
+
+    #: Inherited from the item's source, which is where every topic link
+    #: came from before rules existed.
+    SOURCE = "source"
+    #: Derived from the item's own URL by ``app.ingest.topicrules``.
+    RULE = "rule"
+
+
 class UserPreferenceTopic(Base):
     __tablename__ = "user_preference_topics"
 
@@ -457,6 +467,30 @@ class FeedItem(Base):
 
 
 class FeedItemTopic(Base):
+    """A topic link, and the record of who asserted it.
+
+    ``origin`` is not decoration. Nothing in the store ever *removed* a
+    topic link — ``upsert_items`` is insert-or-ignore throughout — which
+    was survivable while every link came from the source and a source's
+    topics changed about never. A ruleset derived from item URLs is the
+    opposite: it is a thing an operator corrects, and a correction that
+    cannot take back what the previous version asserted is a one-way door.
+
+    So the discriminator is what makes the ruleset safe to iterate on. A
+    re-tag pass deletes and reinserts exactly the rows it owns
+    (``origin='rule'``) and cannot touch the operator's, which stay the
+    authority on what a source is about.
+
+    It stays outside the primary key deliberately. ``(feed_item_id,
+    topic_id)`` is the identity of the link and must remain unique — an
+    item carrying ``sport`` twice, once from each origin, would double it
+    in the API response and in every topic count. Where both would assert
+    the same pair, the source's row is written first and the rule's
+    ``ON CONFLICT DO NOTHING`` leaves it alone, which is the correct
+    precedence: the operator said so explicitly, the rule only inferred
+    it, and a later re-tag must not delete a link the operator owns.
+    """
+
     __tablename__ = "feed_item_topics"
 
     feed_item_id: Mapped[int] = mapped_column(
@@ -464,6 +498,23 @@ class FeedItemTopic(Base):
     )
     topic_id: Mapped[int] = mapped_column(
         ForeignKey("topics.id", ondelete="CASCADE"), primary_key=True
+    )
+    origin: Mapped[TopicOrigin] = mapped_column(
+        Enum(
+            TopicOrigin,
+            name="topic_origin",
+            native_enum=False,
+            length=16,
+            values_callable=_values,
+            # Set here for the reason `ApiTokenScope` records: without it
+            # this renders as a bare VARCHAR and a hand-written UPDATE
+            # could store a value that fails to materialise with
+            # `LookupError` on the next feed request.
+            create_constraint=True,
+        ),
+        default=TopicOrigin.SOURCE,
+        server_default=TopicOrigin.SOURCE.value,
+        nullable=False,
     )
 
 

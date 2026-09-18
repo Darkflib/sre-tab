@@ -8,6 +8,44 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Topics now describe the article, not only its publisher.** Until now
+  every topic link came from the item's source, re-asserted onto each item
+  of every batch — so a cricket video that arrived through the BBC's news
+  feed carried `uk-news` and `world-news` and nothing else, and muting a
+  tag meant muting an entire publication. `app/ingest/topicrules.py` reads
+  the section out of an item's own URL and adds the topics it maps to,
+  beside the source's rather than instead of them.
+
+  Keyed by host, so it also applies through an aggregator: a Lobsters or
+  Hacker News item pointing at `arstechnica.com/security/...` gets
+  `security`, which nothing keyed by source could express. Literal path
+  segments looked up in a dict, never patterns — a regex over a
+  feed-supplied path would put a backtracking engine in the ingest loop.
+
+  Coverage is deliberately partial. The BBC serves most of its journalism
+  from `/news/articles/<opaque>`, which names no section; those items
+  genuinely are UK and world news and were already tagged correctly. What
+  the rules catch is what the publisher itself classified — on a measured
+  fetch, the four `/sport/` items out of the BBC's thirty-two, and the 128
+  of the Guardian's 137 that were not under `/uk-news/` at all.
+
+  The taxonomy gains `sport`, `culture`, `lifestyle`, `business`,
+  `politics`, `society`, `environment`, and `opinion`, because a section
+  the catalogue has no slug for is a section the rules must discard. Run
+  `sre-tab seed` to install them; it adds only what is missing.
+
+- **`feed_item_topics.origin` records which writer asserted a link**, and
+  `sre-tab retag` re-derives the ones the ruleset owns across the whole
+  retained window. Nothing in the store had ever *removed* a topic link,
+  which was survivable while a source's topic list was the only input and
+  is not once there is a ruleset to correct. The re-tag deletes and
+  reinserts only `origin='rule'` rows; a link the operator asserted is
+  never touched, and where both name the same pair the source's wins.
+
+  `--dry-run` reports the same counts and writes nothing. Existing rows
+  are backfilled as `source`, which is not a guess — every one of them was
+  written from a source's topic list.
+
 - **A release tag must match the version the manifests carry.** The
   release resolver now refuses a tag unless `pyproject.toml` and
   `frontend/package.json` both carry its version. Otherwise `v1.2.0`

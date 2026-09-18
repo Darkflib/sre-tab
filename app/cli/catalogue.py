@@ -26,6 +26,19 @@ from app.ingest.kev import CATALOGUE_PAGE_URL, CISA_KEV_FEED_URL
 
 #: Widened past developer news because the catalogue is: BBC and the
 #: Guardian are in it, so the taxonomy needs general-news topics too.
+#:
+#: The second group exists because ``app.ingest.topicrules`` can now read
+#: a publisher's own section out of an item's URL, and a section it cannot
+#: map onto a slug here is a section it has to discard. They are not
+#: speculative: each one was chosen against a measured fetch of the two
+#: general-news sources, where 128 of the Guardian's 137 items sat under a
+#: section the first group had no word for and therefore carried
+#: ``uk-news`` alone.
+#:
+#: Adding to this tuple is cheap and removing from it is not — a slug that
+#: has been selected by a user or muted by one has rows pointing at it —
+#: so the bar for a new entry is a section that actually appears, not a
+#: section that could.
 TOPICS: tuple[tuple[str, str], ...] = (
     ("webdev", "Web development"),
     ("python", "Python"),
@@ -38,6 +51,14 @@ TOPICS: tuple[tuple[str, str], ...] = (
     ("science", "Science"),
     ("uk-news", "UK news"),
     ("world-news", "World news"),
+    ("sport", "Sport"),
+    ("culture", "Culture"),
+    ("lifestyle", "Life and style"),
+    ("business", "Business and money"),
+    ("politics", "Politics"),
+    ("society", "Society"),
+    ("environment", "Environment"),
+    ("opinion", "Opinion"),
 )
 
 

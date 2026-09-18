@@ -542,7 +542,7 @@ step "Seeding the catalogue with the operator CLI"
 seeded=$(psql_db --command "SELECT count(*) FROM sources" | tr -d ' ')
 [ "$seeded" -eq 8 ] || fail "expected 8 seeded sources, found $seeded"
 topics=$(psql_db --command "SELECT count(*) FROM topics" | tr -d ' ')
-[ "$topics" -eq 11 ] || fail "expected 11 seeded topics, found $topics"
+[ "$topics" -eq 19 ] || fail "expected 19 seeded topics, found $topics"
 # Every seeded source must carry default topics, or its items would be
 # invisible under an explicit ?topics= filter.
 untopiced=$(psql_db --command \
@@ -562,7 +562,17 @@ defaults=$(psql_db --command \
 "$ENGINE" exec sre-tab-app sre-tab seed
 reseeded=$(psql_db --command "SELECT count(*) FROM sources" | tr -d ' ')
 [ "$reseeded" -eq 8 ] || fail "re-seeding changed the source count to $reseeded"
-echo "  8 sources, 11 topics, all topiced, seed is idempotent"
+echo "  8 sources, 19 topics, all topiced, seed is idempotent"
+
+# The re-tag pass, in the built image against the real engine. With
+# refresh disabled there are no items, so this proves the command, the
+# `feed_item_topics.origin` column it reads, and its PostgreSQL write path
+# all exist — the parts a unit suite on SQLite cannot vouch for.
+"$ENGINE" exec sre-tab-app sre-tab retag --dry-run \
+    || fail "sre-tab retag --dry-run failed against the deployed database"
+"$ENGINE" exec sre-tab-app sre-tab retag \
+    || fail "sre-tab retag failed against the deployed database"
+echo "  retag runs, dry and applied"
 
 step "Session sweep, as the application role"
 # deploy/quadlet/sre-tab-prune-sessions.container, run the way it runs: the

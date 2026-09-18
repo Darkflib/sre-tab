@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.cli.catalogue import SOURCES, TOPICS, InvalidMediumTag, medium_source
+from app.cli.catalogue import SOURCES, TOPICS, InvalidMediumTag, medium_source, slug_problem
 from app.cli.operations import validate_feed_url
+from app.ingest.topicrules import rule_slugs
 from app.services.preferences import DEFAULT_SOURCE_SLUGS
 
 
@@ -43,20 +44,63 @@ def test_every_seeded_source_has_topics_the_taxonomy_defines() -> None:
         assert set(source.topics) <= known
 
 
+#: The taxonomy as PLAN-v1.md gives it. Pinned separately from the
+#: sections group below so that widening the catalogue for a publisher's
+#: sections cannot quietly drop one of the originals — which is the half
+#: with user rows pointing at it.
+PLAN_TOPICS = {
+    "webdev",
+    "python",
+    "devops",
+    "security",
+    "open-source",
+    "ai-ml",
+    "hardware",
+    "tech-industry",
+    "science",
+    "uk-news",
+    "world-news",
+}
+
+#: Added for `app.ingest.topicrules`: a publisher's section is discarded
+#: unless the catalogue has a slug to map it onto.
+SECTION_TOPICS = {
+    "sport",
+    "culture",
+    "lifestyle",
+    "business",
+    "politics",
+    "society",
+    "environment",
+    "opinion",
+}
+
+
 def test_the_taxonomy_covers_the_plan() -> None:
-    assert {slug for slug, _ in TOPICS} == {
-        "webdev",
-        "python",
-        "devops",
-        "security",
-        "open-source",
-        "ai-ml",
-        "hardware",
-        "tech-industry",
-        "science",
-        "uk-news",
-        "world-news",
-    }
+    assert {slug for slug, _ in TOPICS} == PLAN_TOPICS | SECTION_TOPICS
+
+
+def test_slugs_are_unique_and_usable() -> None:
+    slugs = [slug for slug, _ in TOPICS]
+    assert len(set(slugs)) == len(slugs)
+    for slug in slugs:
+        assert slug_problem(slug) is None, slug
+
+
+def test_every_slug_a_rule_can_emit_is_in_the_catalogue() -> None:
+    """The ruleset names topics by slug and the link cannot be written
+    without a ``topics`` row to point at, so a rule naming a slug the seed
+    does not create is a tag that silently never appears. ``_rule_topic_rows``
+    logs and skips it rather than failing the refresh, which is the right
+    runtime behaviour and exactly why it needs catching here instead."""
+    assert rule_slugs() <= {slug for slug, _ in TOPICS}
+
+
+def test_no_section_maps_to_a_topic_the_rules_alone_invented() -> None:
+    """Every section topic has to be reachable, or it is dead weight on
+    the onboarding picker. The plan's own topics are exempt: they describe
+    sources, and several have no publisher section at all."""
+    assert rule_slugs() >= SECTION_TOPICS
 
 
 def test_refresh_intervals_match_the_plan() -> None:
