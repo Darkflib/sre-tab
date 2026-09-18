@@ -160,6 +160,34 @@ def _rule_topic_rows(
     ]
 
 
+def insert_rule_links(session: Session, pairs: Sequence[tuple[int, int]]) -> None:
+    """Write ``(feed_item_id, topic_id)`` pairs as rule-owned links.
+
+    Conflict-ignore, and for the reason every other write in this module
+    is: the caller is ``sre-tab retag``, which runs from an operator's
+    shell with no share in the scheduler's per-source advisory locks. A
+    refresh that lands between the re-tag's snapshot of the link table and
+    this write can insert the very same pair — ingest derives it from the
+    same URL with the same rules — and a plain insert would then abort the
+    whole pass on the primary key for a row that is already correct.
+
+    A pair the refresh has meanwhile promoted to ``origin='source'`` is
+    left as the source's, which is the precedence ``_link_source_topics``
+    establishes.
+    """
+    rows: list[dict[str, object]] = [
+        {"feed_item_id": item_id, "topic_id": topic_id, "origin": TopicOrigin.RULE}
+        for item_id, topic_id in pairs
+    ]
+    for start in range(0, len(rows), CHUNK_SIZE):
+        _insert_ignore(
+            session,
+            FeedItemTopic,
+            rows[start : start + CHUNK_SIZE],
+            index_elements=["feed_item_id", "topic_id"],
+        )
+
+
 def upsert_items(
     session: Session,
     *,

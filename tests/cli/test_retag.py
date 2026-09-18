@@ -21,6 +21,8 @@ from app.cli import operations as ops
 from app.db.engine import create_db_engine
 from app.db.models import FeedItem, FeedItemTopic, Source, Topic, TopicOrigin
 from app.db.session import build_session_factory
+from app.ingest.store import insert_rule_links
+from app.ingest.topicrules import topics_for_url
 
 NOW = datetime(2026, 9, 17, 12, 0, tzinfo=UTC)
 
@@ -180,6 +182,62 @@ def test_dry_run_reports_the_same_counts_and_writes_nothing(corpus: Session) -> 
     applied = ops.retag_items(corpus)
     corpus.commit()
     assert applied.links_added == report.links_added
+
+
+def test_a_refresh_that_writes_the_same_pair_mid_pass_does_not_abort_it(
+    corpus: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The race: ``retag`` snapshots the link table, then a scheduled
+    refresh derives and writes the very same rule pair before the re-tag
+    reaches its own insert. The CLI holds none of the scheduler's advisory
+    locks, so nothing orders the two. A plain insert would hit the primary
+    key and roll back the whole pass for a row that is already correct.
+
+    Simulated by having the rule lookup write the row the first time it
+    is consulted — after the snapshot, before the insert, which is exactly
+    the window a real refresh lands in."""
+    real = topics_for_url
+    written = False
+
+    def racing(url: str) -> tuple[str, ...]:
+        nonlocal written
+        topics = real(url)
+        if topics and not written:
+            written = True
+            item = corpus.scalars(select(FeedItem).where(FeedItem.canonical_url == url)).one()
+            sport = corpus.scalars(select(Topic).where(Topic.slug == "sport")).one()
+            corpus.add(
+                FeedItemTopic(feed_item_id=item.id, topic_id=sport.id, origin=TopicOrigin.RULE)
+            )
+            corpus.flush()
+        return topics
+
+    # Patched where the re-tag looks it up, not where it is defined.
+    monkeypatch.setattr("app.cli.operations.topics_for_url", racing)
+
+    ops.retag_items(corpus)
+    corpus.commit()
+
+    assert written
+    assert links(corpus, SPORT_URL) == {
+        "uk-news": TopicOrigin.SOURCE,
+        "sport": TopicOrigin.RULE,
+    }
+
+
+def test_insert_rule_links_leaves_a_source_pair_as_the_sources(corpus: Session) -> None:
+    """The other half of the same race: the refresh got there first *and*
+    the operator's topic list names the pair. The re-tag's insert must not
+    demote it."""
+    item = corpus.scalars(select(FeedItem).where(FeedItem.canonical_url == SPORT_URL)).one()
+    sport = corpus.scalars(select(Topic).where(Topic.slug == "sport")).one()
+    corpus.add(FeedItemTopic(feed_item_id=item.id, topic_id=sport.id, origin=TopicOrigin.SOURCE))
+    corpus.flush()
+
+    insert_rule_links(corpus, [(item.id, sport.id)])
+    corpus.commit()
+
+    assert links(corpus, SPORT_URL)["sport"] is TopicOrigin.SOURCE
 
 
 # --- the command ---------------------------------------------------------

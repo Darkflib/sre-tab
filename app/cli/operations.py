@@ -31,6 +31,7 @@ from app.db.models import (
     Topic,
     TopicOrigin,
 )
+from app.ingest.store import insert_rule_links
 from app.ingest.topicrules import topics_for_url
 from app.ingest.urlguard import UrlGuard, assert_supported_endpoint
 
@@ -461,11 +462,11 @@ def retag_items(db: Session, *, dry_run: bool = False) -> RetagReport:
                     FeedItemTopic.origin == TopicOrigin.RULE,
                 )
             )
-        for chunk in (to_add[i : i + RETAG_BATCH] for i in range(0, len(to_add), RETAG_BATCH)):
-            db.add_all(
-                FeedItemTopic(feed_item_id=item_id, topic_id=topic_id, origin=TopicOrigin.RULE)
-                for item_id, topic_id in chunk
-            )
+        # Conflict-ignore rather than `add_all`: a refresh running while
+        # this does can write the same pair first. See `insert_rule_links`.
+        # The count reported below is therefore an upper bound under that
+        # race — the pairs this pass found missing, not rows it alone wrote.
+        insert_rule_links(db, to_add)
         db.flush()
 
     return RetagReport(
