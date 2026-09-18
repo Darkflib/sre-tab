@@ -1711,16 +1711,21 @@ gets for nothing.
   carries `uk-news` today and nothing else. Its items also carry 854
   `<category>` elements between them, a little over six apiece.
 
-  **The first path segment is a per-source property, not a universal one.**
+  **The first path segment is a per-host property, not a universal one.**
   Dev.to is the counterexample and it is unanimous: all twelve items in one
   fetch were `dev.to/<author>/<slug>`, two segments, the first never a
   topic. A generic read-the-section-from-the-path rule would mint twelve
   tags for twelve items and go on minting one per author for ever. So the
-  ruleset is keyed by source — the shape the seed catalogue in
-  [catalogue.py](app/cli/catalogue.py) already has — and a source whose
-  paths carry no section simply has no rules rather than bad ones. Lobsters
-  is a third shape again: its links point at the article, so the host is a
-  third party rather than the source, and no path rule helps at all.
+  ruleset is keyed by the link's host, and a host whose paths carry no
+  section simply has no rules rather than bad ones.
+
+  Host rather than source, which is what this entry first proposed, and
+  the change costs nothing. An aggregator links to the article, so a
+  Lobsters or Hacker News item pointing at `arstechnica.com/security/...`
+  is classified by Ars's rules — which keying by source could never
+  express, because the source is Lobsters and Lobsters has no sections. It
+  also takes a join out of the re-tag pass, which then needs
+  `feed_items.canonical_url` and nothing else.
 
   **Muting by URL prefix, which is a different predicate from muting by
   tag.** "No more `dev.to/jrandom`" is a real ask and the topic catalogue is
