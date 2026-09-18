@@ -1742,12 +1742,35 @@ gets for nothing.
   Lobsters and Hacker News — which neither the source filter nor a tag can
   express. That is the argument for allowing a bare host rather than
   insisting on a path segment, notwithstanding that on the BBC or the
-  Guardian a bare host only duplicates the source filter. Two details to
-  settle when it is written: the term wants normalising on the way in,
-  because a reader will paste a whole URL with its scheme and query and
-  `MAX_MUTED_TERM_LENGTH` is 64; and the predicate has to answer both
-  schemes, since `normalise_url` keeps `http` and `https` distinct on
-  purpose.
+  Guardian a bare host only duplicates the source filter.
+
+  **"Prefix" means component boundaries, not a string prefix.** Compared
+  as raw text against `canonical_url`, a mute for `medium.com` would also
+  match `medium.com.evil.example`, and `dev.to/jrandom` would also match an
+  author called `jrandom2` — both promised as exact and both quietly wider.
+  So the host is compared as a host, by the same normalisation the topic
+  ruleset's `_host` applies (case-folded, a leading `www.` removed, nothing
+  else), and the path matches only on a segment boundary: `dev.to/jrandom`
+  is the URL `/jrandom` itself or anything under `/jrandom/`. In SQL that is
+  an equality plus a `LIKE` on the term with its trailing `/` appended —
+  and the `/` is also what closes the host case, since
+  `https://medium.com/` is not a prefix of `https://medium.com.evil.example/`.
+  Autoescaped as the word mutes are, and asked of both schemes, since
+  `normalise_url` keeps `http` and `https` distinct on purpose. One
+  consequence to state rather than discover: a term names one host
+  exactly, so `alice.medium.com` is a second term, not something
+  `medium.com` covers.
+
+  **The pasted URL has to reach the reduction before it meets a bound.**
+  A reader will paste a whole article URL, and `MutedTerms` in
+  [me.py](app/api/v1/schemas/me.py) validates `max_length=64` before any
+  service code runs — so an ordinary URL would be a 422 rather than a mute.
+  The fix is not a wider column. A path mute gets its own field with its
+  own input bound, `MAX_URL_LENGTH`, and the service reduces what arrives
+  to host plus the first path segment before anything is stored; that is
+  both what the reader meant by pasting an author's post and what fits the
+  existing column. A reduced term that still exceeds 64 is a 422 that says
+  so, rather than a truncation that mutes something else.
 
   **What still needs deciding, and one answer has moved.** Nothing in the
   store ever *removes* a topic link, so a corrected rule has no path. That
