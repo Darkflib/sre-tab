@@ -18,11 +18,21 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, tuple_
 from sqlalchemy.orm import Session
 
 from app.cli.catalogue import SOURCES, TOPICS, SeedSource, medium_source, slug_problem
-from app.db.models import Source, SourceStatus, SourceTopic, Topic
+from app.db.models import (
+    FeedItem,
+    FeedItemTopic,
+    Source,
+    SourceStatus,
+    SourceTopic,
+    Topic,
+    TopicOrigin,
+)
+from app.ingest.store import insert_rule_links
+from app.ingest.topicrules import topics_for_url
 from app.ingest.urlguard import UrlGuard, assert_supported_endpoint
 
 _GUARD = UrlGuard()
@@ -86,6 +96,19 @@ class SeedReport:
     @property
     def changed(self) -> bool:
         return bool(self.topics_added or self.sources_added or self.topic_links_added)
+
+
+@dataclass(frozen=True)
+class RetagReport:
+    """What a re-tag pass changed, or would change under ``--dry-run``."""
+
+    items_examined: int
+    links_added: int
+    links_removed: int
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.links_added or self.links_removed)
 
 
 # --- validation ---------------------------------------------------------
@@ -355,3 +378,97 @@ def _link_topics(db: Session, source: Source, topics: Sequence[str]) -> int:
             added += 1
     db.flush()
     return added
+
+
+# --- re-tagging ---------------------------------------------------------
+
+#: Rows read from ``feed_items`` per pass. The whole point of the command
+#: is that it runs over the full retention window, which at the PRD's
+#: scale is tens of thousands of rows — enough that streaming them in
+#: batches is worth the loop and not nearly enough to justify anything
+#: cleverer.
+RETAG_BATCH = 1000
+
+
+def retag_items(db: Session, *, dry_run: bool = False) -> RetagReport:
+    """Re-derive every rule-owned topic link from the items' URLs.
+
+    This is the path that makes :mod:`app.ingest.topicrules` correctable.
+    Ingest only ever *adds* links, so a rule that was wrong, or a rule
+    that has since been written, leaves the retained window describing
+    itself the way it did when each item arrived. Running this after any
+    change to the ruleset brings the whole window into line with it.
+
+    **It touches only what the ruleset owns.** Links with
+    ``origin='source'`` are read, to avoid proposing a duplicate of one,
+    and are never deleted — the operator's configuration is the authority
+    on what a source is about, and a ruleset that could quietly drop it
+    would be a worse bargain than the mis-tagging it fixes.
+
+    Reads the whole link table rather than joining per batch. It is the
+    smaller of the two tables by a wide margin — a handful of topics per
+    item against every item — and holding it means the per-batch work is
+    two set differences rather than a query.
+    """
+    existing: dict[tuple[int, int], TopicOrigin] = {
+        (feed_item_id, topic_id): origin
+        for feed_item_id, topic_id, origin in db.execute(
+            select(FeedItemTopic.feed_item_id, FeedItemTopic.topic_id, FeedItemTopic.origin)
+        ).tuples()
+    }
+    catalogue = dict(db.execute(select(Topic.slug, Topic.id)).tuples().all())
+
+    wanted: set[tuple[int, int]] = set()
+    examined = 0
+    last_id = 0
+    while True:
+        batch = (
+            db.execute(
+                select(FeedItem.id, FeedItem.canonical_url)
+                .where(FeedItem.id > last_id)
+                .order_by(FeedItem.id)
+                .limit(RETAG_BATCH)
+            )
+            .tuples()
+            .all()
+        )
+        if not batch:
+            break
+        for item_id, url in batch:
+            examined += 1
+            for slug in topics_for_url(url):
+                topic_id = catalogue.get(slug)
+                # A slug the ruleset emits and this instance has no row
+                # for. `seed` adds it; until then the link cannot exist,
+                # which is a missing tag rather than a broken pass.
+                if topic_id is not None:
+                    wanted.add((item_id, topic_id))
+        last_id = batch[-1][0]
+
+    owned = {pair for pair, origin in existing.items() if origin is TopicOrigin.RULE}
+    # A pair the source already asserts is not the ruleset's to add: it is
+    # present, it is correct, and inserting it would either conflict or
+    # demote it.
+    to_add = sorted(wanted - owned - existing.keys())
+    to_remove = sorted(owned - wanted)
+
+    if not dry_run:
+        for chunk in (
+            to_remove[i : i + RETAG_BATCH] for i in range(0, len(to_remove), RETAG_BATCH)
+        ):
+            db.execute(
+                delete(FeedItemTopic).where(
+                    tuple_(FeedItemTopic.feed_item_id, FeedItemTopic.topic_id).in_(chunk),
+                    FeedItemTopic.origin == TopicOrigin.RULE,
+                )
+            )
+        # Conflict-ignore rather than `add_all`: a refresh running while
+        # this does can write the same pair first. See `insert_rule_links`.
+        # The count reported below is therefore an upper bound under that
+        # race — the pairs this pass found missing, not rows it alone wrote.
+        insert_rule_links(db, to_add)
+        db.flush()
+
+    return RetagReport(
+        items_examined=examined, links_added=len(to_add), links_removed=len(to_remove)
+    )

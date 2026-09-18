@@ -25,6 +25,7 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.cli import operations as ops
+from app.cli.catalogue import TOPICS
 from app.db.models import FeedItem, FeedItemTopic, Source, Topic
 from app.db.session import build_session_factory
 from app.ingest.fetch import FeedFetcher, HostRateLimiter
@@ -171,7 +172,7 @@ def test_the_seeded_catalogue_reaches_the_api(
     body = authed_client.get("/api/v1/sources").json()
     slugs = {source["slug"] for source in body["sources"]}
     assert {"hacker-news", "lobsters", "dev-to", "lwn"} <= slugs
-    assert len(body["topics"]) == 11
+    assert len(body["topics"]) == len(TOPICS)
 
     lobsters = next(source for source in body["sources"] if source["slug"] == SOURCE_SLUG)
     assert lobsters["topics"] == ["open-source", "tech-industry"]
@@ -184,7 +185,7 @@ def test_a_new_user_gets_the_documented_default_selection(
     """S1's real consequence: the four default slugs have to exist."""
     body = authed_client.get("/api/v1/me").json()
     assert set(body["preferences"]["sources"]) == {"hacker-news", "lobsters", "dev-to", "lwn"}
-    assert len(body["preferences"]["topics"]) == 11
+    assert len(body["preferences"]["topics"]) == len(TOPICS)
 
 
 def test_a_disabled_source_is_not_refreshed(

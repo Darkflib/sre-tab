@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
-from app.db.models import Bookmark, FeedItem, Source, Topic, User
+from app.db.models import Bookmark, FeedItem, FeedItemTopic, Source, Topic, TopicOrigin, User
 from app.db.models import SourceStatus as SourceStatusRow
 from app.ingest.normalise import NormalisedItem
 from app.ingest.status import SourceStatusRegistry
@@ -98,6 +98,30 @@ def test_topic_links_use_the_postgres_conflict_branch(
         )
     pg_session.commit()
     assert len(pg_session.scalars(select(FeedItem.id)).all()) == 1
+
+
+def test_the_source_promotes_a_rule_link_on_the_postgres_conflict_branch(
+    pg_session: Session, pg_source: Source
+) -> None:
+    """``_link_source_topics`` is ON CONFLICT DO UPDATE, which is its own
+    dialect branch and a different one from the DO NOTHING above. The
+    invariant it carries is that a pair the operator asserts can never be
+    left owned by the ruleset, because a re-tag deletes what the ruleset
+    owns."""
+    topic = Topic(slug="sport", name="Sport")
+    pg_session.add(topic)
+    pg_session.commit()
+
+    items = [_item("https://www.bbc.co.uk/sport/cricket/videos/cq70dnxrg79lo")]
+    upsert_items(pg_session, source_id=pg_source.id, items=items, topic_ids=[], fetched_at=NOW)
+    pg_session.commit()
+    assert pg_session.scalars(select(FeedItemTopic.origin)).all() == [TopicOrigin.RULE]
+
+    upsert_items(
+        pg_session, source_id=pg_source.id, items=items, topic_ids=[topic.id], fetched_at=NOW
+    )
+    pg_session.commit()
+    assert pg_session.scalars(select(FeedItemTopic.origin)).all() == [TopicOrigin.SOURCE]
 
 
 def test_prune_spares_bookmarked_items_on_postgres(pg_session: Session, pg_source: Source) -> None:
