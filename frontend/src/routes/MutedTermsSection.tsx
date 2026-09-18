@@ -241,7 +241,8 @@ function TagList({
  *
  * `null` for anything that is not an http(s) link with a dotted host, or
  * that the server would refuse for a reason visible here (a port,
- * credentials, an empty first segment), which leaves the button dead.
+ * credentials, an empty first segment, a host that is `www.` twice over),
+ * which leaves the button dead.
  */
 export function urlMuteTerm(input: string): string | null {
   const trimmed = input.trim();
@@ -258,7 +259,10 @@ export function urlMuteTerm(input: string): string | null {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
   if (url.username !== '' || url.password !== '' || url.port !== '') return null;
   const host = url.hostname.replace(/\.$/, '').replace(/^www\./, '');
-  if (!host.includes('.')) return null;
+  // The server's rule, not a lookalike: one `www.` goes, and a host still
+  // starting with one is refused, because storing it would not survive
+  // the next save's re-reduction.
+  if (host.startsWith('www.') || !host.includes('.')) return null;
   const segment = url.pathname.split('/')[1] ?? '';
   if (segment === '' && url.pathname !== '/') return null;
   return (segment === '' ? host : `${host}/${segment}`).toLowerCase();

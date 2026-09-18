@@ -404,7 +404,7 @@ describe('MutedTermsSection and sites', () => {
     expect(onSave.mock.calls).toEqual([[{ muted_urls: ['dev.to/jrandom'] }]]);
   });
 
-  it.each(['', '   ', 'ftp://dev.to/jrandom', 'localhost', 'https://user:pw@dev.to/x', 'dev.to:8443/x'])(
+  it.each(['', '   ', 'ftp://dev.to/jrandom', 'localhost', 'https://user:pw@dev.to/x', 'dev.to:8443/x', 'www.www.example.com/x'])(
     'leaves the button dead for %j',
     (input) => {
       render(preferences(), vi.fn());
@@ -431,7 +431,7 @@ describe('urlMuteTerm', () => {
     expect(urlMuteTerm(input)).toBe(expected);
   });
 
-  it.each(['', 'dev', 'ftp://dev.to/x', 'https://dev.to:8443/x', 'https://a:b@dev.to/x', 'https://example.com//x'])(
+  it.each(['', 'dev', 'ftp://dev.to/x', 'https://dev.to:8443/x', 'https://a:b@dev.to/x', 'https://example.com//x', 'https://www.www.example.com/x'])(
     'reads %j as nothing it would send',
     (input) => {
       expect(urlMuteTerm(input)).toBeNull();
