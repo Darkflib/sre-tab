@@ -8,6 +8,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Muting by site or author, beside muting by word and topic.**
+  `PATCH /api/v1/me/preferences` gains `muted_urls`, and Settings gains a
+  third list for it. A term is a host, or a host and its first path
+  segment — `medium.com`, `dev.to/jrandom` — matched against each item's
+  own link. Paste a whole article URL and it is reduced to that before it
+  is stored: the author on dev.to, the section on the Guardian. Settings
+  shows the reduction before saving, and the list shows what was kept.
+
+  **It reaches inside aggregators.** Hacker News and Lobsters link
+  outward, so muting `medium.com` hides their Medium links and keeps
+  everything else they carry, which neither the source filter nor a muted
+  topic can express.
+
+  **A prefix on component boundaries, never on text.** `medium.com` does
+  not mute `medium.com.evil.example`, and `dev.to/jrandom` does not mute
+  `dev.to/jrandom2`. The host is compared with any `www.` removed, `http`
+  and `https` both match, and a `%` or `_` in a term is a literal. A term
+  names one host exactly, so `alice.medium.com` is a second mute rather
+  than something `medium.com` covers. Matching ignores case, path
+  included.
+
+  A pasted link may be up to 2,048 characters, but what it reduces to must
+  still fit the 64 a mute holds. One that does not is refused with a
+  message saying so, rather than shortened into a mute of something else.
+  Links with credentials, on a non-default port, or to an IP address are
+  refused too. Bookmarks are still never muted, and the feed's line about
+  what is muted now counts sites.
+
+  Needs revision `a6d3f0c81b27`, which widens the CHECK on
+  `user_muted_terms.kind`. Downgrading past it deletes every URL mute,
+  because the older release cannot read them; words and topics survive.
+
 - **Topics now describe the article, not only its publisher.** Until now
   every topic link came from the item's source, re-asserted onto each item
   of every batch — so a cricket video that arrived through the BBC's news

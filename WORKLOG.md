@@ -3,6 +3,51 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+<a id="url-mutes"></a>
+## 2026-09-18 — Muting by URL prefix
+
+Built to the ROADMAP entry under "Topics describe the publisher, not the
+article". What building it settled is recorded there; this is what
+changed from the spec on the way, and how it was checked.
+
+**Three deviations, each a refusal.** A port, a host that is `www.` twice
+over, and an empty first path segment are 422s. The first two break the
+reduction's idempotence, which the spec did not ask for and the
+replace-the-whole-list field requires: every save reduces every stored
+term again. The third would reduce to the bare host and mute the site.
+
+**Case folding covers the path as well as the host.** The spec said the
+host is case-folded and was silent on the path. Leaving the path alone
+made SQLite's two clauses for one term disagree: its `LIKE` ignores ASCII
+case and its `=` does not. `lower()` on both sides is the only form both
+engines agree on.
+
+**Verification.** Every gate in AGENTS.md, plus the PostgreSQL suite
+against `postgres:18`. Each guard was then broken on purpose and the
+suite rerun: dropping `lower()`, `autoescape`, the `www.` variant, the
+`http` scheme, the `?` boundary, the equality clause, or the segment
+boundary; shrinking the input bound to 64; and, in the revision, passing
+the full constraint name to the batch operations, dropping the
+downgrade's `DELETE`, and a no-op upgrade. Frontend: not counting sites,
+sending the preview instead of the paste, replacing the list, the input
+capped at 64. All were caught. Dropping `lower()` is caught on SQLite
+only by the `=` clause, via a bare `https://dev.to/JRANDOM` row added
+for that purpose; on PostgreSQL it is caught by both clauses.
+
+**One of those checks passed falsely first.** The PostgreSQL run of the
+mutation harness handed pytest two paths as one argument. pytest then
+failed on a path that does not exist, so every mutation read as
+"caught". An empty failure summary gave it away. Rerun with the paths
+split, every one was caught again, now by the assertion meant to catch
+it. This is the AGENTS.md trap exactly: a check that fails for a reason
+unrelated to its subject.
+
+**`npx tsc --noEmit` checks nothing in `frontend/`.** The root
+`tsconfig.json` is `"files": []` with project references, and plain
+`tsc` does not follow references, so it exits 0 with a deliberate type
+error in `src/`. `npm run typecheck` (`tsc --build --force`) is what CI
+runs and is what catches it. That is what was used here.
+
 <a id="anchored-footer"></a>
 ## 2026-09-17 — A footer that infinite scroll cannot push away
 
