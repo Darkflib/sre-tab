@@ -11,7 +11,7 @@ After=sre-tab-db.service sre-tab-migrate.service
 
 [Container]
 ContainerName=sre-tab-app
-Image=ghcr.io/darkflib/sre-tab:sha-70dbeab8c0d3fa28460b267ec5d4bb4d810d98c7@sha256:a2c110999faedce73ed5fe127c27f81baa3dfc0cf984799cec2b78af3dc21001
+Image=ghcr.io/darkflib/sre-tab:sha-9277057cc40264bf9b95a4a1a2d6096ff5544238@sha256:ca00c81d2a42462f96c3c4eb7f8a83bad38add8dc7f6486e3e8f4c822e92e1f2
 # Pinned by tag and digest, like every other image in this deployment. The
 # tag says which commit this is; the digest is the part podman enforces, and
 # it is the reason `latest` is gone: with `:latest` and Pull=newer, a restart
