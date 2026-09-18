@@ -88,7 +88,9 @@ that.
   - Non-English items — a language column and a predicate, with translation
     proper left as a positioning decision.
   - Topics that describe the article rather than its publisher, derived
-    from the item's URL before its text.
+    from the item's URL — landed; reading an item's own `<category>`
+    elements is still open, and subtracting a source's topic remains a
+    per-rule opt-in to weigh.
   - Muting by URL prefix, for the authors and third-party domains no tag
     can name — landed.
   - Telling the reader that new items have arrived.
@@ -1675,7 +1677,9 @@ gets for nothing.
   a unit capped at `MemoryMax=768M`. Neither is ruled out. Both are more
   than "occasionally there is a German headline" is asking for.
 
-- **Topics describe the publisher, not the article.** Rewritten 17
+- **Topics describe the publisher, not the article** — **the URL half has
+  landed; the categories half has not.** What building it settled is
+  recorded after the three paragraphs that left it open. Rewritten 17
   September 2026, after four links from one morning made the case better
   than the original entry did: a BBC cricket video and two BBC articles all
   carrying `uk-news world-news`, and a Guardian story carrying `uk-news`
@@ -1827,7 +1831,7 @@ gets for nothing.
   parsers costs a preview that was slightly off, never a mute of
   something nobody pasted.
 
-  **What still needs deciding, and one answer has moved.** Nothing in the
+  **What still needed deciding, and one answer had moved.** Nothing in the
   store ever *removes* a topic link, so a corrected rule has no path. That
   is sharper than when it was first written, because a path ruleset is a
   thing one iterates on. The cheapest fix is a provenance discriminator on
@@ -1860,6 +1864,35 @@ gets for nothing.
   than a policy to adopt now: a Guardian `/politics/` piece genuinely is UK
   news, and a rule that took `uk-news` off it would be wrong in the same way
   the current behaviour is.
+
+  **What building it settled.** Both answers above were taken as written.
+  `feed_item_topics.origin` is `source` or `rule`, added by revision
+  `f41d7b6a0c92` as `NOT NULL` with a server default of `source` — not a
+  guess about history, since every existing row was written from a source's
+  topic list — and `sre-tab retag` is the backfill: it re-derives the rule
+  links for the whole retained window from `canonical_url` alone, deletes
+  and reinserts only `origin='rule'` rows, and takes `--dry-run`. The
+  ruleset in [topicrules.py](app/ingest/topicrules.py) is literal first
+  segments in a dict keyed by host, never patterns, and covers the BBC, the
+  Guardian, and Ars Technica; the catalogue gained eight slugs, `sport`
+  among them, because a section it cannot name is one the rules must
+  discard. Two things the entry did not foresee. Precedence could not be
+  left to insertion order: when an operator adds to a source a topic that a
+  rule had already derived for one of its items, the source's write
+  promotes that row to `source`, one way, or the next re-tag would delete
+  the operator's link along with the rule's. And `retag` holds none of the
+  scheduler's advisory locks, so a refresh can write the same pair between
+  its read and its insert; the insert is conflict-ignore, rather than a
+  primary-key failure that aborts the whole pass over a row that is already
+  correct.
+
+  **What remains open.** The categories half, unchanged: `ParsedEntry`
+  still has no field for an item's `<category>` elements, so it needs a
+  parse change first and can only ever describe items fetched after one.
+  And subtraction is still a per-rule opt-in to weigh rather than something
+  the ruleset can express — every rule adds and none removes, so every item
+  keeps its source's topics and `_effective_topics`' short-circuit stays
+  defensive.
 
   **The motivation is volume, not artwork, and the difference was worth
   checking.** The ask arrived with the observation that sport items always
