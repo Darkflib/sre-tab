@@ -278,15 +278,15 @@ def url_mute_term(raw: str) -> str:
       ``www.example.com`` — and the next save would reduce *that* to
       ``example.com``, quietly widening the mute.
 
-    Lower-cased whole, path included, and deliberately. The feed compares
-    ``lower(canonical_url)``, because SQLite's ``LIKE`` ignores ASCII case
-    and its ``=`` does not, and PostgreSQL's respects it in both — so
-    folding both sides is the only way the two engines give one answer.
-    It is wider than RFC 3986, which makes paths case-sensitive, but the
-    segment being muted is an author or a section, and ``/JRandom`` and
-    ``/jrandom`` being different people is not a case worth a mute that
-    quietly misses. ``normalise_url`` guarantees ASCII (percent-escapes
-    and punycode), so Python's ``lower`` and SQL's agree.
+    Lower-cased whole, path included, and deliberately; the feed compares
+    against ``lower(canonical_url)`` to match. It is wider than RFC 3986,
+    which makes paths case-sensitive, but the segment being muted is an
+    author or a section, and ``/JRandom`` and ``/jrandom`` being different
+    people is not a case worth a mute that quietly misses the one a
+    publisher happened to capitalise. It also keeps the primary key's
+    promise the word mutes keep: two pastes a reader would call the same
+    are one row. ``normalise_url`` guarantees ASCII (percent-escapes and
+    punycode), so Python's ``lower`` and SQL's agree.
     """
     candidate = raw.strip()
     if not candidate:

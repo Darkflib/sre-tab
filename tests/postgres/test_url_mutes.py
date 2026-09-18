@@ -1,16 +1,14 @@
-"""URL mutes on PostgreSQL, where ``LIKE`` and ``=`` both respect case.
+"""URL mutes on PostgreSQL, against the same corpus as SQLite.
 
-SQLite's ``LIKE`` ignores ASCII case, so on the development engine a
-predicate that forgot to fold would still hide ``/JRandom/...`` and look
-correct. PostgreSQL is where that mistake would ship, so the corpus and
-the terms from ``tests/api/test_feed_url_mutes.py`` are run here through
-the same :func:`app.services.feed.mute_predicates` the feed calls, and
-must leave the same survivors.
-
-The escaping is the other thing worth asking twice. SQLAlchemy's
-``autoescape`` renders ``ESCAPE '/'``, and every term here is full of
-``/`` — so a dialect that handled the escape character differently would
-turn each ``https://`` into something else entirely.
+The predicate is a correlated ``EXISTS`` built from ``lower``, ``substr``,
+``length``, and a ``CASE`` — functions both engines have, and none of
+which they are guaranteed to agree about at the edges. ``substr`` past the
+end of a string is the equality case, and it has to be ``''`` on both;
+``length`` has to count what ``substr`` indexes. So the corpus and the
+terms from ``tests/api/test_feed_url_mutes.py`` are run here through the
+same :func:`app.services.feed.mute_predicates` the feed calls, and must
+leave the same survivors — and a hundred of them must still be one query
+PostgreSQL will plan and run.
 """
 
 from __future__ import annotations
@@ -76,8 +74,8 @@ def test_url_mutes_leave_the_same_survivors_on_postgres(
 
 
 def test_an_author_mute_is_case_blind_on_postgres(pg_session: Session, pg_corpus: User) -> None:
-    """The divergence this file exists for: without ``lower`` on the
-    column, both shouted rows survive here while SQLite hides one of them."""
+    """Terms are stored folded, so an unfolded column would let both
+    shouted rows through."""
     hidden = set(CORPUS) - _surviving(pg_session, pg_corpus, "dev.to/jrandom")
 
     assert {"author-shouted", "author-root-shouted"} <= hidden
@@ -92,3 +90,12 @@ def test_a_like_metacharacter_is_a_literal_on_postgres(
     pg_session: Session, pg_corpus: User, term: str, hidden: set[str]
 ) -> None:
     assert set(CORPUS) - _surviving(pg_session, pg_corpus, term) == hidden
+
+
+def test_a_hundred_url_mutes_are_one_query_postgres_will_run(
+    pg_session: Session, pg_corpus: User
+) -> None:
+    """The cap, on the engine that plans the correlated subquery for real."""
+    terms = [f"host{n}.example/author" for n in range(99)]
+
+    assert _surviving(pg_session, pg_corpus, *terms, "medium.com") == set(CORPUS) - {"medium"}

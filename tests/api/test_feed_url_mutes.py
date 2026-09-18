@@ -5,8 +5,8 @@ A different predicate from the word and tag mutes in
 argues for applies here with more force: a URL mute that matches too
 much removes a *whole site* silently. So most of what is here is about
 where a term stops — ``jrandom`` against ``jrandom2``, ``medium.com``
-against ``medium.com.evil.example``, and a ``%`` or ``_`` that would be
-a wildcard if nobody escaped it.
+against ``medium.com.evil.example``, and a ``%`` or ``_`` that a ``LIKE``
+would read as a wildcard.
 
 The corpus lives in one source, and that is deliberate rather than
 economical. It is an aggregator, so its items link to many hosts — which
@@ -14,8 +14,8 @@ is the case a URL mute exists for, because the source filter cannot say
 "Lobsters, but not the Medium links".
 
 ``tests/postgres/test_url_mutes.py`` runs :data:`CORPUS` and
-:data:`MUTED` against PostgreSQL, whose ``LIKE`` respects case where
-SQLite's does not.
+:data:`MUTED` against PostgreSQL, so the two engines are held to one set
+of survivors.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
+from app.api.v1.schemas.me import MAX_MUTED_TERMS
 from app.db.models import (
     MAX_MUTED_TERM_LENGTH,
     Bookmark,
@@ -49,9 +50,9 @@ CORPUS: dict[str, str] = {
     "author-root": "https://dev.to/jrandom",
     "author-query": "https://dev.to/jrandom?page=2",
     "author-shouted": "https://dev.to/JRandom/shouty-post-3ghi",
-    # The one row SQLite can tell `lower()` is missing from: its `LIKE`
-    # ignores ASCII case, so `author-shouted` is hidden either way, but its
-    # `=` does not.
+    # The equality case, shouted. It began as the one row SQLite could tell
+    # `lower()` was missing from, back when the match was a `LIKE` that
+    # ignored ASCII case on SQLite; it stays as the boundary's own witness.
     "author-root-shouted": "https://dev.to/JRANDOM",
     "author-http": "http://dev.to/jrandom/plain-post-4jkl",
     "author-www": "https://www.dev.to/jrandom/www-post-5mno",
@@ -70,7 +71,9 @@ CORPUS: dict[str, str] = {
 }
 
 #: One of each shape of term: an author, a bare host, a section on a
-#: ``www.`` host, and two whose segment carries a ``LIKE`` metacharacter.
+#: ``www.`` host, and two whose segment carries a ``LIKE`` metacharacter —
+#: kept although the match no longer uses ``LIKE``, so that going back to
+#: one cannot quietly reintroduce wildcards.
 MUTED = [
     "dev.to/jrandom",
     "medium.com",
@@ -196,7 +199,7 @@ def test_every_shape_together_leaves_exactly_the_survivors(
     authed_client: TestClient, corpus: dict[str, int]
 ) -> None:
     """The per-case tests above in one statement, which is how the feed
-    actually meets them — twelve clauses a term, OR-ed."""
+    actually meets them."""
     assert set(CORPUS) - _hidden_by(authed_client, *MUTED) == SURVIVORS
 
 
@@ -210,6 +213,30 @@ def test_a_url_mute_reaches_through_an_aggregator(
 
     assert "medium" not in visible
     assert "discussion" in visible
+
+
+def test_another_readers_url_mute_does_not_reach_this_feed(
+    authed_client: TestClient, corpus: dict[str, int], db_session: Session, second_user: User
+) -> None:
+    """The subquery reads ``user_muted_terms`` itself, so the user it is
+    pinned to is the only thing keeping one reader's mutes out of another's
+    feed. This reader mutes something too, or the predicate would not be
+    built at all and the test would pass for the wrong reason."""
+    db_session.add(UserMutedTerm(user_id=second_user.id, kind=MuteKind.URL, term="dev.to/jrandom"))
+    db_session.commit()
+
+    assert _hidden_by(authed_client, "medium.com") == {"medium"}
+
+
+def test_a_muted_word_that_looks_like_a_site_is_still_a_word(
+    authed_client: TestClient, corpus: dict[str, int]
+) -> None:
+    """Three kinds share the table, and the subquery must ask for one. A
+    word mute of ``dev.to`` matches text, which nothing here carries; read
+    as a URL term it would take every dev.to link."""
+    _save(authed_client, muted_words=["dev.to"], muted_urls=["medium.com"])
+
+    assert set(CORPUS) - _visible(authed_client) == {"medium"}
 
 
 def test_a_url_mute_does_not_reach_bookmarks(
@@ -373,11 +400,13 @@ def test_more_urls_than_the_cap_is_refused(authed_client: TestClient) -> None:
     assert response.status_code == 422
 
 
-def test_url_mutes_still_cost_one_statement(
+def test_url_mutes_are_read_per_request_not_per_card(
     authed_client: TestClient, corpus: dict[str, int], engine: Engine
 ) -> None:
-    """Three kinds, still read together — the N+1 guard in
-    ``test_feed_mutes.py``, kept true for the kind that arrived later."""
+    """The N+1 guard in ``test_feed_mutes.py``, for the kind that reads its
+    terms inside the feed's own statement. Two statements name the table —
+    the lookup of which kinds exist, and the feed query carrying the
+    correlated ``EXISTS`` — and the count must not grow with the page."""
     _save(authed_client, muted_words=["derby"], muted_urls=MUTED)
 
     with count_statements(engine) as small:
@@ -386,7 +415,7 @@ def test_url_mutes_still_cost_one_statement(
         authed_client.get("/api/v1/feed", params={"limit": 100})
 
     assert len(large) == len(small)
-    assert sum("user_muted_terms" in sql for sql in large) == 1
+    assert sum("user_muted_terms" in sql for sql in large) == 2
 
 
 # --- the reduction on its own --------------------------------------------
@@ -428,3 +457,23 @@ def test_a_host_that_is_www_twice_over_is_refused() -> None:
     where the reduction is not idempotent, refused rather than special-cased."""
     with pytest.raises(ValueError, match="www"):
         url_mute_term("https://www.www.example.com/x")
+
+
+def test_the_feed_answers_with_every_kind_at_its_cap(
+    authed_client: TestClient, corpus: dict[str, int]
+) -> None:
+    """The cap is a promise that a list that long works, so it is asked of
+    a real feed query rather than only of the 422 one past it.
+
+    From the Codex review on PR #47. The first URL predicate bound twelve
+    clauses a term into one flat ``OR``, and SQLite refuses an expression
+    tree deeper than a thousand: from about 84 URL mutes, every feed
+    request was a 500, for a list the API had accepted. The test beside
+    it, a hundred and one refused, could not see that."""
+    _save(
+        authed_client,
+        muted_words=[f"word{n}" for n in range(MAX_MUTED_TERMS)],
+        muted_urls=[f"host{n}.example/author" for n in range(MAX_MUTED_TERMS)],
+    )
+
+    assert _visible(authed_client) == set(CORPUS)

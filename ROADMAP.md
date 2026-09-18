@@ -1794,23 +1794,29 @@ gets for nothing.
   (`example.com//x`) is refused too, since it would otherwise reduce to
   the bare host and mute the whole site.
 
-  **Matching ignores case, path included.** SQLite's `LIKE` ignores ASCII
-  case while its `=` does not, and PostgreSQL respects case in both, so
-  the equality and the `LIKE` for one term disagreed with each other on
-  SQLite and with PostgreSQL. `lower()` on the column and a lower-cased
-  term is the only form in which both engines give one answer. It is
-  wider than RFC 3986, but the segment being muted is an author or a
-  section, and a mute of `dev.to/jrandom` missing `/JRandom/` would be
-  the quiet failure this whole feature is written against.
-  `normalise_url` guarantees ASCII, so Python's `lower` and SQL's agree.
+  **Matching ignores case, path included.** It is wider than RFC 3986,
+  but the segment being muted is an author or a section, and a mute of
+  `dev.to/jrandom` missing `/JRandom/` would be the quiet failure this
+  whole feature is written against. `normalise_url` guarantees ASCII, so
+  Python's `lower` and SQL's agree.
 
-  The `?` boundary was needed: `dev.to/jrandom?page=2` is neither the
-  term nor under `/jrandom/`. Twelve clauses a term — two schemes, with
-  and without `www.`, and equality, `/`, or `?` — so twelve hundred at the
-  hundred-term cap, evaluated per row like every mute and bounded by the
-  keyset scan the same way. The PostgreSQL suite runs the same corpus as
-  SQLite's and was the only place a missing `lower()` showed on the `LIKE`
-  side.
+  **The predicate is not the one specified, and review is why.** As
+  written above — an equality or an autoescaped `LIKE` per term, for both
+  schemes, with and without `www.` — it came to twelve clauses a term in
+  one flat `OR`. SQLite parses that as a tree as deep as it is long and
+  refuses one deeper than a thousand, so from about 84 URL mutes every
+  feed request failed, for a list the API had accepted. Codex found it
+  on PR #47; the test for a hundred and one being refused could not,
+  because it never ran a feed at a hundred. What shipped asks
+  `user_muted_terms` itself, in a correlated `NOT EXISTS`, so the
+  statement is the same size at one mute as at a hundred. The URL is
+  keyed by one `CASE` that strips the scheme and one `www.` —
+  `link_host`'s rule, in SQL — and the term must equal the start of that
+  key with `''`, `/`, or `?` after it. That is `substr` equality rather
+  than `LIKE`, so there is nothing to escape; the `%` and `_` tests stay,
+  so going back to a `LIKE` cannot quietly reintroduce wildcards. The
+  `?` boundary was needed either way: `dev.to/jrandom?page=2` is neither
+  the term nor under `/jrandom/`.
 
   One consequence to state rather than discover: "host plus first
   segment" is literal, so pasting a Hacker News discussion link mutes
