@@ -87,7 +87,10 @@ that.
     caching them here is the larger, separate item and is still open.
   - Non-English items — a language column and a predicate, with translation
     proper left as a positioning decision.
-  - Topics that describe the article rather than its publisher.
+  - Topics that describe the article rather than its publisher, derived
+    from the item's URL before its text.
+  - Muting by URL prefix, for the authors and third-party domains no tag
+    can name.
   - Telling the reader that new items have arrived.
 
 <a id="supply-chain-hygiene"></a>
@@ -1672,27 +1675,149 @@ gets for nothing.
   a unit capped at `MemoryMax=768M`. Neither is ruled out. Both are more
   than "occasionally there is a German headline" is asking for.
 
-- **Topics describe the publisher, not the article.**
+- **Topics describe the publisher, not the article.** Rewritten 17
+  September 2026, after four links from one morning made the case better
+  than the original entry did: a BBC cricket video and two BBC articles all
+  carrying `uk-news world-news`, and a Guardian story carrying `uk-news`
+  because everything the Guardian publishes carries it.
   [`upsert_items`](app/ingest/store.py) re-asserts the source's topics onto
-  every item in every batch, which is why a story about a chip company
-  carries `uk-news`. The cheapest credible fix is a keyword ruleset over
-  title and summary at ingest, additive to the source's topics:
-  deterministic, testable, no new dependency, and nothing leaves the host.
+  every item in every batch, so `uk-news` is a fact about the feed rather
+  than about the story.
 
-  Two things need deciding before any of it is written. Nothing in the store
-  ever *removes* a topic link, so reclassification — a rule corrected, a
-  ruleset extended — has no path today and needs one, and the ninety days of
-  retained items behind the feed are a backfill rather than a migration.
+  **The signal is the URL, not the headline, and that is the change.** This
+  entry used to call for a keyword ruleset over title and summary. That is
+  the weaker of the two and should not be built first. A path segment is
+  the publisher's own classification — already fetched, already stored,
+  already normalised — where a keyword is an inference, and "cricket" in a
+  headline matches a mobile network and a bat manufacturer as readily as a
+  match report.
+
+  Measured against the two general-news sources in the catalogue on 17
+  September. The BBC's feed held thirty-two items and not one `<category>`
+  element anywhere in the document; twenty-four of them were
+  `/news/articles/<opaque>` and two were `/news/videos/<opaque>`, which
+  give a rule nothing to read. That looks like a failure and is not, because
+  those twenty-six genuinely are UK and world news and are already tagged
+  correctly. The four the path does name were `sport/cricket`,
+  `sport/cricket`, `sport/football`, and `sport/athletics` — precisely the
+  leakage, and precisely the complaint. The rule to write is not "classify
+  every item", it is "reclassify the ones the publisher has already
+  classified", and read that way the coverage is four out of the four that
+  are wrong.
+
+  The Guardian is the larger correction and the easier one. Nine of its 137
+  items sat under `/uk-news/`. The other 128 were football, music, film,
+  lifeandstyle, commentisfree, games, and food, and every one of them
+  carries `uk-news` today and nothing else. Its items also carry 854
+  `<category>` elements between them, a little over six apiece.
+
+  **The first path segment is a per-host property, not a universal one.**
+  Dev.to is the counterexample and it is unanimous: all twelve items in one
+  fetch were `dev.to/<author>/<slug>`, two segments, the first never a
+  topic. A generic read-the-section-from-the-path rule would mint twelve
+  tags for twelve items and go on minting one per author for ever. So the
+  ruleset is keyed by the link's host, and a host whose paths carry no
+  section simply has no rules rather than bad ones.
+
+  Host rather than source, which is what this entry first proposed, and
+  the change costs nothing. An aggregator links to the article, so a
+  Lobsters or Hacker News item pointing at `arstechnica.com/security/...`
+  is classified by Ars's rules — which keying by source could never
+  express, because the source is Lobsters and Lobsters has no sections. It
+  also takes a join out of the re-tag pass, which then needs
+  `feed_items.canonical_url` and nothing else.
+
+  **Muting by URL prefix, which is a different predicate from muting by
+  tag.** "No more `dev.to/jrandom`" is a real ask and the topic catalogue is
+  the wrong home for it — an author is unbounded vocabulary, and a settings
+  screen listing every author anyone has ever muted is not a list a reader
+  can browse. A third `MuteKind`, matched as a prefix against
+  `feed_items.canonical_url`, needs no catalogue entry, no `topics` row, and
+  no ingest work whatever, because the column is already there and already
+  canonical. It sits in `_apply_filters` beside the other two, which is what
+  the six-of-seven argument at the top of this section predicts.
+
+  It also reaches somewhere nothing else does. On an aggregator the link
+  host is not the source, so a bare-host term mutes `medium.com` *inside*
+  Lobsters and Hacker News — which neither the source filter nor a tag can
+  express. That is the argument for allowing a bare host rather than
+  insisting on a path segment, notwithstanding that on the BBC or the
+  Guardian a bare host only duplicates the source filter.
+
+  **"Prefix" means component boundaries, not a string prefix.** Compared
+  as raw text against `canonical_url`, a mute for `medium.com` would also
+  match `medium.com.evil.example`, and `dev.to/jrandom` would also match an
+  author called `jrandom2` — both promised as exact and both quietly wider.
+  So the host is compared as a host, by the same normalisation the topic
+  ruleset's `_host` applies (case-folded, a leading `www.` removed, nothing
+  else), and the path matches only on a segment boundary: `dev.to/jrandom`
+  is the URL `/jrandom` itself or anything under `/jrandom/`. In SQL that is
+  an equality plus a `LIKE` on the term with its trailing `/` appended —
+  and the `/` is also what closes the host case, since
+  `https://medium.com/` is not a prefix of `https://medium.com.evil.example/`.
+  Autoescaped as the word mutes are, and asked of both schemes, since
+  `normalise_url` keeps `http` and `https` distinct on purpose. One
+  consequence to state rather than discover: a term names one host
+  exactly, so `alice.medium.com` is a second term, not something
+  `medium.com` covers.
+
+  **The pasted URL has to reach the reduction before it meets a bound.**
+  A reader will paste a whole article URL, and `MutedTerms` in
+  [me.py](app/api/v1/schemas/me.py) validates `max_length=64` before any
+  service code runs — so an ordinary URL would be a 422 rather than a mute.
+  The fix is not a wider column. A path mute gets its own field with its
+  own input bound, `MAX_URL_LENGTH`, and the service reduces what arrives
+  to host plus the first path segment before anything is stored; that is
+  both what the reader meant by pasting an author's post and what fits the
+  existing column. A reduced term that still exceeds 64 is a 422 that says
+  so, rather than a truncation that mutes something else.
+
+  **What still needs deciding, and one answer has moved.** Nothing in the
+  store ever *removes* a topic link, so a corrected rule has no path. That
+  is sharper than when it was first written, because a path ruleset is a
+  thing one iterates on. The cheapest fix is a provenance discriminator on
+  `feed_item_topics` — the source asserted this link, or a rule did — so a
+  re-tag can delete and reinsert its own links without touching the
+  operator's. One column and one revision, and it is what makes the ruleset
+  safe to correct rather than a one-way door.
+
+  The ninety days of retained items are still a backfill rather than a
+  migration, and it is now a cheap one — which is the strongest argument for
+  taking the path before the categories. `canonical_url` is stored, so
+  re-tagging the whole retention window is a local pass over the database
+  with no network at all. Item categories are not stored: `ParsedEntry`
+  ([parse.py](app/ingest/parse.py)) has no field for them, so that half
+  needs a parse change *and* a re-fetch of a window the publishers no longer
+  serve. The same feature, two orders of work, and only one of them can be
+  applied to what is already held.
+
   And `_effective_topics` skips narrowing whenever a selection covers every
   enabled topic, on the stated grounds that an unclassified item vanishing
   from a source the reader explicitly enabled "would read as data loss
-  rather than as a filter" ([feed.py](app/services/feed.py)). Under
-  source-derived topics that comment is defensive. Under content-derived
-  ones it is load-bearing, because items that match no rule become ordinary
-  rather than hypothetical.
+  rather than as a filter" ([feed.py](app/services/feed.py)). Keeping the
+  rules **additive** is what holds that comment defensive rather than
+  load-bearing: every item keeps its source topics, so none can end up
+  carrying only rule-derived ones, and adding `sport` to the catalogue
+  cannot make anything disappear for a reader who had selected everything.
+  Additive is also already enough for the ask, because the tag mute is a
+  negated `IN` — an item carrying `sport` is excluded even though it still
+  carries `uk-news`. Subtraction is a per-rule opt-in to weigh later rather
+  than a policy to adopt now: a Guardian `/politics/` piece genuinely is UK
+  news, and a rule that took `uk-news` off it would be wrong in the same way
+  the current behaviour is.
 
-  This entry also gets a large assist from the ingest work below, and that is
-  a reason to sequence the two together rather than a reason to defer this.
+  **The motivation is volume, not artwork, and the difference was worth
+  checking.** The ask arrived with the observation that sport items always
+  carry an image and so crowd out everything else. The artwork half does not
+  survive measurement: four of four BBC sport items carried a thumbnail and
+  so did twenty-seven of twenty-seven of its news items, all 137 Guardian
+  items carried `media:content`, and
+  [ItemCard.tsx](frontend/src/components/ItemCard.tsx) falls back to the
+  channel image anyway, so a card without a picture is rare whatever the
+  section. What holds is the volume — about an eighth of the BBC feed and a
+  tenth of the Guardian's, in a uniform grid where a card the reader does
+  not want costs exactly the room of one they do. That is sufficient on its
+  own, and which half of the argument survived is worth recording.
 
 - **The page never says that anything new has arrived.** It should, and it
   is last of the seven for a structural reason rather than a priority one: a
