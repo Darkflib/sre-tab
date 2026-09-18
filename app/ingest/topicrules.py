@@ -98,6 +98,12 @@ SECTIONS: Mapping[str, Mapping[str, tuple[str, ...]]] = {
         "thefilter": ("lifestyle",),
         "travel": ("lifestyle",),
         "tv-and-radio": ("culture",),
+        # Redundant for the Guardian's own feed, whose source row already
+        # asserts `uk-news` — the rule's link conflicts away and the source
+        # keeps it. It is here for the aggregators: keyed by host, a Hacker
+        # News item linking to a Guardian /uk-news/ story would otherwise
+        # get every section but this one.
+        "uk-news": ("uk-news",),
         "us-news": ("world-news",),
         "wellness": ("lifestyle",),
         "world": ("world-news",),

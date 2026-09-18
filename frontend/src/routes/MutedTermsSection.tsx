@@ -174,9 +174,9 @@ function TagList({
     <fieldset className="settings__field">
       <legend>Topics</legend>
       <p className="settings__hint">
-        A topic comes from the article's own link where the publisher puts a section in it, and
-        from the source otherwise — so muting <em>sport</em> hides the football, and muting a
-        topic a source carries wholesale hides everything it publishes.
+        Topics come from the source, and a publisher&rsquo;s section in the article&rsquo;s link
+        can add more — so muting <em>sport</em> hides the football, and muting a topic a source
+        carries hides everything it publishes.
       </p>
       {full ? (
         <p className="settings__hint" id="mute-tag-problem" role="status">

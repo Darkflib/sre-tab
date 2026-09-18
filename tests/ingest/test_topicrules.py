@@ -19,7 +19,7 @@ from app.ingest.topicrules import SECTIONS, rule_slugs, topics_for_url
         ("https://www.bbc.co.uk/sport/cricket/videos/cq70dnxrg79lo", ("sport",)),
         (
             "https://www.theguardian.com/uk-news/2026/sep/17/nicholas-brandram-putney",
-            (),
+            ("uk-news",),
         ),
         ("https://www.bbc.co.uk/news/articles/cx980qj57r89o", ()),
         ("https://www.bbc.co.uk/news/articles/c68xkypqyxw7o", ()),
