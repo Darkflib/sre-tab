@@ -35,6 +35,9 @@ PRE_PHASE_2 = "d25a61924953"
 #: stepped over on its own rather than only as half of a two-revision
 #: downgrade, where a mistake in either could be masked by the other.
 PRE_API_TOKENS = "29038199b328"
+#: Either side of the revision widening ``user_muted_terms.kind``.
+PRE_URL_MUTES = "f41d7b6a0c92"
+URL_MUTES = "a6d3f0c81b27"
 NOW = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
 
 
@@ -288,6 +291,73 @@ def test_migrations_round_trip_on_a_populated_postgres(
         assert inspect(pg_engine).get_table_names() == ["alembic_version"]
     finally:
         # Leave the schema as the session fixture expects to find it.
+        with pg_engine.begin() as connection:
+            connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        Base.metadata.create_all(pg_engine)
+
+
+def test_the_url_mute_kind_round_trips_a_populated_postgres(
+    pg_alembic_config: Config, pg_engine: Engine
+) -> None:
+    """The CHECK on ``user_muted_terms.kind``, widened and narrowed on the
+    engine that alters it in place rather than rebuilding the table.
+
+    That difference is why this is not redundant with the SQLite test in
+    ``tests/test_migrations.py``. PostgreSQL runs ``DROP CONSTRAINT`` by
+    name, so a name rendered differently from the one ``c3f8a17d2e40``
+    created fails here and nowhere else; and it validates existing rows
+    when the narrower constraint is added back, so a downgrade that forgot
+    to delete the URL mutes fails here too.
+    """
+    from app.db.models import Base
+
+    def insert(kind: str, term: str) -> None:
+        with pg_engine.begin() as connection:
+            connection.execute(
+                text("INSERT INTO user_muted_terms (user_id, kind, term) VALUES (1, :kind, :term)"),
+                {"kind": kind, "term": term},
+            )
+
+    def mutes() -> list[tuple[str, str]]:
+        with pg_engine.connect() as connection:
+            rows = connection.execute(
+                text("SELECT kind, term FROM user_muted_terms ORDER BY kind, term")
+            )
+            return [(kind, term) for kind, term in rows]
+
+    Base.metadata.drop_all(pg_engine)
+    with pg_engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+
+    try:
+        command.upgrade(pg_alembic_config, PRE_URL_MUTES)
+        with pg_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, github_id, github_login) VALUES (1, 101405, 'darkflib')"
+                )
+            )
+        insert("word", "derby")
+        insert("tag", "sport")
+        with pytest.raises(IntegrityError):
+            insert("url", "dev.to/jrandom")
+
+        command.upgrade(pg_alembic_config, URL_MUTES)
+        assert mutes() == [("tag", "sport"), ("word", "derby")]
+        insert("url", "dev.to/jrandom")
+        with pytest.raises(IntegrityError):
+            insert("host", "medium.com")
+
+        command.downgrade(pg_alembic_config, PRE_URL_MUTES)
+        assert mutes() == [("tag", "sport"), ("word", "derby")]
+        with pytest.raises(IntegrityError):
+            insert("url", "dev.to/jrandom")
+
+        command.upgrade(pg_alembic_config, URL_MUTES)
+        insert("url", "medium.com")
+        assert ("url", "medium.com") in mutes()
+    finally:
+        Base.metadata.drop_all(pg_engine)
         with pg_engine.begin() as connection:
             connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
         Base.metadata.create_all(pg_engine)

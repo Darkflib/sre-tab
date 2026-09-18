@@ -10,6 +10,12 @@ export const MAX_TERM_LENGTH = 64;
 /** Matches `MAX_MUTED_TERMS` in `app/api/v1/schemas/me.py`. */
 export const MAX_TERMS = 100;
 
+/** Matches `MAX_URL_LENGTH` in `app/ingest/normalise.py`: the bound on what
+ *  may be *pasted* as a URL mute, which is not the bound on what is stored.
+ *  Capping the input at `MAX_TERM_LENGTH` would refuse an ordinary article
+ *  link before the reduction that makes it fit had run. */
+export const MAX_URL_INPUT_LENGTH = 2048;
+
 interface MutedTermsSectionProps {
   preferences: Preferences;
   topics: Topic[];
@@ -29,10 +35,12 @@ interface MutedTermsSectionProps {
  * terms, which would be fewer components and would make "why am I not
  * seeing anything about Rust?" an editing exercise.
  *
- * Words and tags are two lists, not one with a type selector, because they
- * behave differently in the way that matters to a reader: a word is
- * anything they can type and a tag has to be one the catalogue knows. Two
- * controls make the second constraint obvious without an error message.
+ * Words, tags, and sites are three lists, not one with a type selector,
+ * because they behave differently in the way that matters to a reader: a
+ * word is anything they can type, a tag has to be one the catalogue knows,
+ * and a site is reduced to its host and first path segment before it is
+ * kept. Three controls make each constraint obvious without an error
+ * message.
  */
 export function MutedTermsSection({ preferences, topics, onSave }: MutedTermsSectionProps) {
   return (
@@ -55,6 +63,13 @@ export function MutedTermsSection({ preferences, topics, onSave }: MutedTermsSec
         topics={topics}
         onChange={(muted_tags) => {
           onSave({ muted_tags });
+        }}
+      />
+
+      <UrlList
+        urls={preferences.muted_urls}
+        onChange={(muted_urls) => {
+          onSave({ muted_urls });
         }}
       />
     </section>
@@ -206,6 +221,132 @@ function TagList({
           </li>
         ))}
       </ul>
+    </fieldset>
+  );
+}
+
+/**
+ * What the server will keep for a pasted link, as near as the browser can
+ * tell: the host without its `www.`, and the first path segment.
+ *
+ * A preview, not the reduction. `app.services.preferences.url_mute_term`
+ * reduces again and its answer is what is stored and what comes back in the
+ * list, so the reader's own input is what gets sent — a difference between
+ * the browser's URL parser and the server's then costs a preview that was
+ * slightly off, never a mute of something the reader did not paste. What
+ * this is for is the moment before saving: a whole article link means its
+ * author or its section, and the reader should see that before it happens,
+ * and a second post by an author already muted should read as a duplicate
+ * rather than as a save that changes nothing.
+ *
+ * `null` for anything that is not an http(s) link with a dotted host, or
+ * that the server would refuse for a reason visible here (a port,
+ * credentials, an empty first segment, a host that is `www.` twice over),
+ * which leaves the button dead.
+ */
+export function urlMuteTerm(input: string): string | null {
+  const trimmed = input.trim();
+  if (trimmed === '') return null;
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed.replace(/^\/\//, '')}`;
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  if (url.username !== '' || url.password !== '' || url.port !== '') return null;
+  const host = url.hostname.replace(/\.$/, '').replace(/^www\./, '');
+  // The server's rule, not a lookalike: one `www.` goes, and a host still
+  // starting with one is refused, because storing it would not survive
+  // the next save's re-reduction.
+  if (host.startsWith('www.') || !host.includes('.')) return null;
+  const segment = url.pathname.split('/')[1] ?? '';
+  if (segment === '' && url.pathname !== '/') return null;
+  return (segment === '' ? host : `${host}/${segment}`).toLowerCase();
+}
+
+function UrlList({ urls, onChange }: { urls: string[]; onChange: (next: string[]) => void }) {
+  const [draft, setDraft] = useState('');
+  const term = urlMuteTerm(draft);
+  const duplicate = term !== null && urls.includes(term);
+  // Refused here for the reason the server refuses it: a shortened segment
+  // is a different segment, and could be somebody else's.
+  const tooLong = term !== null && term.length > MAX_TERM_LENGTH;
+  const full = urls.length >= MAX_TERMS;
+  const blocked = term === null || duplicate || tooLong || full;
+
+  const add = () => {
+    if (blocked) return;
+    onChange([...urls, draft.trim()]);
+    setDraft('');
+  };
+
+  let problem: string | null = null;
+  if (duplicate) problem = `“${term}” is already muted.`;
+  else if (tooLong)
+    problem = `That comes to “${term.slice(0, 32)}…”, which is longer than the ${String(MAX_TERM_LENGTH)} characters a mute can hold.`;
+  else if (full && draft.trim() !== '')
+    problem = `That is ${String(MAX_TERMS)} muted sites, which is the limit. Remove one to add another.`;
+
+  return (
+    <fieldset className="settings__field">
+      <legend>Sites and authors</legend>
+      <p className="settings__hint">
+        Paste a link or type a site. A link mutes the first part of its path — the author on{' '}
+        <code>dev.to</code>, the section on the Guardian — and a bare site such as{' '}
+        <code>medium.com</code> is muted inside Hacker News and Lobsters too. A subdomain like{' '}
+        <code>alice.medium.com</code> is a site of its own.
+      </p>
+
+      <form
+        className="muted__add"
+        onSubmit={(event) => {
+          event.preventDefault();
+          add();
+        }}
+      >
+        <label className="visually-hidden" htmlFor="mute-url">
+          A link or site to mute
+        </label>
+        <input
+          id="mute-url"
+          className="input muted__input"
+          type="text"
+          inputMode="url"
+          value={draft}
+          maxLength={MAX_URL_INPUT_LENGTH}
+          placeholder="dev.to/someone"
+          aria-describedby={problem ? 'mute-url-problem' : term ? 'mute-url-preview' : undefined}
+          onChange={(event) => {
+            setDraft(event.target.value);
+          }}
+        />
+        <button type="submit" className="button" disabled={blocked}>
+          Mute
+        </button>
+      </form>
+
+      {problem ? (
+        <p className="settings__hint" id="mute-url-problem" role="status">
+          {problem}
+        </p>
+      ) : term ? (
+        <p className="settings__hint" id="mute-url-preview">
+          Mutes everything under <code>{term}</code>.
+        </p>
+      ) : null}
+
+      <TermList
+        terms={urls}
+        empty="Nothing is muted by site."
+        label={(entry) => `Stop muting ${entry}`}
+        onRemove={(entry) => {
+          onChange(urls.filter((existing) => existing !== entry));
+        }}
+      />
     </fieldset>
   );
 }

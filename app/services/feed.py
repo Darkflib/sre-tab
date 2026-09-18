@@ -42,7 +42,20 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ColumnElement, Select, and_, func, literal_column, or_, select, tuple_
+from sqlalchemy import (
+    ColumnElement,
+    Integer,
+    Select,
+    String,
+    and_,
+    case,
+    exists,
+    func,
+    literal_column,
+    or_,
+    select,
+    tuple_,
+)
 from sqlalchemy.dialects.postgresql import TSQUERY, TSVECTOR
 from sqlalchemy.orm import Session, contains_eager, selectinload
 
@@ -342,13 +355,16 @@ def search_predicate(db: Session, query: str | None) -> ColumnElement[bool] | No
 def mute_predicates(db: Session, user: User) -> list[ColumnElement[bool]]:
     """Predicates excluding what this user has muted; ``[]`` for nobody.
 
-    Two of them rather than one, because the two kinds match different
-    things — words against the item's text, tags against its topic links —
-    and folding them into a single ``OR`` would put an unrelated subquery
-    inside the text predicate for no gain.
+    One per kind rather than one in all, because the kinds match different
+    things — words against the item's text, tags against its topic links,
+    URLs against its canonical URL — and folding them into a single ``OR``
+    would put an unrelated subquery inside the text predicate for no gain.
 
-    One statement, not two: both kinds come back together, which is the
-    shape ``_effective_topics`` already uses and for the same reason.
+    One statement, not three: every kind comes back together, which is the
+    shape ``_effective_topics`` already uses and for the same reason. URL
+    terms are read here only to learn whether there are any; the predicate
+    reads them again itself, inside the feed's statement — see
+    :func:`_url_muted` for why.
 
     **Bookmarks are deliberately not filtered.** ``app.services.bookmarks``
     does not call this, and a bookmark is an explicit "keep this" — the
@@ -364,6 +380,7 @@ def mute_predicates(db: Session, user: User) -> list[ColumnElement[bool]]:
 
     words = sorted({term for kind, term in rows if kind is MuteKind.WORD})
     tags = {term for kind, term in rows if kind is MuteKind.TAG}
+    any_url = any(kind is MuteKind.URL for kind, _ in rows)
 
     predicates: list[ColumnElement[bool]] = []
     if words:
@@ -379,7 +396,85 @@ def mute_predicates(db: Session, user: User) -> list[ColumnElement[bool]]:
                 .where(Topic.slug.in_(tags))
             )
         )
+    if any_url:
+        # `NOT EXISTS` is two-valued whatever the subquery's comparisons
+        # make of a NULL, so no item can fall out of the feed through it.
+        predicates.append(~_url_muted(user))
     return predicates
+
+
+#: The schemes ``normalise_url`` stores, each with and without one
+#: ``www.``, longest first so a ``www.`` is taken before the bare scheme
+#: can match — which is :func:`app.ingest.topicrules.link_host`'s rule,
+#: stripping exactly one. A term's host never starts with ``www.`` (the
+#: reduction refuses the one shape that would), so the two agree.
+_URL_PREFIXES = ("https://www.", "https://", "http://www.", "http://")
+
+#: What may follow a term inside a URL it matches: nothing (the URL *is*
+#: the term), the ``/`` that ends a path segment, or the ``?`` that starts
+#: a query. ``#`` is absent because ``normalise_url`` removes fragments.
+_URL_BOUNDARIES = ("", "/", "?")
+
+
+def _url_muted(user: User) -> ColumnElement[bool]:
+    """True where the item's canonical URL falls under one of *user*'s URL
+    mutes.
+
+    A term is a host, or a host and one path segment, reduced by
+    :func:`app.services.preferences.url_mute_term`. It matches on
+    component boundaries and never as a raw string prefix: compared as
+    text, ``medium.com`` would also mute ``medium.com.evil.example`` and
+    ``dev.to/jrandom`` would also mute an author called ``jrandom2``. So
+    the URL's scheme and one ``www.`` are cut off, the term must be the
+    start of what remains, and the character after it must be one of
+    :data:`_URL_BOUNDARIES` — which is also what closes the host case,
+    since ``medium.com`` is followed by ``.`` in the lookalike.
+
+    **A correlated ``EXISTS`` over ``user_muted_terms``, not a clause per
+    term**, and the first version shows why. That one bound each term
+    into its own group of twelve ``LIKE`` and ``=`` clauses — both
+    schemes, with and without ``www.``, and each boundary — ``OR``-ed
+    together. SQLite parses a flat ``OR`` chain as a tree as deep as it
+    is long, and refuses one deeper than a thousand, so from about 84 URL
+    mutes every feed request failed: the API accepted a list its own feed
+    could not execute. The terms are already rows, so asking the table
+    makes the statement the same size at one mute as at a hundred.
+
+    **``substr`` equality rather than ``LIKE``**, which follows from the
+    terms being a column. A ``LIKE`` pattern built from a column would
+    need its ``%`` and ``_`` escaped in SQL, and both survive into a
+    stored term — ``%`` when it is not a valid escape, ``_`` always.
+    Comparing a prefix for equality has no metacharacters to escape.
+
+    ``lower`` on the column because the terms are stored folded, path
+    included; ``url_mute_term`` records why. ``normalise_url`` stores
+    ASCII only, so the two engines' ``lower`` and ``substr`` agree on
+    every value this can meet, and ``substr`` past the end of a string is
+    ``''`` on both, which is the equality case.
+
+    Evaluated per row, like every mute — the subquery reads this user's
+    URL terms through the leading columns of the primary key, a hundred at
+    most — and bounded by the keyset scan in the same way; see the module
+    docstring.
+    """
+    url = func.lower(FeedItem.canonical_url, type_=String)
+    key = case(
+        *(
+            (
+                func.substr(url, 1, len(prefix), type_=String) == prefix,
+                func.substr(url, len(prefix) + 1, type_=String),
+            )
+            for prefix in _URL_PREFIXES
+        )
+    )
+    term = UserMutedTerm.term
+    length = func.length(term, type_=Integer)
+    return exists().where(
+        UserMutedTerm.user_id == user.id,
+        UserMutedTerm.kind == MuteKind.URL,
+        func.substr(key, 1, length, type_=String) == term,
+        func.substr(key, length + 1, 1, type_=String).in_(_URL_BOUNDARIES),
+    )
 
 
 def source_icon(source: Source) -> str | None:

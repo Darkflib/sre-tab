@@ -509,6 +509,11 @@ export interface components {
              * @description Topic slugs hidden from the feed, sorted
              */
             muted_tags: string[];
+            /**
+             * Muted Urls
+             * @description Hosts, or a host and its first path segment, whose links are hidden from the feed, sorted
+             */
+            muted_urls: string[];
         };
         /**
          * PreferencesPatch
@@ -530,6 +535,8 @@ export interface components {
             muted_words?: string[] | null;
             /** Muted Tags */
             muted_tags?: string[] | null;
+            /** Muted Urls */
+            muted_urls?: string[] | null;
         };
         /** ProbeStatus */
         ProbeStatus: {

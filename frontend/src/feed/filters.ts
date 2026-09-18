@@ -220,6 +220,31 @@ export function mutesBlocking(query: string, mutedWords: string[]): string[] {
 }
 
 /**
+ * The feed's one line about what is muted, or `''` when nothing is.
+ *
+ * Counts rather than the terms themselves. The terms are the reader's own
+ * words and some of them are muted precisely because the reader does not
+ * want to read them — printing them back across the top of the feed would
+ * defeat the setting it describes.
+ *
+ * Takes the preferences whole rather than a count per kind, so a kind
+ * added later cannot be muting the feed while this line says nothing — the
+ * way URL mutes would have, had the caller gone on summing two lengths.
+ */
+export function describeMutes({
+  muted_words: words,
+  muted_tags: tags,
+  muted_urls: urls,
+}: Pick<Preferences, 'muted_words' | 'muted_tags' | 'muted_urls'>): string {
+  const parts: string[] = [];
+  if (words.length > 0) parts.push(`${String(words.length)} ${words.length === 1 ? 'word' : 'words'}`);
+  if (tags.length > 0) parts.push(`${String(tags.length)} ${tags.length === 1 ? 'topic' : 'topics'}`);
+  if (urls.length > 0) parts.push(`${String(urls.length)} ${urls.length === 1 ? 'site' : 'sites'}`);
+  if (parts.length < 3) return parts.join(' and ');
+  return `${parts.slice(0, -1).join(', ')}, and ${String(parts.at(-1))}`;
+}
+
+/**
  * Whether a search change should replace the current history entry rather
  * than push a new one.
  *

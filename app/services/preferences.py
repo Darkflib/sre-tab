@@ -15,8 +15,10 @@ commit.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 
+import httpx
 from sqlalchemy import Select, delete, select
 from sqlalchemy.orm import Session
 
@@ -32,6 +34,8 @@ from app.db.models import (
     UserPreferenceSource,
     UserPreferenceTopic,
 )
+from app.ingest.normalise import InvalidItemURLError, normalise_url
+from app.ingest.topicrules import link_host
 from app.services.errors import UnknownSlugError
 from app.services.upsert import insert_ignore
 
@@ -153,6 +157,15 @@ def apply_patch(db: Session, user: User, patch: PreferencesPatch) -> Preferences
         _resolve(known, terms, "topic")
         _replace_mutes(db, user, MuteKind.TAG, terms)
 
+    if patch.muted_urls is not None:
+        # Every entry is reduced again, including the ones the client is
+        # only sending back because the field is replace-the-whole-list.
+        # That is safe because the reduction is idempotent — a stored term
+        # reduces to itself — which `url_mute_term` is written to keep true.
+        _replace_mutes(
+            db, user, MuteKind.URL, sorted({url_mute_term(raw) for raw in patch.muted_urls})
+        )
+
     # Flush, never commit: the read-back below has to see the update, but
     # the transaction boundary belongs to the caller (agent A's route).
     db.flush()
@@ -211,6 +224,102 @@ def _mute_terms(terms: Iterable[str]) -> list[str]:
             f"case-folded: {over[0][:32]!r}…"
         )
     return normalised
+
+
+#: A scheme, as RFC 3986 spells one. Absent, the input is a bare
+#: ``host/segment`` and is read as ``https``; which scheme is irrelevant to
+#: the term, since the term carries none and the feed matches both.
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def url_mute_term(raw: str) -> str:
+    """The term a URL mute stores for *raw*: a host, and at most one path
+    segment of it.
+
+    A reader pastes an article, and what they mean by it is the author or
+    the site — ``https://dev.to/jrandom/some-post-1abc?utm_source=x``
+    means ``dev.to/jrandom``. Host plus first segment is also what fits the
+    column: an article URL does not, and truncating one would mute
+    something the reader never named. So the whole input is reduced, and a
+    reduction that *still* does not fit is refused with the length in the
+    message rather than shortened.
+
+    The input goes through :func:`app.ingest.normalise.normalise_url`
+    first, and that is the point rather than a convenience. The term is
+    compared against ``feed_items.canonical_url``, which that function
+    wrote, so reading the pasted URL by any other rules would produce a
+    term in a different dialect from the column it is matched against. It
+    also refuses what the column can never contain — an IP literal, a
+    ``user:pass@``, a scheme other than ``http(s)`` — so none of those can
+    become a mute that matches nothing. The host is then reduced by
+    :func:`app.ingest.topicrules.link_host`, the same "is this the same
+    host" answer the topic rules give.
+
+    Every save reduces every stored term again, because the field is
+    replace-the-whole-list and the client sends back what it was given.
+    So the reduction has to be idempotent — a stored term must reduce to
+    itself — and two of the refusals below exist for that alone. Each
+    refusal is so that a stored term can never mean more than it says:
+
+    - an empty input, which would otherwise read as ``https://`` and fail
+      with a message about hosts;
+    - a first segment that is empty but not the end of the path
+      (``example.com//foo``), which would otherwise reduce to the bare
+      host and mute the whole site;
+    - a port. A term carries no scheme, so it is read back as ``https``,
+      and ``http://example.com:443/`` stored as ``example.com:443`` would
+      lose its port to ``normalise_url`` on the next save — ``:443`` is the
+      default for the scheme it is re-read under, not the one it came
+      from. Dropping the port instead would store a term that does not
+      match the link it was pasted from. An article on a non-default port
+      is rare enough that saying no is the honest answer;
+    - a host that still starts with ``www.`` once one ``www.`` is gone.
+      ``link_host`` strips exactly one, so ``www.www.example.com`` becomes
+      ``www.example.com`` — and the next save would reduce *that* to
+      ``example.com``, quietly widening the mute.
+
+    Lower-cased whole, path included, and deliberately; the feed compares
+    against ``lower(canonical_url)`` to match. It is wider than RFC 3986,
+    which makes paths case-sensitive, but the segment being muted is an
+    author or a section, and ``/JRandom`` and ``/jrandom`` being different
+    people is not a case worth a mute that quietly misses the one a
+    publisher happened to capitalise. It also keeps the primary key's
+    promise the word mutes keep: two pastes a reader would call the same
+    are one row. ``normalise_url`` guarantees ASCII (percent-escapes and
+    punycode), so Python's ``lower`` and SQL's agree.
+    """
+    candidate = raw.strip()
+    if not candidate:
+        raise ValueError("a muted URL cannot be empty; send an empty list to unmute everything")
+    if not _SCHEME.match(candidate):
+        candidate = "https://" + candidate.removeprefix("//")
+    try:
+        url = httpx.URL(normalise_url(candidate))
+    except InvalidItemURLError as exc:
+        # Not echoing the input: it may be carrying credentials, which is
+        # one of the reasons it is being refused.
+        raise ValueError(f"not a URL that can be muted: {exc}") from exc
+
+    host = link_host(url)
+    if host is None:  # pragma: no cover - normalise_url has refused a hostless URL
+        raise ValueError("not a URL that can be muted: no host")
+    if host.startswith("www."):
+        raise ValueError(f"cannot mute a host that is www. twice over: www.{host}")
+    if url.port is not None:
+        raise ValueError(f"a muted URL cannot name a port: {host}:{url.port}")
+
+    path = url.raw_path.decode("ascii").split("?", 1)[0]
+    segment = path[1:].split("/", 1)[0]
+    if not segment and path != "/":
+        raise ValueError(f"cannot mute this link on {host}: its first path segment is empty")
+
+    term = (f"{host}/{segment}" if segment else host).lower()
+    if len(term) > MAX_MUTED_TERM_LENGTH:
+        raise ValueError(
+            f"muted URL reduces to {term[:32]!r}…, which is longer than "
+            f"{MAX_MUTED_TERM_LENGTH} characters"
+        )
+    return term
 
 
 def _replace_mutes(db: Session, user: User, kind: MuteKind, terms: Sequence[str]) -> None:
@@ -306,6 +415,7 @@ def _to_out(db: Session, user: User, profile: UserPreferences) -> PreferencesOut
         sources=list(db.scalars(selected_source_slugs(user.id)).all()),
         muted_words=list(db.scalars(muted_terms(user.id, MuteKind.WORD)).all()),
         muted_tags=list(db.scalars(muted_terms(user.id, MuteKind.TAG)).all()),
+        muted_urls=list(db.scalars(muted_terms(user.id, MuteKind.URL)).all()),
     )
 
 

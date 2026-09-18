@@ -90,7 +90,7 @@ that.
   - Topics that describe the article rather than its publisher, derived
     from the item's URL before its text.
   - Muting by URL prefix, for the authors and third-party domains no tag
-    can name.
+    can name — landed.
   - Telling the reader that new items have arrived.
 
 <a id="supply-chain-hygiene"></a>
@@ -1728,7 +1728,9 @@ gets for nothing.
   `feed_items.canonical_url` and nothing else.
 
   **Muting by URL prefix, which is a different predicate from muting by
-  tag.** "No more `dev.to/jrandom`" is a real ask and the topic catalogue is
+  tag** — **landed**, as `MuteKind.URL` and `muted_urls`, with what
+  building it settled recorded after the three paragraphs that specified
+  it. "No more `dev.to/jrandom`" is a real ask and the topic catalogue is
   the wrong home for it — an author is unbounded vocabulary, and a settings
   screen listing every author anyone has ever muted is not a list a reader
   can browse. A third `MuteKind`, matched as a prefix against
@@ -1771,6 +1773,59 @@ gets for nothing.
   both what the reader meant by pasting an author's post and what fits the
   existing column. A reduced term that still exceeds 64 is a 422 that says
   so, rather than a truncation that mutes something else.
+
+  **What building it settled.** All three paragraphs above held, and the
+  reduction is where the rest turned up. It runs the pasted text through
+  `normalise_url` and then `link_host` (the topic ruleset's `_host`, made
+  public for it), because the term is matched against a column that
+  function wrote, and reading the URL by any other rules would give a term
+  in a different dialect from the thing it is compared with. That also
+  refuses IP literals, credentials, and non-`http(s)` schemes for free.
+
+  The reduction has to be **idempotent**, and that was not in the spec.
+  The field is replace-the-whole-list, so every save sends every stored
+  term back and the server reduces each one again. Two inputs failed
+  that. A port did: `http://example.com:443/x` stored as
+  `example.com:443/x` is re-read as `https`, where 443 is the default, and
+  loses its port on the next save. And `www.www.example.com` did, because
+  `link_host` strips exactly one `www.`. Both are refused rather than
+  special-cased; neither shape turns up in a real feed, and refusing is
+  what keeps a stored term meaning one thing. An empty first segment
+  (`example.com//x`) is refused too, since it would otherwise reduce to
+  the bare host and mute the whole site.
+
+  **Matching ignores case, path included.** It is wider than RFC 3986,
+  but the segment being muted is an author or a section, and a mute of
+  `dev.to/jrandom` missing `/JRandom/` would be the quiet failure this
+  whole feature is written against. `normalise_url` guarantees ASCII, so
+  Python's `lower` and SQL's agree.
+
+  **The predicate is not the one specified, and review is why.** As
+  written above — an equality or an autoescaped `LIKE` per term, for both
+  schemes, with and without `www.` — it came to twelve clauses a term in
+  one flat `OR`. SQLite parses that as a tree as deep as it is long and
+  refuses one deeper than a thousand, so from about 84 URL mutes every
+  feed request failed, for a list the API had accepted. Codex found it
+  on PR #47; the test for a hundred and one being refused could not,
+  because it never ran a feed at a hundred. What shipped asks
+  `user_muted_terms` itself, in a correlated `NOT EXISTS`, so the
+  statement is the same size at one mute as at a hundred. The URL is
+  keyed by one `CASE` that strips the scheme and one `www.` —
+  `link_host`'s rule, in SQL — and the term must equal the start of that
+  key with `''`, `/`, or `?` after it. That is `substr` equality rather
+  than `LIKE`, so there is nothing to escape; the `%` and `_` tests stay,
+  so going back to a `LIKE` cannot quietly reintroduce wildcards. The
+  `?` boundary was needed either way: `dev.to/jrandom?page=2` is neither
+  the term nor under `/jrandom/`.
+
+  One consequence to state rather than discover: "host plus first
+  segment" is literal, so pasting a Hacker News discussion link mutes
+  `news.ycombinator.com/item`, which is every Hacker News discussion.
+  Settings previews the reduction before saving for that reason, and sends
+  what was pasted rather than its own reading of it — the server's
+  reduction is the one that is stored, so a difference between two URL
+  parsers costs a preview that was slightly off, never a mute of
+  something nobody pasted.
 
   **What still needs deciding, and one answer has moved.** Nothing in the
   store ever *removes* a topic link, so a corrected rule has no path. That

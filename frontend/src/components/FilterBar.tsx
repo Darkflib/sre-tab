@@ -8,6 +8,7 @@ import {
   summariseFilters,
 } from '../feed/collapse';
 import {
+  describeMutes,
   effectiveSelection,
   EMPTY_FILTERS,
   type FeedFilters,
@@ -86,7 +87,7 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
   // a deselected source is a chip you can see and a search is text in a
   // box, but a mute simply removes items. So it is stated here whenever it
   // is on, outside the disclosure, with the way to change it attached.
-  const mutedCount = preferences.muted_words.length + preferences.muted_tags.length;
+  const muted = describeMutes(preferences);
   const blocking = mutesBlocking(filters.query, preferences.muted_words);
 
   const setSources = (next: string[] | null) => {
@@ -249,10 +250,9 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
           which every result would contain.{' '}
           <Link to="/settings">Change what is muted</Link>.
         </p>
-      ) : mutedCount > 0 ? (
+      ) : muted ? (
         <p className="filters__muted">
-          {describeMutes(preferences.muted_words.length, preferences.muted_tags.length)} hidden from
-          this feed. <Link to="/settings">Change what is muted</Link>.
+          {muted} hidden from this feed. <Link to="/settings">Change what is muted</Link>.
         </p>
       ) : null}
 
@@ -489,16 +489,4 @@ function FilterGroup({
       </ul>
     </div>
   );
-}
-
-
-function describeMutes(words: number, tags: number): string {
-  // Counts rather than the terms themselves. The terms are the reader's
-  // own words and some of them are muted precisely because the reader does
-  // not want to read them — printing them back across the top of the feed
-  // would defeat the setting it describes.
-  const parts: string[] = [];
-  if (words > 0) parts.push(`${String(words)} ${words === 1 ? 'word' : 'words'}`);
-  if (tags > 0) parts.push(`${String(tags)} ${tags === 1 ? 'topic' : 'topics'}`);
-  return parts.join(' and ');
 }

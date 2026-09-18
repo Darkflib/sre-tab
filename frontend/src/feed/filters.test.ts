@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { Preferences, Source, Topic } from '../api/types';
 import {
   applyFiltersToParams,
+  describeMutes,
   effectiveSelection,
   EMPTY_FILTERS,
   type FeedFilters,
@@ -67,6 +68,7 @@ function preferences(overrides: Partial<Preferences> = {}): Preferences {
     sources: [],
     muted_words: [],
     muted_tags: [],
+    muted_urls: [],
     ...overrides,
   };
 }
@@ -765,5 +767,31 @@ describe('toggle', () => {
     // The path out of "None": the empty array is a real selection, so
     // toggling appends to it rather than starting from the catalogue.
     expect(toggle([], 'a')).toEqual(['a']);
+  });
+});
+
+describe('describeMutes', () => {
+  const none = { muted_words: [], muted_tags: [], muted_urls: [] };
+
+  it('is empty when nothing is muted, so the feed says nothing', () => {
+    expect(describeMutes(none)).toBe('');
+  });
+
+  it('counts URL mutes, which are muting the feed as much as the others', () => {
+    // The line was a sum of two lengths when URL mutes arrived; a reader
+    // with only sites muted saw a filtered feed and no line explaining it.
+    expect(describeMutes({ ...none, muted_urls: ['medium.com'] })).toBe('1 site');
+  });
+
+  it('joins two kinds with "and"', () => {
+    expect(describeMutes({ ...none, muted_words: ['derby', 'football'], muted_urls: ['medium.com'] })).toBe(
+      '2 words and 1 site',
+    );
+  });
+
+  it('joins three with an Oxford comma', () => {
+    expect(
+      describeMutes({ muted_words: ['derby'], muted_tags: ['sport', 'culture'], muted_urls: ['a.example', 'b.example'] }),
+    ).toBe('1 word, 2 topics, and 2 sites');
   });
 });

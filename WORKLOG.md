@@ -3,6 +3,63 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+<a id="url-mutes"></a>
+## 2026-09-18 — Muting by URL prefix
+
+Built to the ROADMAP entry under "Topics describe the publisher, not the
+article". What building it settled is recorded there; this is what
+changed from the spec on the way, and how it was checked.
+
+**Three deviations, each a refusal.** A port, a host that is `www.` twice
+over, and an empty first path segment are 422s. The first two break the
+reduction's idempotence, which the spec did not ask for and the
+replace-the-whole-list field requires: every save reduces every stored
+term again. The third would reduce to the bare host and mute the site.
+
+**Case folding covers the path as well as the host.** The spec said the
+host is case-folded and was silent on the path. A mute of an author that
+missed the one post a publisher capitalised is the quiet failure the
+feature is written against, so both sides are folded.
+
+**The predicate the spec described did not survive review.** One `OR` of
+twelve clauses a term hit SQLite's thousand-deep expression limit at
+about 84 URL mutes, and every feed request failed. Codex caught it on
+PR #47. Reproduced first — `Expression tree is too large (maximum depth
+1000)` from a feed at the hundred-term cap — then replaced with a
+correlated `NOT EXISTS` over `user_muted_terms` that compares by `substr`
+equality, which is one size at any number of terms and has no `LIKE` to
+escape. The lesson is the one AGENTS.md already names: the cap had a
+test for a hundred and one being refused, and none for a hundred
+working.
+
+**Verification.** Every gate in AGENTS.md, plus the PostgreSQL suite
+against `postgres:18`. Each guard was then broken on purpose and the
+suite rerun, against the predicate that shipped: dropping `lower()`, the
+`www.` prefixes, or the `http` scheme; ordering the bare scheme before
+its `www.` form; dropping each boundary, or the boundary check; losing
+the subquery's user or kind filter; and not adding the predicate at all.
+Also shrinking the input bound to 64, and in the revision, passing the
+full constraint name to the batch operations, dropping the downgrade's
+`DELETE`, and a no-op upgrade. Frontend: not counting sites, sending the
+preview instead of the paste, replacing the list, and capping the input
+at 64. All were caught on SQLite. On PostgreSQL all but the user and
+kind filters were, which are plain equalities and are not what that
+suite is for.
+
+**One of those checks passed falsely first.** The PostgreSQL run of the
+mutation harness handed pytest two paths as one argument. pytest then
+failed on a path that does not exist, so every mutation read as
+"caught". An empty failure summary gave it away. Rerun with the paths
+split, every one was caught again, now by the assertion meant to catch
+it. This is the AGENTS.md trap exactly: a check that fails for a reason
+unrelated to its subject.
+
+**`npx tsc --noEmit` checks nothing in `frontend/`.** The root
+`tsconfig.json` is `"files": []` with project references, and plain
+`tsc` does not follow references, so it exits 0 with a deliberate type
+error in `src/`. `npm run typecheck` (`tsc --build --force`) is what CI
+runs and is what catches it. That is what was used here.
+
 <a id="anchored-footer"></a>
 ## 2026-09-17 — A footer that infinite scroll cannot push away
 
