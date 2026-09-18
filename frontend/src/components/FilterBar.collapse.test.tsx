@@ -77,6 +77,7 @@ const PREFERENCES: Preferences = {
   sources: [],
   muted_words: [],
   muted_tags: [],
+  muted_urls: [],
 };
 
 const SESSION: SessionValue = {

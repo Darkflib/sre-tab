@@ -35,6 +35,12 @@ PRE_PHASE_2 = "d25a61924953"
 #: other.
 PRE_API_TOKENS = "29038199b328"
 
+#: Either side of the revision that widened ``user_muted_terms.kind`` to
+#: take ``'url'``. Named rather than reached as "head", so a later revision
+#: cannot change what the round trip below is a round trip of.
+PRE_URL_MUTES = "f41d7b6a0c92"
+URL_MUTES = "a6d3f0c81b27"
+
 ENTITY_TABLES = {
     "users",
     "sessions",
@@ -275,3 +281,69 @@ def test_source_status_cascades_with_its_source(
     with migrate_engine.begin() as connection:
         connection.execute(text("DELETE FROM sources WHERE id = 1"))
     assert _count(migrate_engine, "source_status") == 0
+
+
+def _mutes(engine: Engine) -> list[tuple[str, str]]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text("SELECT kind, term FROM user_muted_terms ORDER BY kind, term")
+        )
+        return [(kind, term) for kind, term in rows]
+
+
+def _insert_mute(engine: Engine, kind: str, term: str) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO user_muted_terms (user_id, kind, term) VALUES (1, :kind, :term)"),
+            {"kind": kind, "term": term},
+        )
+
+
+def test_the_url_mute_kind_round_trips_a_populated_table(
+    alembic_config: Config, migrate_engine: Engine
+) -> None:
+    """The CHECK on ``user_muted_terms.kind`` widened, and narrowed again.
+
+    SQLite cannot alter a CHECK, so both directions rebuild the table —
+    which is exactly the operation that can lose rows, keep the old
+    constraint, or fail on a name it cannot find. So each step is asked
+    three things: the rows are still there, the new kind is accepted or
+    refused as that side of the revision says, and an unknown kind is
+    still refused, so a rebuild that dropped the constraint entirely
+    cannot pass as one that widened it.
+    """
+    command.upgrade(alembic_config, PRE_URL_MUTES)
+    with migrate_engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO users (id, github_id, github_login) VALUES (1, 101405, 'darkflib')")
+        )
+    _insert_mute(migrate_engine, "word", "derby")
+    _insert_mute(migrate_engine, "tag", "sport")
+    # Refused before, so the upgrade is what changes it.
+    with pytest.raises(IntegrityError):
+        _insert_mute(migrate_engine, "url", "dev.to/jrandom")
+
+    command.upgrade(alembic_config, URL_MUTES)
+    assert _mutes(migrate_engine) == [("tag", "sport"), ("word", "derby")]
+    _insert_mute(migrate_engine, "url", "dev.to/jrandom")
+    with pytest.raises(IntegrityError):
+        _insert_mute(migrate_engine, "host", "medium.com")
+    assert _mutes(migrate_engine) == [
+        ("tag", "sport"),
+        ("url", "dev.to/jrandom"),
+        ("word", "derby"),
+    ]
+
+    # Down: the URL mutes go, because the older application cannot read
+    # them, and nothing else does.
+    command.downgrade(alembic_config, PRE_URL_MUTES)
+    assert _mutes(migrate_engine) == [("tag", "sport"), ("word", "derby")]
+    with pytest.raises(IntegrityError):
+        _insert_mute(migrate_engine, "url", "dev.to/jrandom")
+    assert _count(migrate_engine, "users") == 1
+
+    # And up again, which is where a downgrade that left the wrong
+    # constraint name behind would fail.
+    command.upgrade(alembic_config, URL_MUTES)
+    _insert_mute(migrate_engine, "url", "medium.com")
+    assert ("url", "medium.com") in _mutes(migrate_engine)

@@ -342,12 +342,12 @@ def search_predicate(db: Session, query: str | None) -> ColumnElement[bool] | No
 def mute_predicates(db: Session, user: User) -> list[ColumnElement[bool]]:
     """Predicates excluding what this user has muted; ``[]`` for nobody.
 
-    Two of them rather than one, because the two kinds match different
-    things — words against the item's text, tags against its topic links —
-    and folding them into a single ``OR`` would put an unrelated subquery
-    inside the text predicate for no gain.
+    One per kind rather than one in all, because the kinds match different
+    things — words against the item's text, tags against its topic links,
+    URLs against its canonical URL — and folding them into a single ``OR``
+    would put an unrelated subquery inside the text predicate for no gain.
 
-    One statement, not two: both kinds come back together, which is the
+    One statement, not three: every kind comes back together, which is the
     shape ``_effective_topics`` already uses and for the same reason.
 
     **Bookmarks are deliberately not filtered.** ``app.services.bookmarks``
@@ -364,6 +364,7 @@ def mute_predicates(db: Session, user: User) -> list[ColumnElement[bool]]:
 
     words = sorted({term for kind, term in rows if kind is MuteKind.WORD})
     tags = {term for kind, term in rows if kind is MuteKind.TAG}
+    urls = sorted({term for kind, term in rows if kind is MuteKind.URL})
 
     predicates: list[ColumnElement[bool]] = []
     if words:
@@ -379,7 +380,65 @@ def mute_predicates(db: Session, user: User) -> list[ColumnElement[bool]]:
                 .where(Topic.slug.in_(tags))
             )
         )
+    if urls:
+        # `canonical_url` is NOT NULL, so this negation cannot go
+        # three-valued and take items with it.
+        predicates.append(~_url_match(urls))
     return predicates
+
+
+#: What may follow a URL mute's term in a URL it matches. A path segment
+#: ends at a ``/``, or at the ``?`` that starts a query; the end of the
+#: string is the equality clause. ``#`` is not here because
+#: ``normalise_url`` removes fragments before anything is stored.
+_URL_BOUNDARIES = ("/", "?")
+
+
+def _url_match(terms: Sequence[str]) -> ColumnElement[bool]:
+    """True where the item's canonical URL falls under any of *terms*.
+
+    A term is a host, or a host and one path segment, reduced by
+    :func:`app.services.preferences.url_mute_term`. It matches on
+    component boundaries and never as a raw string prefix: compared as
+    text, ``medium.com`` would also mute ``medium.com.evil.example`` and
+    ``dev.to/jrandom`` would also mute an author called ``jrandom2``. So
+    each is asked as an equality, or as a ``LIKE`` on the term with a
+    boundary appended — and the ``/`` is also what closes the host case,
+    since ``https://medium.com/`` is not a prefix of
+    ``https://medium.com.evil.example/``.
+
+    Both schemes, because ``normalise_url`` keeps ``http`` and ``https``
+    distinct on purpose and the term carries neither. Both with and
+    without ``www.``, because the term's host had one removed by
+    ``link_host`` and the stored URL still has it — the Guardian's links
+    are all ``www.theguardian.com``. A term's host never itself starts
+    with ``www.`` (the reduction refuses the one shape that would), so
+    this cannot reach a host the reduction would not have produced.
+
+    ``lower`` on the column for the reason ``url_mute_term`` records at
+    length: SQLite's ``LIKE`` ignores ASCII case and its ``=`` does not,
+    so without it the two clauses for one term would disagree with each
+    other on SQLite, and both would disagree with PostgreSQL.
+    ``autoescape`` for the reason ``_text_match`` gives, and it is not
+    hypothetical here: ``%`` survives ``normalise_url`` when it is not a
+    valid escape, and ``_`` is ordinary in a path.
+
+    Twelve clauses a term, and a hundred terms at most, so twelve hundred
+    at worst. A filter rather than an index seek, like every mute, and
+    bounded by the keyset scan in the same way — see the module
+    docstring.
+    """
+    url = func.lower(FeedItem.canonical_url)
+    clauses: list[ColumnElement[bool]] = []
+    for term in terms:
+        for scheme in ("https://", "http://"):
+            for www in ("", "www."):
+                base = f"{scheme}{www}{term}"
+                clauses.append(url == base)
+                clauses.extend(
+                    url.startswith(base + boundary, autoescape=True) for boundary in _URL_BOUNDARIES
+                )
+    return or_(*clauses)
 
 
 def source_icon(source: Source) -> str | None:

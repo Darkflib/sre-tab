@@ -105,6 +105,7 @@ DEFAULT_PROFILE = PreferencesOut(
     sources=[],
     muted_words=[],
     muted_tags=[],
+    muted_urls=[],
 )
 
 

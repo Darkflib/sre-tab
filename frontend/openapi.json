@@ -1399,6 +1399,16 @@
             "type": "array",
             "title": "Muted Tags",
             "description": "Topic slugs hidden from the feed, sorted"
+          },
+          "muted_urls": {
+            "items": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 1
+            },
+            "type": "array",
+            "title": "Muted Urls",
+            "description": "Hosts, or a host and its first path segment, whose links are hidden from the feed, sorted"
           }
         },
         "type": "object",
@@ -1410,7 +1420,8 @@
           "topics",
           "sources",
           "muted_words",
-          "muted_tags"
+          "muted_tags",
+          "muted_urls"
         ],
         "title": "PreferencesOut"
       },
@@ -1521,6 +1532,23 @@
               }
             ],
             "title": "Muted Tags"
+          },
+          "muted_urls": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 2048,
+                  "minLength": 1
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Urls"
           }
         },
         "type": "object",

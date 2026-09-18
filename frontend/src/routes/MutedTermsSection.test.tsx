@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Preferences, PreferencesPatch, Topic } from '../api/types';
-import { MAX_TERMS, MutedTermsSection } from './MutedTermsSection';
+import { MAX_TERMS, MutedTermsSection, urlMuteTerm } from './MutedTermsSection';
 
 /**
  * The muted list, mounted for real. Renderer per
@@ -33,6 +33,7 @@ function preferences(overrides: Partial<Preferences> = {}): Preferences {
     sources: [],
     muted_words: [],
     muted_tags: [],
+    muted_urls: [],
     ...overrides,
   };
 }
@@ -67,13 +68,19 @@ function wordInput(): HTMLInputElement {
   return field;
 }
 
-function type(text: string): void {
+function urlInput(): HTMLInputElement {
+  const field = host.querySelector<HTMLInputElement>('#mute-url');
+  if (!field) throw new Error('no url input rendered');
+  return field;
+}
+
+function type(text: string, field: () => HTMLInputElement = wordInput): void {
   const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
   if (!descriptor?.set) throw new Error('HTMLInputElement has no value setter');
   act(() => {
-    const field = wordInput();
-    descriptor.set?.call(field, text);
-    field.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = field();
+    descriptor.set?.call(input, text);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
 
@@ -298,4 +305,136 @@ describe('MutedTermsSection at the topic cap', () => {
 
     expect(onSave).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('MutedTermsSection and sites', () => {
+  function submitUrl(): void {
+    act(() => {
+      urlInput().form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+  }
+
+  function urlButton(): HTMLButtonElement {
+    const button = urlInput().form?.querySelector<HTMLButtonElement>('button[type="submit"]');
+    if (!button) throw new Error('no url submit button rendered');
+    return button;
+  }
+
+  it('accepts a whole article link, not only something that fits a term', () => {
+    // The bug the separate bound exists for: capped at the term's 64, an
+    // ordinary pasted link is cut off mid-path by the input itself.
+    render(preferences(), vi.fn());
+
+    // `MAX_URL_LENGTH` in app/ingest/normalise.py, spelled out so that
+    // shrinking the constant fails here rather than moving the goalposts.
+    expect(urlInput().maxLength).toBe(2048);
+  });
+
+  it('sends what was pasted, added to the list, and lets the server reduce it', () => {
+    // The browser's reading is only a preview. Sending it instead would let
+    // a difference between two URL parsers mute something nobody pasted.
+    const onSave = vi.fn();
+    render(preferences({ muted_urls: ['medium.com'] }), onSave);
+
+    type('  https://dev.to/jrandom/first-post-1abc?utm_source=x ', urlInput);
+    submitUrl();
+
+    expect(onSave.mock.calls).toEqual([
+      [{ muted_urls: ['medium.com', 'https://dev.to/jrandom/first-post-1abc?utm_source=x'] }],
+    ]);
+  });
+
+  it('says what a pasted link will mute before it is saved', () => {
+    render(preferences(), vi.fn());
+
+    type('https://www.theguardian.com/football/2026/sep/18/match-report', urlInput);
+
+    expect(host.querySelector('#mute-url-preview')?.textContent).toBe(
+      'Mutes everything under theguardian.com/football.',
+    );
+  });
+
+  it('treats a second post by a muted author as a duplicate', () => {
+    const onSave = vi.fn();
+    render(preferences({ muted_urls: ['dev.to/jrandom'] }), onSave);
+
+    type('https://WWW.dev.to/JRandom/another-post', urlInput);
+
+    expect(urlButton().disabled).toBe(true);
+    submitUrl();
+    expect(onSave).not.toHaveBeenCalled();
+    expect(host.textContent).toContain('“dev.to/jrandom” is already muted');
+  });
+
+  it('refuses a link whose first segment is still too long, and says so', () => {
+    const onSave = vi.fn();
+    render(preferences(), onSave);
+
+    type(`https://example.com/${'x'.repeat(70)}/post`, urlInput);
+
+    expect(urlButton().disabled).toBe(true);
+    submitUrl();
+    expect(onSave).not.toHaveBeenCalled();
+    expect(host.querySelector('#mute-url-problem')?.textContent).toContain('64 characters');
+  });
+
+  it('stops at the number of sites the server accepts', () => {
+    render(
+      preferences({ muted_urls: Array.from({ length: MAX_TERMS }, (_, n) => `host${String(n)}.example`) }),
+      vi.fn(),
+    );
+
+    type('dev.to/jrandom', urlInput);
+
+    expect(urlButton().disabled).toBe(true);
+    expect(host.querySelector('#mute-url-problem')?.textContent).toContain('which is the limit');
+  });
+
+  it('removes one site without disturbing the others or the words', () => {
+    const onSave = vi.fn();
+    render(preferences({ muted_words: ['derby'], muted_urls: ['dev.to/jrandom', 'medium.com'] }), onSave);
+
+    const remove = [...host.querySelectorAll<HTMLButtonElement>('.muted__remove')].find(
+      (button) => button.textContent === 'Stop muting medium.com',
+    );
+    act(() => {
+      remove?.click();
+    });
+
+    expect(onSave.mock.calls).toEqual([[{ muted_urls: ['dev.to/jrandom'] }]]);
+  });
+
+  it.each(['', '   ', 'ftp://dev.to/jrandom', 'localhost', 'https://user:pw@dev.to/x', 'dev.to:8443/x'])(
+    'leaves the button dead for %j',
+    (input) => {
+      render(preferences(), vi.fn());
+
+      type(input, urlInput);
+
+      expect(urlButton().disabled).toBe(true);
+    },
+  );
+});
+
+describe('urlMuteTerm', () => {
+  it.each([
+    ['dev.to/jrandom', 'dev.to/jrandom'],
+    ['dev.to/jrandom/', 'dev.to/jrandom'],
+    ['//dev.to/jrandom', 'dev.to/jrandom'],
+    ['https://dev.to/jrandom/first-post-1abc?utm_source=x#top', 'dev.to/jrandom'],
+    ['https://dev.to/jrandom?page=2', 'dev.to/jrandom'],
+    ['https://Medium.com/', 'medium.com'],
+    ['www.medium.com', 'medium.com'],
+    ['https://medium.com/@someone/a-story', 'medium.com/@someone'],
+    ['https://news.ycombinator.com/item?id=1', 'news.ycombinator.com/item'],
+  ])('reads %j as %j, as the server will', (input, expected) => {
+    expect(urlMuteTerm(input)).toBe(expected);
+  });
+
+  it.each(['', 'dev', 'ftp://dev.to/x', 'https://dev.to:8443/x', 'https://a:b@dev.to/x', 'https://example.com//x'])(
+    'reads %j as nothing it would send',
+    (input) => {
+      expect(urlMuteTerm(input)).toBeNull();
+    },
+  );
 });

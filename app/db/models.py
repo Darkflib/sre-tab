@@ -265,6 +265,9 @@ class MuteKind(enum.StrEnum):
     WORD = "word"
     #: Matched against the item's topic slugs.
     TAG = "tag"
+    #: Matched against the item's canonical URL, as a host and optionally
+    #: its first path segment, on component boundaries.
+    URL = "url"
 
 
 class UserMutedTerm(Base):
@@ -294,7 +297,10 @@ class UserMutedTerm(Base):
     rather than uniqueness of bytes. A tag term is a topic slug and is
     validated against the catalogue at write time; a word term is free
     text and is deliberately not validated against anything, because the
-    whole point is muting language the catalogue has never heard of.
+    whole point is muting language the catalogue has never heard of. A URL
+    term is a host, or a host and one path segment — ``medium.com``,
+    ``dev.to/jrandom`` — reduced from whatever was pasted before it is
+    stored, which is how an article URL fits a column sized for a phrase.
     """
 
     __tablename__ = "user_muted_terms"

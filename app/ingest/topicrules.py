@@ -50,7 +50,7 @@ import httpx
 
 #: Section slug to catalogue slugs, per host. The host key is the
 #: registrable form this module compares against — lower-cased, with a
-#: leading ``www.`` removed (see :func:`_host`) — so one entry covers
+#: leading ``www.`` removed (see :func:`link_host`) — so one entry covers
 #: ``bbc.co.uk`` and ``www.bbc.co.uk`` both.
 #:
 #: A host absent from this mapping has no rules, which is the right answer
@@ -127,7 +127,7 @@ SECTIONS: Mapping[str, Mapping[str, tuple[str, ...]]] = {
 }
 
 
-def _host(url: httpx.URL) -> str | None:
+def link_host(url: httpx.URL) -> str | None:
     """The host to look up in :data:`SECTIONS`, or ``None``.
 
     ``www.`` is stripped because a publisher serves the same sections
@@ -135,6 +135,11 @@ def _host(url: httpx.URL) -> str | None:
     one of them wrong. Nothing else is stripped: ``feeds.bbci.co.uk`` is a
     different service from ``bbc.co.uk`` and is not assumed to share a
     path vocabulary with it.
+
+    Public because URL mutes compare hosts by this same rule
+    (``app.services.preferences.url_mute_term``). A mute for
+    ``theguardian.com/football`` and a rule keyed ``theguardian.com`` are
+    two answers to "is this the same host", and they must not disagree.
     """
     raw = url.raw_host
     if not raw:
@@ -172,7 +177,7 @@ def topics_for_url(canonical_url: str) -> tuple[str, ...]:
     if url.scheme not in ("http", "https"):
         return ()
 
-    host = _host(url)
+    host = link_host(url)
     if host is None:
         return ()
     sections = SECTIONS.get(host)
