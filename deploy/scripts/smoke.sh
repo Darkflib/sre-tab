@@ -55,7 +55,7 @@ IMAGE=${SRE_TAB_IMAGE:-sre-tab:smoke}
 PORT=${SMOKE_PORT:-18080}
 
 PG_IMAGE=docker.io/library/postgres:18-trixie@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
-CADDY_IMAGE=docker.io/library/caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+CADDY_IMAGE=docker.io/library/caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
 
 NET=sre-tab-smoke
 ASSETS_VOL=sre-tab-smoke-assets

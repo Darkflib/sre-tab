@@ -13,7 +13,7 @@ After=sre-tab.service
 
 [Container]
 ContainerName=sre-tab-web
-Image=docker.io/library/caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+Image=docker.io/library/caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
 # Version-pinned, so a restart does not depend on Docker Hub. Upgrades happen
 # by changing the pin — the same policy as orbit-data-web.container.
 Pull=missing
