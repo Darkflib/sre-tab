@@ -87,9 +87,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          version: "0.12.7"
+          version: "0.12.18"
           enable-cache: true
       - run: uv sync --locked --all-groups
 
@@ -143,9 +143,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          version: "0.12.7"
+          version: "0.12.18"
           enable-cache: true
       - run: uv sync --locked --all-groups
       - name: pytest — PostgreSQL dialect paths, advisory locks, migrations
@@ -165,9 +165,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          version: "0.12.7"
+          version: "0.12.18"
           enable-cache: true
       - run: uv sync --locked --all-groups
       # --skip-editable: uv installs the project itself into the venv, and
@@ -230,9 +230,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          version: "0.12.7"
+          version: "0.12.18"
           enable-cache: true
 
       # Run from an ephemeral tool environment rather than the project's
@@ -252,7 +252,7 @@ jobs:
           # would skip the report inspection below, which is the half that
           # decides whether the run meant anything.
           set +e
-          uvx semgrep==1.175.0 scan \
+          uvx semgrep==1.178.0 scan \
             --metrics=off --disable-version-check --oss-only \
             --config p/python \
             --config p/javascript \
@@ -559,7 +559,7 @@ jobs:
           podman run --rm --read-only --user 65532:65532 \
             --security-opt=no-new-privileges --cap-drop all --cap-add NET_BIND_SERVICE \
             --volume "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
-            docker.io/library/caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648 \
+            docker.io/library/caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b \
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
       # Generates the systemd units from the Quadlet sources and fails on a
