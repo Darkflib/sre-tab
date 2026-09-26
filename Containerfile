@@ -78,6 +78,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# A C++ compiler for fasttext-predict, which fast-langdetect needs and which
+# publishes no wheel for Python 3.14, so uv builds it from the locked sdist.
+# Builder stage only: the runtime stage below copies the finished virtualenv
+# and never sees the toolchain. Drop this once a cp314 wheel exists.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 # Dependencies resolve from the committed lockfile and are installed before
 # any application source is copied, so editing app/ does not re-resolve them.
 COPY pyproject.toml uv.lock README.md ./

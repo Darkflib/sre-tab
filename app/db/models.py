@@ -1,13 +1,14 @@
-"""ORM models for the twelve PRD entities, plus ``api_tokens`` and
-``user_muted_terms``.
+"""ORM models for the twelve PRD entities, plus ``api_tokens``,
+``user_muted_terms``, and ``user_preference_languages``.
 
 Phase 0 property. The parallel build's rule was that no Phase 1 agent
 edits this file and a schema gap is escalated rather than patched
 (AGENTS.md); what survives that build is the narrower rule the same
 paragraph gives, which is that a revision is never generated *without
-meaning to*. ``api_tokens`` and ``user_muted_terms`` are the additions
-since — each one class, one revision, added deliberately for a feature
-that genuinely needs a table.
+meaning to*. ``api_tokens``, ``user_muted_terms``, and
+``user_preference_languages`` are the additions since — each one class,
+one revision, added deliberately for a feature that genuinely needs a
+table.
 
 Contract decisions encoded here:
 
@@ -122,6 +123,11 @@ def _values(enum_cls: type[enum.Enum]) -> list[str]:
 #: paste. The API's own bound is this same number so the two cannot drift
 #: into a 500 where a 422 was meant.
 MAX_MUTED_TERM_LENGTH = 64
+
+#: Column width for a language code. ``lid.176`` emits nothing longer than
+#: three characters (``app.ingest.language.LANGUAGE_CODES``); eight leaves
+#: room for a region subtag without a revision to widen it.
+MAX_LANGUAGE_CODE_LENGTH = 8
 
 
 class User(TimestampMixin, Base):
@@ -343,6 +349,28 @@ class UserPreferenceTopic(Base):
     )
 
 
+class UserPreferenceLanguage(Base):
+    """A language this user reads. None at all means no narrowing.
+
+    An allow-list rather than a fourth ``MuteKind``, because the reader's
+    question is "only these" and not "never these": someone who reads
+    English does not want to mute Portuguese, then Spanish, then Thai, one
+    arrival at a time. That inversion is why it is not a row in
+    ``user_muted_terms`` — the same table holding both senses would make
+    every reader of it check which one a row meant.
+
+    Codes are validated against ``app.ingest.language.LANGUAGE_CODES`` at
+    write time. See :class:`FeedItem` for what the feed does with them.
+    """
+
+    __tablename__ = "user_preference_languages"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    language: Mapped[str] = mapped_column(String(MAX_LANGUAGE_CODE_LENGTH), primary_key=True)
+
+
 class UserPreferenceSource(Base):
     __tablename__ = "user_preference_sources"
 
@@ -465,6 +493,11 @@ class FeedItem(Base):
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    #: Detected from title and summary at ingest by
+    #: ``app.ingest.language``. ``NULL`` means the model was not confident,
+    #: or the item predates detection, and such an item is never hidden by
+    #: a reader's language preference: the filter fails open.
+    language: Mapped[str | None] = mapped_column(String(MAX_LANGUAGE_CODE_LENGTH))
 
     source: Mapped[Source] = relationship(lazy="raise")
     topics: Mapped[list[Topic]] = relationship(

@@ -85,8 +85,10 @@ that.
     entry below lands.
   - Channel images as the fallback when an item carries none — landed;
     caching them here is the larger, separate item and is still open.
-  - Non-English items — a language column and a predicate, with translation
-    proper left as a positioning decision.
+  - Non-English items — landed, as detection and a per-reader language
+    list; translation proper is still a positioning decision, and learning
+    each dev.to author's languages is the next step if detection proves
+    too coarse.
   - Topics that describe the article rather than its publisher, derived
     from the item's URL — landed; reading an item's own `<category>`
     elements is still open, and subtracting a source's topic remains a
@@ -1663,10 +1665,34 @@ gets for nothing.
   pitch is that the data lives on your own server, that is the argument.
 
 - **Non-English items, where the ask is translation and the answer is
-  probably detection.** An occasional Portuguese post in a developer feed is
-  unwanted rather than untranslated: a `feed_items.language` column set at
-  ingest, plus one more predicate, removes it, and costs a fraction of what
-  the alternative costs.
+  probably detection** — **detection has landed; translation has not.** An
+  occasional Portuguese post in a developer feed is unwanted rather than
+  untranslated: a `feed_items.language` column set at ingest, plus one more
+  predicate, removes it, and costs a fraction of what the alternative costs.
+
+  Built as this said, with three things settled on the way.
+  [app/ingest/language.py](app/ingest/language.py) runs fastText's
+  `lid.176` over title and the first 300 characters of summary, and stores
+  a code only above 0.8 confidence — both numbers measured on 342 live
+  items rather than chosen. **The filter fails open:** `NULL` is "not
+  sure", and the feed never hides it, so "English only" cannot hide a
+  two-word English headline. **It is an allow-list, not a fourth mute
+  kind**, because the reader's question is "only these", not "never this,
+  then this, then this". And **fasttext-predict has no Python 3.14 wheel**,
+  so the image's builder compiles it; pure-Python py3langid and the
+  Rust-backed lingua were measured as the alternatives and were weaker on
+  developer headlines.
+
+  **Next, if detection proves too coarse: learn each author's languages.**
+  On dev.to the first path segment is the author
+  (`dev.to/josimarzin/epilogo-…`), and most authors write in at most two
+  languages. A per-author tally of confident detections would let a short,
+  undetermined title inherit its author's usual language — which is exactly
+  the case the confidence floor currently lets through. It needs a table
+  keyed by host and first segment (the reduction `url_mute_term` already
+  performs) and a rule for how many confident items make a tally
+  trustworthy. Not built, because nothing yet says the floor lets through
+  enough to matter.
 
   Translation proper is a positioning decision and should be taken as one
   rather than discovered halfway through building it. An external

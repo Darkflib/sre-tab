@@ -574,6 +574,18 @@ echo "  8 sources, 19 topics, all topiced, seed is idempotent"
     || fail "sre-tab retag failed against the deployed database"
 echo "  retag runs, dry and applied"
 
+# Language detection, the same way. Beyond the column and its write path,
+# this is the one place the compiled fasttext-predict extension and the
+# bundled model are loaded from the built image, on a read-only rootfs.
+"$ENGINE" exec sre-tab-app sre-tab detect-languages --dry-run \
+    || fail "sre-tab detect-languages --dry-run failed against the deployed database"
+"$ENGINE" exec sre-tab-app sre-tab detect-languages \
+    || fail "sre-tab detect-languages failed against the deployed database"
+"$ENGINE" exec sre-tab-app python -c \
+    "from app.ingest.language import detect_language as d; assert d('Como uma gestão despreparada pode custar a sua carreira', None) == 'pt'" \
+    || fail "language detection did not load its model in the built image"
+echo "  detect-languages runs, dry and applied, and the model loads"
+
 step "Session sweep, as the application role"
 # deploy/quadlet/sre-tab-prune-sessions.container, run the way it runs: the
 # application image, the DML role, a read-only rootfs and no capabilities. It

@@ -62,6 +62,9 @@ class FeedItemOut(ApiModel):
     published_at: datetime
     source: FeedSourceRef
     topics: list[str] = Field(description="Topic slugs")
+    language: str | None = Field(
+        description="Detected language code; null when detection was not confident"
+    )
     # Per-user state folded in so the client renders cards in one call.
     read: bool
     bookmarked: bool

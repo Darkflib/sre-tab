@@ -3,6 +3,51 @@
 Newest entries first. One entry per meaningful unit of work; note decisions
 and deviations, not just activity.
 
+<a id="language-detection"></a>
+## 2026-09-25 — Reading by language
+
+Built to the ROADMAP entry "Non-English items". What it settled is recorded
+there; this is how the choices were made and checked.
+
+**The library was chosen by measurement, and then by a wheel.** On six
+awkward titles fast-langdetect was right six times, py3langid five (it
+called "Rust vs Go" Nigerian Pidgin), and lingua five with scores too weak
+to threshold (Portuguese at 0.18 for German). fasttext-predict, which
+fast-langdetect needs, publishes no cp314 wheel, and its listed upstream
+repository now returns 404. It compiles from the sdist with `g++` on
+Linux, which is what the builder stage now carries; on the macOS used for
+this work the link failed against the Command Line Tools SDK, and the gate
+was run in a `python:3.14-slim-trixie` container with `g++` instead.
+
+**The two numbers came from 342 live items.** The catalogue's feeds plus
+dev.to's `braziliandevs` and `spanish` tags, fetched on 25 September and
+run through the real parse and normalise path. Title alone made
+confident mistakes on English (`2DWillNeverDie` German at 0.89); title
+plus summary removed them, and the library's own 80-character truncation
+cut most summaries before their first sentence. 300 characters and a
+0.8 floor labelled every Portuguese and Spanish item but one and no
+English one as anything else.
+
+**The library's default would have downloaded a model at runtime.**
+`LangDetectConfig(model="auto")` fetches the 126 MB `lid.176.bin` into a
+temp directory on first use. The detector is pinned to the bundled
+`lite` model in the config and at the call, and a test replaces the
+download loader with one that fails.
+
+**The feed predicate costs no statement.** A first version read the
+reader's languages before building the query; `test_feed.py` holds a page
+to five statements and it made six. The choice is now an uncorrelated
+`NOT EXISTS` and `IN` over `user_preference_languages` inside the feed's
+own statement.
+
+**Every new guard was broken on purpose and went red for the right
+reason:** the fail-open clause, the user pin, the no-choice clause, the
+`lite` pin, the confidence floor, code validation, the CLI's re-detection
+of non-`NULL` rows, and detection at ingest. One slip on the way: the first
+mutation helper restored files with `git checkout`, which also discarded
+uncommitted edits to three of them; they were re-applied and the whole
+suite re-run before the mutations were repeated with a copy-based restore.
+
 <a id="url-mutes"></a>
 ## 2026-09-18 — Muting by URL prefix
 

@@ -29,6 +29,7 @@ function item(overrides: Partial<FeedItem> = {}): FeedItem {
     published_at: '2026-09-03T12:00:00Z',
     source: { ...SOURCE },
     topics: [],
+    language: null,
     read: false,
     bookmarked: false,
     ...overrides,

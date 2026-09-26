@@ -69,6 +69,7 @@ function preferences(overrides: Partial<Preferences> = {}): Preferences {
     muted_words: [],
     muted_tags: [],
     muted_urls: [],
+    languages: [],
     ...overrides,
   };
 }

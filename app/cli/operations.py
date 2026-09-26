@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import delete, select, tuple_
+from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.orm import Session
 
 from app.cli.catalogue import SOURCES, TOPICS, SeedSource, medium_source, slug_problem
@@ -31,6 +31,7 @@ from app.db.models import (
     Topic,
     TopicOrigin,
 )
+from app.ingest.language import LanguageDetectionError, detect_language_strict
 from app.ingest.store import insert_rule_links
 from app.ingest.topicrules import topics_for_url
 from app.ingest.urlguard import UrlGuard, assert_supported_endpoint
@@ -109,6 +110,20 @@ class RetagReport:
     @property
     def changed(self) -> bool:
         return bool(self.links_added or self.links_removed)
+
+
+@dataclass(frozen=True)
+class LanguageReport:
+    """What a detection pass changed, or would change under ``--dry-run``."""
+
+    items_examined: int
+    items_changed: int
+    #: Items the detector failed on, whose stored language was left alone.
+    items_failed: int = 0
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.items_changed)
 
 
 # --- validation ---------------------------------------------------------
@@ -471,4 +486,66 @@ def retag_items(db: Session, *, dry_run: bool = False) -> RetagReport:
 
     return RetagReport(
         items_examined=examined, links_added=len(to_add), links_removed=len(to_remove)
+    )
+
+
+def detect_item_languages(db: Session, *, dry_run: bool = False) -> LanguageReport:
+    """Re-detect every retained item's language, writing only what moved.
+
+    Ingest detects a language once, when an item arrives, so this is the
+    pass for everything that arrived before detection existed and for
+    everything a change to ``app.ingest.language`` would now answer
+    differently. It is the whole window rather than only the ``NULL``
+    rows, for that second reason: a raised threshold has to be able to
+    take an answer back.
+
+    Keyset batches by id, as :func:`retag_items` reads them. No lock is
+    needed against a concurrent refresh: ingest only ever inserts, with
+    the language already set, and this only updates rows it has just read.
+    """
+    examined = 0
+    failed = 0
+    changes: dict[str | None, list[int]] = {}
+    last_id = 0
+    while True:
+        batch = (
+            db.execute(
+                select(FeedItem.id, FeedItem.title, FeedItem.summary, FeedItem.language)
+                .where(FeedItem.id > last_id)
+                .order_by(FeedItem.id)
+                .limit(RETAG_BATCH)
+            )
+            .tuples()
+            .all()
+        )
+        if not batch:
+            break
+        for item_id, title, summary, current in batch:
+            examined += 1
+            # A failure is skipped, never read as "not sure": that would
+            # write NULL over an answer the item already has.
+            try:
+                detected = detect_language_strict(title, summary)
+            except LanguageDetectionError:
+                failed += 1
+                continue
+            if detected != current:
+                changes.setdefault(detected, []).append(item_id)
+        last_id = batch[-1][0]
+
+    if not dry_run:
+        for language, ids in changes.items():
+            for start in range(0, len(ids), RETAG_BATCH):
+                db.execute(
+                    update(FeedItem)
+                    .where(FeedItem.id.in_(ids[start : start + RETAG_BATCH]))
+                    .values(language=language)
+                    .execution_options(synchronize_session=False)
+                )
+        db.flush()
+
+    return LanguageReport(
+        items_examined=examined,
+        items_changed=sum(len(ids) for ids in changes.values()),
+        items_failed=failed,
     )
