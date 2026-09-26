@@ -8,6 +8,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Reading by language.** Each item's language is detected from its
+  title and summary as it arrives, and `PATCH /api/v1/me/preferences`
+  gains `languages`: the codes a reader reads. Settings gains a Languages
+  section to choose them, and the feed says when the choice is narrowing
+  it. An empty list, which is every reader's after the upgrade, shows
+  every language. Feed items gain a `language` field.
+
+  **An item the detector is not sure of is always shown.** The language is
+  stored only above 0.8 confidence, measured against 342 live items from
+  the catalogue and dev.to's Portuguese and Spanish tags: at that floor,
+  every Portuguese and Spanish item bar one was labelled and no English one
+  was labelled as anything else. "Rust vs Go" is too short to tell, is
+  stored with no language, and is never hidden. Bookmarks are never
+  filtered.
+
+  **Existing items have no language until `sre-tab detect-languages` runs.**
+  Ingest detects once, on arrival, and never rewrites a stored row, so run
+  the command once after upgrading; it takes `--dry-run`, and re-running it
+  after changing the detector brings the whole window into line.
+
+  Detection is fastText's `lid.176` model through fast-langdetect, pinned
+  to the model bundled in the wheel: the library's default downloads a
+  126 MB model on first use, and that path is unreachable here and tested
+  as such. The model is CC BY-SA 3.0. A code the detector cannot emit is
+  refused with a 422, because a list holding only that code would hide
+  every item with a detected language.
+
+  Needs revision `b9e4d2c7a310`, which adds `feed_items.language` and the
+  `user_preference_languages` table. Downgrading drops both; the
+  detections can be recomputed.
+
 - **Muting by site or author, beside muting by word and topic.**
   `PATCH /api/v1/me/preferences` gains `muted_urls`, and Settings gains a
   third list for it. A term is a host, or a host and its first path
@@ -575,6 +606,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the unfixed script first, which is the only reason to believe it.
 
 ### Changed
+
+- **The image's builder stage installs `g++`.** `fasttext-predict`, which
+  language detection depends on, publishes no Python 3.14 wheel, so it is
+  compiled from its locked sdist. The toolchain stays in the builder; the
+  runtime image copies only the finished virtualenv.
 
 - **The footer stays on screen.** The feed loads more as you near its end,
   so a footer after the content was one nobody reached. It is now anchored

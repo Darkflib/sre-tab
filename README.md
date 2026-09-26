@@ -43,9 +43,12 @@ The full framing, scope, and acceptance criteria are in
 <a id="quickstart"></a>
 ## Quickstart
 
-Python 3.12+, [uv](https://docs.astral.sh/uv/), and Node 20.19+. Nothing
-else — v1 development runs against SQLite and needs no container, no
-database server, and no GitHub OAuth app until you want to sign in.
+Python 3.12+, [uv](https://docs.astral.sh/uv/), and Node 20.19+ — and, on
+Python 3.14, which `.python-version` names, a C++ compiler: language
+detection depends on `fasttext-predict`, which publishes no 3.14 wheel, so
+`uv sync` builds it from source. Nothing else — development runs against
+SQLite and needs no container, no database server, and no GitHub OAuth app
+until you want to sign in.
 
 ### Set it up
 
@@ -127,6 +130,18 @@ live in [app/ingest/topicrules.py](app/ingest/topicrules.py) and apply as
 items arrive; after changing them, `uv run sre-tab retag` brings the
 already-stored window into line, and `--dry-run` says what it would do
 first.
+
+Each item's language is detected from its title and summary as it arrives,
+and a reader can choose in Settings to see only the languages they read.
+An item the detector is unsure of is always shown, so a two-word English
+headline is never hidden by a guess. Items stored before detection existed
+have no language until `uv run sre-tab detect-languages` has been run once;
+it takes `--dry-run` as well. Detection uses fastText's `lid.176` model,
+bundled in [fast-langdetect](https://github.com/LlmKira/fast-langdetect) and
+distributed under
+[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) by
+[Facebook Research](https://fasttext.cc/docs/en/language-identification.html);
+nothing is downloaded at runtime.
 
 ## Architecture
 
