@@ -30,10 +30,12 @@ from app.db.models import (
     Topic,
     User,
     UserMutedTerm,
+    UserPreferenceLanguage,
     UserPreferences,
     UserPreferenceSource,
     UserPreferenceTopic,
 )
+from app.ingest.language import LANGUAGE_CODES
 from app.ingest.normalise import InvalidItemURLError, normalise_url
 from app.ingest.topicrules import link_host
 from app.services.errors import UnknownSlugError
@@ -164,6 +166,23 @@ def apply_patch(db: Session, user: User, patch: PreferencesPatch) -> Preferences
         # reduces to itself — which `url_mute_term` is written to keep true.
         _replace_mutes(
             db, user, MuteKind.URL, sorted({url_mute_term(raw) for raw in patch.muted_urls})
+        )
+
+    if patch.languages is not None:
+        languages = sorted({code.strip().lower() for code in patch.languages})
+        # Refused rather than stored, and this is the sharpest of the
+        # validations here: a code the detector never emits matches no
+        # item, so a list holding only that code would hide every item
+        # with a detected language — "English" typed where "en" was meant
+        # would empty the feed.
+        unknown = [code for code in languages if code not in LANGUAGE_CODES]
+        if unknown:
+            raise ValueError(f"unknown language codes: {', '.join(unknown)}")
+        db.execute(delete(UserPreferenceLanguage).where(UserPreferenceLanguage.user_id == user.id))
+        insert_ignore(
+            db,
+            UserPreferenceLanguage,
+            [{"user_id": user.id, "language": code} for code in languages],
         )
 
     # Flush, never commit: the read-back below has to see the update, but
@@ -346,6 +365,15 @@ def muted_terms(user_id: int, kind: MuteKind) -> Select[tuple[str]]:
     )
 
 
+def selected_languages(user_id: int) -> Select[tuple[str]]:
+    """Codes of the languages this user reads, ordered for stability."""
+    return (
+        select(UserPreferenceLanguage.language)
+        .where(UserPreferenceLanguage.user_id == user_id)
+        .order_by(UserPreferenceLanguage.language)
+    )
+
+
 def selected_topic_slugs(user_id: int) -> Select[tuple[str]]:
     """Slugs of the topics this user selected, ordered for stability."""
     return (
@@ -416,6 +444,7 @@ def _to_out(db: Session, user: User, profile: UserPreferences) -> PreferencesOut
         muted_words=list(db.scalars(muted_terms(user.id, MuteKind.WORD)).all()),
         muted_tags=list(db.scalars(muted_terms(user.id, MuteKind.TAG)).all()),
         muted_urls=list(db.scalars(muted_terms(user.id, MuteKind.URL)).all()),
+        languages=list(db.scalars(selected_languages(user.id)).all()),
     )
 
 

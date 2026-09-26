@@ -61,6 +61,7 @@ function itemsFor(specs: Spec[]): FeedItem[] {
         published_at: '2026-08-17T09:00:00Z',
         source: { slug: spec.slug, name: spec.name ?? spec.slug.toUpperCase(), icon_url: null },
         topics: [],
+        language: null,
         read: false,
         bookmarked: false,
       });

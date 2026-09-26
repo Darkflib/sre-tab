@@ -19,6 +19,7 @@ import {
   shouldReplaceHistory,
   toggle,
 } from '../feed/filters';
+import { describeLanguages } from '../lib/languages';
 import { isHighVolume, type SourceShare } from '../feed/volume';
 import { cssVars } from '../lib/css';
 import { percent } from '../lib/format';
@@ -253,6 +254,16 @@ export function FilterBar({ filters, onChange, shares, loadedCount }: FilterBarP
       ) : muted ? (
         <p className="filters__muted">
           {muted} hidden from this feed. <Link to="/settings">Change what is muted</Link>.
+        </p>
+      ) : null}
+      {/*
+        The same argument as the mute line: a language choice removes items
+        with nothing left behind, so it is stated whenever it is on.
+      */}
+      {preferences.languages.length > 0 ? (
+        <p className="filters__muted">
+          Showing {describeLanguages(preferences.languages)}, and anything whose language could
+          not be told. <Link to="/settings">Change languages</Link>.
         </p>
       ) : null}
 

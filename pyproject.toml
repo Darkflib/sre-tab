@@ -24,6 +24,11 @@ dependencies = [
     "feedparser>=6.0.11",
     "defusedxml>=0.7.1",
     "nh3>=0.2.21",
+    # Language detection at ingest. Only the bundled lid.176.ftz model is
+    # used, never the downloadable one — see app/ingest/language.py. Its
+    # fasttext-predict dependency has no Python 3.14 wheel and compiles
+    # from source, which is why the Containerfile's builder carries g++.
+    "fast-langdetect>=1.0.1",
 ]
 
 [dependency-groups]
@@ -90,7 +95,7 @@ warn_unreachable = true
 exclude = ["^frontend/"]
 
 [[tool.mypy.overrides]]
-module = ["feedparser", "feedparser.*", "apscheduler.*"]
+module = ["feedparser", "feedparser.*", "apscheduler.*", "fast_langdetect", "fast_langdetect.*", "fasttext"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

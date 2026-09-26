@@ -29,6 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import Base, Bookmark, FeedItem, FeedItemTopic, SourceStatus, Topic, TopicOrigin
+from app.ingest.language import detect_language
 from app.ingest.normalise import NormalisedItem
 from app.ingest.topicrules import topics_for_url
 
@@ -227,6 +228,10 @@ def upsert_items(
             "published_at": item.published_at,
             "image_url": item.image_url,
             "fetched_at": fetched_at,
+            # New rows only, like everything else here: an existing row is
+            # never rewritten, and `sre-tab detect-languages` is the pass
+            # that brings stored items into line with the detector.
+            "language": detect_language(item.title, item.summary),
         }
         for item in items
         if item.canonical_url not in existing

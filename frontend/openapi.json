@@ -1185,6 +1185,18 @@
             "title": "Topics",
             "description": "Topic slugs"
           },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language",
+            "description": "Detected language code; null when detection was not confident"
+          },
           "read": {
             "type": "boolean",
             "title": "Read"
@@ -1204,6 +1216,7 @@
           "published_at",
           "source",
           "topics",
+          "language",
           "read",
           "bookmarked"
         ],
@@ -1409,6 +1422,16 @@
             "type": "array",
             "title": "Muted Urls",
             "description": "Hosts, or a host and its first path segment, whose links are hidden from the feed, sorted"
+          },
+          "languages": {
+            "items": {
+              "type": "string",
+              "maxLength": 8,
+              "minLength": 1
+            },
+            "type": "array",
+            "title": "Languages",
+            "description": "Languages this reader reads, as detector codes, sorted. Empty means every language; otherwise an item detected in another language is hidden, and an item with no confident detection is always shown"
           }
         },
         "type": "object",
@@ -1421,7 +1444,8 @@
           "sources",
           "muted_words",
           "muted_tags",
-          "muted_urls"
+          "muted_urls",
+          "languages"
         ],
         "title": "PreferencesOut"
       },
@@ -1549,6 +1573,23 @@
               }
             ],
             "title": "Muted Urls"
+          },
+          "languages": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 8,
+                  "minLength": 1
+                },
+                "type": "array",
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Languages"
           }
         },
         "type": "object",

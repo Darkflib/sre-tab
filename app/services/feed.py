@@ -70,6 +70,7 @@ from app.db.models import (
     Topic,
     User,
     UserMutedTerm,
+    UserPreferenceLanguage,
     UserPreferenceTopic,
     UserReadItem,
 )
@@ -186,6 +187,8 @@ def _apply_filters(
 
     for predicate in mute_predicates(db, user):
         statement = statement.where(predicate)
+
+    statement = statement.where(language_predicate(user))
 
     topic_filter = _effective_topics(db, user, topics)
     if topic_filter is not None:
@@ -403,6 +406,37 @@ def mute_predicates(db: Session, user: User) -> list[ColumnElement[bool]]:
     return predicates
 
 
+def language_predicate(user: User) -> ColumnElement[bool]:
+    """Narrowing to the languages this user reads; everything, for a
+    reader who has chosen none.
+
+    **An item with no detected language always passes**, and that clause is
+    the feature rather than a detail of it. ``NULL`` is what the detector
+    stores when it is not confident — a two-word title, a summary that is
+    mostly code — and what every item ingested before detection carries.
+    Hiding those would make "English only" hide English, so the filter
+    removes only what it positively knows to be something else.
+
+    **Asked of the table inside the feed's statement, not read first.** A
+    lookup of the reader's languages would be a sixth statement per page,
+    and ``tests/api/test_feed.py`` holds the page to five. Both subqueries
+    are uncorrelated, so each engine evaluates them once per statement
+    rather than once per row, and the "has chosen none" case is the ``NOT
+    EXISTS`` rather than a branch in Python.
+
+    Bookmarks are not filtered, for the reason :func:`mute_predicates`
+    gives.
+    """
+    chosen = select(UserPreferenceLanguage.language).where(
+        UserPreferenceLanguage.user_id == user.id
+    )
+    return or_(
+        FeedItem.language.is_(None),
+        ~chosen.exists(),
+        FeedItem.language.in_(chosen),
+    )
+
+
 #: The schemes ``normalise_url`` stores, each with and without one
 #: ``www.``, longest first so a ``www.`` is taken before the bare scheme
 #: can match — which is :func:`app.ingest.topicrules.link_host`'s rule,
@@ -508,6 +542,7 @@ def build_item_out(item: FeedItem, *, read: bool, bookmarked: bool) -> FeedItemO
             slug=item.source.slug, name=item.source.name, icon_url=source_icon(item.source)
         ),
         topics=sorted(topic.slug for topic in item.topics),
+        language=item.language,
         read=read,
         bookmarked=bookmarked,
     )

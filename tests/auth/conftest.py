@@ -106,6 +106,7 @@ DEFAULT_PROFILE = PreferencesOut(
     muted_words=[],
     muted_tags=[],
     muted_urls=[],
+    languages=[],
 )
 
 

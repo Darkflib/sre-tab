@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { act, createElement, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Preferences, Source, Topic, User } from '../api/types';
@@ -78,6 +79,7 @@ const PREFERENCES: Preferences = {
   muted_words: [],
   muted_tags: [],
   muted_urls: [],
+  languages: [],
 };
 
 const SESSION: SessionValue = {
@@ -107,15 +109,24 @@ interface Harness {
   unmount: () => Promise<void>;
 }
 
-function wrap(children: ReactNode): ReactNode {
+function wrap(children: ReactNode, session: SessionValue = SESSION): ReactNode {
+  // A router because the standing-filter lines link to Settings, and a
+  // `Link` outside one throws.
   return createElement(
-    SessionContext,
-    { value: SESSION },
-    createElement(CatalogueContext, { value: CATALOGUE }, children),
+    MemoryRouter,
+    null,
+    createElement(
+      SessionContext,
+      { value: session },
+      createElement(CatalogueContext, { value: CATALOGUE }, children),
+    ),
   );
 }
 
-async function mount(filters: FeedFilters = NO_FILTERS): Promise<Harness> {
+async function mount(
+  filters: FeedFilters = NO_FILTERS,
+  session: SessionValue = SESSION,
+): Promise<Harness> {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -129,6 +140,7 @@ async function mount(filters: FeedFilters = NO_FILTERS): Promise<Harness> {
           shares: [],
           loadedCount: 0,
         }),
+        session,
       ),
     );
   });
@@ -530,6 +542,34 @@ describe('a collapsed bar that is still filtering', () => {
     const harness = await mount({ ...NO_FILTERS, sources: ['hn'] });
 
     expect(summaryText(harness.container)).toBeNull();
+
+    await harness.unmount();
+  });
+});
+
+describe('FilterBar and a language choice', () => {
+  // A language choice removes items with nothing left behind, like a mute,
+  // so the feed has to say it is on.
+  const withLanguages = (languages: string[]): SessionValue => ({
+    ...SESSION,
+    preferences: { ...PREFERENCES, languages },
+  });
+
+  it('says which languages the feed is narrowed to', async () => {
+    const harness = await mount(NO_FILTERS, withLanguages(['en', 'pt']));
+
+    const lines = Array.from(harness.container.querySelectorAll('.filters__muted'), (line) =>
+      line.textContent,
+    );
+    expect(lines.some((line) => line.includes('Showing English and Portuguese'))).toBe(true);
+
+    await harness.unmount();
+  });
+
+  it('says nothing about languages when none is chosen', async () => {
+    const harness = await mount();
+
+    expect(harness.container.textContent).not.toContain('whose language could not be told');
 
     await harness.unmount();
   });

@@ -6,7 +6,7 @@ from typing import Annotated
 from pydantic import BaseModel, Field, StringConstraints
 
 from app.api.v1.schemas.common import ApiModel
-from app.db.models import MAX_MUTED_TERM_LENGTH, Layout, Theme
+from app.db.models import MAX_LANGUAGE_CODE_LENGTH, MAX_MUTED_TERM_LENGTH, Layout, Theme
 from app.ingest.normalise import MAX_URL_LENGTH
 
 #: Bound on how many terms of one kind a user may mute. Generous for a
@@ -44,6 +44,18 @@ MutedTerms = list[Annotated[str, StringConstraints(min_length=1, max_length=MAX_
 MutedUrlInputs = list[Annotated[str, StringConstraints(min_length=1, max_length=MAX_URL_LENGTH)]]
 
 
+#: Language codes as the detector emits them. Length-bounded here and
+#: checked against the detector's label set in `app.services.preferences`,
+#: for the reason `muted_tags` is checked against the catalogue.
+LanguageCodes = list[
+    Annotated[str, StringConstraints(min_length=1, max_length=MAX_LANGUAGE_CODE_LENGTH)]
+]
+
+#: Bound on how many languages a reader may list. Far above anyone's real
+#: list, and it keeps the feed's `IN (...)` a bounded expression.
+MAX_LANGUAGES = 32
+
+
 class PreferencesOut(ApiModel):
     theme: Theme
     layout: Layout
@@ -59,6 +71,13 @@ class PreferencesOut(ApiModel):
         description=(
             "Hosts, or a host and its first path segment, whose links are hidden "
             "from the feed, sorted"
+        )
+    )
+    languages: LanguageCodes = Field(
+        description=(
+            "Languages this reader reads, as detector codes, sorted. Empty means every "
+            "language; otherwise an item detected in another language is hidden, and an "
+            "item with no confident detection is always shown"
         )
     )
 
@@ -85,6 +104,8 @@ class PreferencesPatch(BaseModel):
     muted_words: Annotated[MutedTerms, Field(max_length=MAX_MUTED_TERMS)] | None = None
     muted_tags: Annotated[MutedTerms, Field(max_length=MAX_MUTED_TERMS)] | None = None
     muted_urls: Annotated[MutedUrlInputs, Field(max_length=MAX_MUTED_TERMS)] | None = None
+    #: Replace-the-whole-list as well; `[]` reads every language.
+    languages: Annotated[LanguageCodes, Field(max_length=MAX_LANGUAGES)] | None = None
 
 
 class MeResponse(BaseModel):

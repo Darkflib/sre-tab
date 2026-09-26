@@ -41,6 +41,10 @@ PRE_API_TOKENS = "29038199b328"
 PRE_URL_MUTES = "f41d7b6a0c92"
 URL_MUTES = "a6d3f0c81b27"
 
+#: The revision that added ``feed_items.language`` and
+#: ``user_preference_languages``, named for the same reason.
+ITEM_LANGUAGE = "b9e4d2c7a310"
+
 ENTITY_TABLES = {
     "users",
     "sessions",
@@ -61,6 +65,8 @@ ENTITY_TABLES = {
     "api_tokens",
     # Words and tags a user does not want to see.
     "user_muted_terms",
+    # Languages a user reads.
+    "user_preference_languages",
 }
 
 
@@ -347,3 +353,41 @@ def test_the_url_mute_kind_round_trips_a_populated_table(
     command.upgrade(alembic_config, URL_MUTES)
     _insert_mute(migrate_engine, "url", "medium.com")
     assert ("url", "medium.com") in _mutes(migrate_engine)
+
+
+def test_item_language_round_trips_a_populated_database(
+    alembic_config: Config, migrate_engine: Engine
+) -> None:
+    """Every stored item comes through the upgrade with no language, which
+    the feed reads as "always show"; a language choice is storable and
+    cascades with its owner; and the downgrade takes both away while
+    leaving the items themselves alone."""
+    command.upgrade(alembic_config, URL_MUTES)
+    _seed(migrate_engine)
+
+    command.upgrade(alembic_config, ITEM_LANGUAGE)
+    with migrate_engine.begin() as connection:
+        assert connection.execute(text("SELECT language FROM feed_items")).scalar_one() is None
+        connection.execute(text("UPDATE feed_items SET language = 'pt'"))
+        connection.execute(
+            text("INSERT INTO user_preference_languages (user_id, language) VALUES (1, 'en')")
+        )
+        # Composite key: saving the same choice twice is one row.
+        with pytest.raises(IntegrityError), connection.begin_nested():
+            connection.execute(
+                text("INSERT INTO user_preference_languages (user_id, language) VALUES (1, 'en')")
+            )
+    assert _count(migrate_engine, "user_preference_languages") == 1
+
+    command.downgrade(alembic_config, URL_MUTES)
+    assert "user_preference_languages" not in _tables(migrate_engine)
+    assert "language" not in {
+        column["name"] for column in inspect(migrate_engine).get_columns("feed_items")
+    }
+    assert _count(migrate_engine, "feed_items") == 1
+
+    # And up again, where a downgrade that left anything behind would fail.
+    command.upgrade(alembic_config, ITEM_LANGUAGE)
+    with migrate_engine.begin() as connection:
+        connection.execute(text("DELETE FROM users"))
+    assert _count(migrate_engine, "user_preference_languages") == 0

@@ -262,6 +262,28 @@ def _cmd_retag(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_detect_languages(args: argparse.Namespace) -> int:
+    """Bring every retained item's language into line with the detector.
+
+    Ingest detects once, on arrival, so this is what gives items stored
+    before detection existed a language, and what applies a change to
+    ``app.ingest.language`` to the ones already classified.
+    """
+    with _session(args.database_url) as session:
+        report = ops.detect_item_languages(session, dry_run=args.dry_run)
+        if not args.dry_run:
+            session.commit()
+    examined = report.items_examined
+    print(f"examined {examined} item{'' if examined == 1 else 's'}")
+    if not report.changed:
+        print("every item's language is already current")
+        return 0
+    changed = report.items_changed
+    verb = "would change" if args.dry_run else "changed"
+    print(f"{verb} the language of {changed} item{'' if changed == 1 else 's'}")
+    return 0
+
+
 def _cmd_sessions_prune(args: argparse.Namespace) -> int:
     """Sweep dead session rows. What sre-tab-prune-sessions.service runs.
 
@@ -390,6 +412,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Report what would change without writing anything.",
     )
     retag.set_defaults(handler=_cmd_retag)
+
+    languages = commands.add_parser(
+        "detect-languages",
+        help="Re-detect item languages across the retained window.",
+        description=(
+            "Detect each retained item's language from its title and summary and store "
+            "any answer that differs from the one recorded. Run it once after upgrading "
+            "to a release with language detection, and after changing "
+            "app/ingest/language.py."
+        ),
+    )
+    languages.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would change without writing anything.",
+    )
+    languages.set_defaults(handler=_cmd_detect_languages)
 
     status = commands.add_parser(
         "status",

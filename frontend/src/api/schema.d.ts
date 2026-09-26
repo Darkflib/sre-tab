@@ -422,6 +422,11 @@ export interface components {
              * @description Topic slugs
              */
             topics: string[];
+            /**
+             * Language
+             * @description Detected language code; null when detection was not confident
+             */
+            language: string | null;
             /** Read */
             read: boolean;
             /** Bookmarked */
@@ -514,6 +519,11 @@ export interface components {
              * @description Hosts, or a host and its first path segment, whose links are hidden from the feed, sorted
              */
             muted_urls: string[];
+            /**
+             * Languages
+             * @description Languages this reader reads, as detector codes, sorted. Empty means every language; otherwise an item detected in another language is hidden, and an item with no confident detection is always shown
+             */
+            languages: string[];
         };
         /**
          * PreferencesPatch
@@ -537,6 +547,8 @@ export interface components {
             muted_tags?: string[] | null;
             /** Muted Urls */
             muted_urls?: string[] | null;
+            /** Languages */
+            languages?: string[] | null;
         };
         /** ProbeStatus */
         ProbeStatus: {
