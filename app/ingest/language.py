@@ -73,12 +73,32 @@ _DETECTOR = LangDetector(
 )
 
 
+class LanguageDetectionError(Exception):
+    """The detector failed, as distinct from answering that it is not sure."""
+
+
 def detect_language(title: str, summary: str | None) -> str | None:
     """The language of an item, or ``None`` where the model is not sure.
 
     A failure inside the library is logged and answered with ``None``
     rather than raised: an item that cannot be classified is an item that
-    is always shown, and that must never cost a source its refresh.
+    is always shown, and that must never cost a source its refresh. A
+    caller that must tell the two apart uses :func:`detect_language_strict`.
+    """
+    try:
+        return detect_language_strict(title, summary)
+    except LanguageDetectionError as exc:
+        log.warning("language_detection_failed", error=str(exc))
+        return None
+
+
+def detect_language_strict(title: str, summary: str | None) -> str | None:
+    """:func:`detect_language`, but a library failure raises
+    :class:`LanguageDetectionError` instead of reading as "not sure".
+
+    For ``sre-tab detect-languages``, which rewrites stored answers: there a
+    failure answered as ``None`` would erase a language the item already
+    has, and a model that failed to load would erase all of them.
     """
     text = " ".join(f"{title} {summary or ''}".split())
     if not text:
@@ -86,8 +106,7 @@ def detect_language(title: str, summary: str | None) -> str | None:
     try:
         results = _DETECTOR.detect(text, model="lite", k=1)
     except (FastLangdetectError, ValueError) as exc:
-        log.warning("language_detection_failed", error=type(exc).__name__)
-        return None
+        raise LanguageDetectionError(type(exc).__name__) from exc
     if not results:
         return None
     top = results[0]

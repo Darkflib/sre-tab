@@ -31,7 +31,7 @@ from app.db.models import (
     Topic,
     TopicOrigin,
 )
-from app.ingest.language import detect_language
+from app.ingest.language import LanguageDetectionError, detect_language_strict
 from app.ingest.store import insert_rule_links
 from app.ingest.topicrules import topics_for_url
 from app.ingest.urlguard import UrlGuard, assert_supported_endpoint
@@ -118,6 +118,8 @@ class LanguageReport:
 
     items_examined: int
     items_changed: int
+    #: Items the detector failed on, whose stored language was left alone.
+    items_failed: int = 0
 
     @property
     def changed(self) -> bool:
@@ -502,6 +504,7 @@ def detect_item_languages(db: Session, *, dry_run: bool = False) -> LanguageRepo
     the language already set, and this only updates rows it has just read.
     """
     examined = 0
+    failed = 0
     changes: dict[str | None, list[int]] = {}
     last_id = 0
     while True:
@@ -519,7 +522,13 @@ def detect_item_languages(db: Session, *, dry_run: bool = False) -> LanguageRepo
             break
         for item_id, title, summary, current in batch:
             examined += 1
-            detected = detect_language(title, summary)
+            # A failure is skipped, never read as "not sure": that would
+            # write NULL over an answer the item already has.
+            try:
+                detected = detect_language_strict(title, summary)
+            except LanguageDetectionError:
+                failed += 1
+                continue
             if detected != current:
                 changes.setdefault(detected, []).append(item_id)
         last_id = batch[-1][0]
@@ -536,5 +545,7 @@ def detect_item_languages(db: Session, *, dry_run: bool = False) -> LanguageRepo
         db.flush()
 
     return LanguageReport(
-        items_examined=examined, items_changed=sum(len(ids) for ids in changes.values())
+        items_examined=examined,
+        items_changed=sum(len(ids) for ids in changes.values()),
+        items_failed=failed,
     )

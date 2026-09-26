@@ -46,7 +46,10 @@ The full framing, scope, and acceptance criteria are in
 Python 3.12+, [uv](https://docs.astral.sh/uv/), and Node 20.19+ — and, on
 Python 3.14, which `.python-version` names, a C++ compiler: language
 detection depends on `fasttext-predict`, which publishes no 3.14 wheel, so
-`uv sync` builds it from source. Nothing else — development runs against
+`uv sync` builds it from source. On macOS that build has been seen to fail
+at the link step against the Command Line Tools SDK; run the Python side in
+a Linux container (`python:3.14-slim-trixie` plus `g++`) instead, which is
+what CI and the image do. Nothing else — development runs against
 SQLite and needs no container, no database server, and no GitHub OAuth app
 until you want to sign in.
 

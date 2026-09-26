@@ -275,12 +275,20 @@ def _cmd_detect_languages(args: argparse.Namespace) -> int:
             session.commit()
     examined = report.items_examined
     print(f"examined {examined} item{'' if examined == 1 else 's'}")
-    if not report.changed:
-        print("every item's language is already current")
-        return 0
     changed = report.items_changed
-    verb = "would change" if args.dry_run else "changed"
-    print(f"{verb} the language of {changed} item{'' if changed == 1 else 's'}")
+    if changed:
+        verb = "would change" if args.dry_run else "changed"
+        print(f"{verb} the language of {changed} item{'' if changed == 1 else 's'}")
+    elif not report.items_failed:
+        print("every item's language is already current")
+    failed = report.items_failed
+    if failed:
+        # Non-zero, so a failing model is not mistaken for a finished pass.
+        print(
+            f"detection failed for {failed} item{'' if failed == 1 else 's'}; "
+            "their stored language was left alone"
+        )
+        return 1
     return 0
 
 

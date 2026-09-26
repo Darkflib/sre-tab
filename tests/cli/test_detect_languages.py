@@ -12,6 +12,7 @@ import pathlib
 from datetime import UTC, datetime
 
 import pytest
+from fast_langdetect import FastLangdetectError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,7 @@ from app.cli import operations as ops
 from app.db.engine import create_db_engine
 from app.db.models import FeedItem, Source
 from app.db.session import build_session_factory
+from app.ingest import language
 
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
 
@@ -103,6 +105,27 @@ def test_the_pass_crosses_batches(db_session: Session, monkeypatch: pytest.Monke
     assert _languages(db_session) == TITLES
 
 
+def test_a_detector_failure_leaves_the_stored_language_alone(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``detect_language`` answers a failure as ``None`` so ingest carries
+    on; read that way here, a model that would not load would erase every
+    stored answer."""
+    _seed(db_session)
+    ops.detect_item_languages(db_session)
+    db_session.commit()
+
+    def _broken(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        raise FastLangdetectError("model exploded")
+
+    monkeypatch.setattr(language._DETECTOR, "detect", _broken)
+    report = ops.detect_item_languages(db_session)
+    db_session.commit()
+
+    assert (report.items_changed, report.items_failed) == (0, 3)
+    assert _languages(db_session) == TITLES
+
+
 # --- the command ---------------------------------------------------------
 
 
@@ -148,6 +171,18 @@ def test_the_command_is_idempotent(seeded_db: str, capsys: pytest.CaptureFixture
 
     assert main(["--database-url", seeded_db, "detect-languages"]) == 0
     assert "already current" in capsys.readouterr().out
+
+
+def test_the_command_fails_when_detection_does(
+    seeded_db: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _broken(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        raise FastLangdetectError("model exploded")
+
+    monkeypatch.setattr(language._DETECTOR, "detect", _broken)
+
+    assert main(["--database-url", seeded_db, "detect-languages"]) == 1
+    assert "detection failed for 3 items" in capsys.readouterr().out
 
 
 def test_the_command_takes_dry_run(seeded_db: str, capsys: pytest.CaptureFixture[str]) -> None:
