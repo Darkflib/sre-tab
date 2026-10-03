@@ -36,7 +36,7 @@
 # --- Frontend -------------------------------------------------------------
 # Node 24 covers frontend/package.json's ">=20.19" floor (Vite 8's minimum)
 # with room to spare.
-FROM node:24-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0 AS frontend
+FROM node:24-trixie-slim@sha256:8ec5d7557396cfe32d21c3f9c13072355ceab22b584578ca4bb28af31120cffe AS frontend
 
 WORKDIR /build
 
