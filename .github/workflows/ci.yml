@@ -656,6 +656,9 @@ jobs:
       packages: write # push the image and its sigstore attachments
       id-token: write # keyless signing: the OIDC token IS the identity
       attestations: write # provenance and SBOM, recorded against this repo
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+      digest: ${{ steps.publish.outputs.digest }}
     steps:
       # fetch-tags, uniquely among this workflow's checkouts, because the
       # resolver below decides whether the floating MAJOR.MINOR tag would
@@ -1007,3 +1010,89 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --notes-file "$RUNNER_TEMP/release-body.md" \
             "$RUNNER_TEMP/sbom.spdx.json#SPDX SBOM (${VERSION})"
+
+  # Deploys what `publish` just pushed to sretab.mikepreston.org, by opening
+  # the pin as a pull request in wwff-tech/gitops (quadlet/apps/sretab/) and
+  # merging it once that repository's checks pass. Nothing here touches a
+  # host: each host's reconcile agent pulls the merged pin, verifies the
+  # signature again, and restarts the stack, migrations first.
+  #
+  # This is production's promotion and not the reference deployment's.
+  # deploy/scripts/promote.sh still writes the pins under deploy/quadlet,
+  # and nothing in this job reads or changes them.
+  #
+  # main only. A tag build is a fresh build of a commit that was promoted
+  # when it reached main; promoting on the tag as well would redeploy
+  # production for a release that changes nothing it runs.
+  #
+  # By digest, never by `sha-<commit>`. That tag is not a name for one
+  # build: a tag build pushes it again, for the same commit, with a
+  # different digest, and the two runs sit in different concurrency groups
+  # so they can overlap. Handing promote.py the tag would have it resolve
+  # whatever the tag points at by then, which could be the release build's
+  # digest, possibly before that build has signed it. The digest is what
+  # `publish` in this run pushed, signed, attested and verified, so that is
+  # what gets pinned. The cost is that the pin in gitops reads
+  # `sre-tab@sha256:…` with no commit in it; this run's summary records
+  # which commit that digest was built from.
+  #
+  # Secrets:
+  #   GITOPS_TOKEN  contents:write + pull-requests:write on wwff-tech/gitops
+  promote:
+    name: Promote in wwff-tech/gitops
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15 # promote.py waits up to 8 for the pull request's checks
+    permissions:
+      contents: read
+      packages: read # promote.py reads the manifest and its signature
+    env:
+      IMAGE: ${{ needs.publish.outputs.image }}
+      DIGEST: ${{ needs.publish.outputs.digest }}
+    steps:
+      # Without this the failure is actions/checkout complaining about an
+      # empty token, which says nothing about which secret or what to do.
+      - name: Require GITOPS_TOKEN
+        env:
+          GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+        run: |
+          if [ -z "$GITOPS_TOKEN" ]; then
+            echo "::error::GITOPS_TOKEN is not set on this repository, so $IMAGE@$DIGEST is published and signed but not promoted. Add the secret (contents:write and pull-requests:write on wwff-tech/gitops) and re-run this job, or promote by hand from a gitops checkout: python3 quadlet/bin/promote.py sretab $IMAGE $DIGEST --pr"
+            exit 1
+          fi
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Log in to GHCR for cosign
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: printf '%s' "$REGISTRY_TOKEN" | cosign login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      # Credentials persist on purpose: promote.py pushes the promote branch
+      # with them.
+      - name: Check out gitops
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: wwff-tech/gitops
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+      # Verifies the signature against gitops' policy.toml, pins the digest
+      # in every unit that runs this image, opens the pull request, and
+      # merges it once its checks pass. Does nothing if this digest is
+      # already pinned.
+      #
+      # The digest is checked for shape first: an empty one would reach
+      # promote.py as a tag named "", and the failure would be about the
+      # registry rather than about this job's missing input.
+      - name: Promote
+        env:
+          GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          GHCR_TOKEN: ${{ github.token }}
+        working-directory: gitops
+        run: |
+          git config user.name "sretab-publish"
+          git config user.email "sretab-publish@users.noreply.github.com"
+          case "$DIGEST" in
+            sha256:????????????????????????????????????????????????????????????????) ;;
+            *) echo "::error::publish handed over no usable digest ('$DIGEST'); nothing promoted"; exit 1 ;;
+          esac
+          python3 quadlet/bin/promote.py sretab "$IMAGE" "$DIGEST" --pr
+          echo "Promoted \`$IMAGE@$DIGEST\`, built from $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"

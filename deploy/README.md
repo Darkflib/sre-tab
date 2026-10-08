@@ -29,7 +29,7 @@ not reach it, and a change made there is not reflected here.
 | Backups | `sre-tab-backup` and the off-host copy | `pg-dump.timer` and the host's restic job |
 | Alerts | `sre-tab-alert@`, to `/etc/sre-tab/alert.sh` | `gitops-alert@` |
 | Installing | `install.sh` | the reconcile agent |
-| Image pin | `promote.sh`, a commit here | `promote.py`, a commit there, verified again on the host |
+| Image pin | `promote.sh`, a commit here | `promote.py`, a commit there, verified again on the host; the `promote` job in `ci.yml` runs it on every push to `main` |
 
 `Caddyfile` and `app.env.example` have copies there too
 (`files/Caddyfile`, `files/app.env`); the Caddyfile was byte-identical on
