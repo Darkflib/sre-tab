@@ -607,6 +607,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`deploy/` says what it is.** It is the self-hosting reference, and the
+  instance at `sretab.mikepreston.org` has not been installed from it since
+  it moved to a GitOps repository with a shared PostgreSQL. The manual, the
+  README, and AGENTS.md now say so, and the manual lists where the two
+  differ. Nothing in `deploy/` changed.
+
 - **The image's builder stage installs `g++`.** `fasttext-predict`, which
   language detection depends on, publishes no Python 3.14 wheel, so it is
   compiled from its locked sdist. The toolchain stays in the builder; the

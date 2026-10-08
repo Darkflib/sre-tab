@@ -31,6 +31,14 @@ If a rule here blocks you, say so rather than working around it.
   double hyphen), and a checker built on it fails towards a false pass.
   `.github/scripts/check-doc-links.py` enforces this; CONTRIBUTING.md has
   the reasoning.
+- **`deploy/` is the self-hosting reference, not production.**
+  `sretab.mikepreston.org` runs from `wwff-tech/gitops`,
+  `quadlet/apps/sretab/`, which was ported from these units and differs
+  (shared PostgreSQL, port 8081, its own backup and alert units). A unit,
+  env, or vhost change meant for that instance is a pull request there. A
+  change to `deploy/Caddyfile` has to be made in both.
+  [deploy/README.md](deploy/README.md#reference-not-production) has the
+  table.
 - **`app/db/models.py`, `app/api/v1/router.py`, root `tests/conftest.py`,
   and the health endpoint are shared surfaces.** Readiness checks are
   registered through the probe registry rather than by editing the

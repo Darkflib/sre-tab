@@ -12,6 +12,30 @@ podman --version
 podman info --format '{{.Host.CgroupsVersion}}'
 ```
 
+<a id="reference-not-production"></a>
+## This is the reference, not production
+
+This directory is the self-hosting reference, not what runs
+`sretab.mikepreston.org`. That instance is deployed from
+`wwff-tech/gitops`, `quadlet/apps/sretab/`, which was ported from these
+units and has since diverged on purpose. A change to this directory does
+not reach it, and a change made there is not reflected here.
+
+| | Here | In gitops |
+| --- | --- | --- |
+| Database | `sre-tab-db`, this deployment's own PostgreSQL | the shared `pg` app; units join `db.network` |
+| Credentials | `sre-tab-*-database-url` secrets, from `create-secrets.sh` and `create-roles.sh` | `DATABASE_URL` without a password, plus `pg-sretab-*-password` secrets from 1Password; the roles are `pg-provision`'s |
+| Published port | 8080, moved by `SRE_TAB_WEB_PORT` | 8081, in the unit |
+| Backups | `sre-tab-backup` and the off-host copy | `pg-dump.timer` and the host's restic job |
+| Alerts | `sre-tab-alert@`, to `/etc/sre-tab/alert.sh` | `gitops-alert@` |
+| Installing | `install.sh` | the reconcile agent |
+| Image pin | `promote.sh`, a commit here | `promote.py`, a commit there, verified again on the host |
+
+`Caddyfile` and `app.env.example` have copies there too
+(`files/Caddyfile`, `files/app.env`); the Caddyfile was byte-identical on
+8 October 2026. A change to the security headers or the proxy rules has
+to be made in both.
+
 ## Topology
 
 ```
