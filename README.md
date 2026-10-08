@@ -309,6 +309,12 @@ secrets, migrations on deploy, backup and a **tested** restore, the
 client-address chain, and the failure modes that have actually bitten. Read
 it before the first deploy rather than during it.
 
+`deploy/` is the self-hosting reference. The instance at
+`sretab.mikepreston.org` is not installed from it: that one runs from a
+private GitOps repository whose units were ported from these and differ
+where it shares a host with other services — see
+[the note at the top of the manual](deploy/README.md#reference-not-production).
+
 <a id="installing-a-version"></a>
 ### Installing a version
 
