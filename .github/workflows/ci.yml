@@ -87,9 +87,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          version: "0.12.7"
+          version: "0.12.23"
           enable-cache: true
       - run: uv sync --locked --all-groups
 
@@ -127,7 +127,7 @@ jobs:
         # agree" step in the container job scans this workflow too, so a
         # digest that drifts from the units fails the build rather than
         # quietly testing against a different PostgreSQL than production runs.
-        image: postgres:18-trixie@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+        image: postgres:18-trixie@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336
         env:
           POSTGRES_USER: sretab
           POSTGRES_PASSWORD: sretab
@@ -143,9 +143,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          version: "0.12.7"
+          version: "0.12.23"
           enable-cache: true
       - run: uv sync --locked --all-groups
       - name: pytest — PostgreSQL dialect paths, advisory locks, migrations
@@ -165,9 +165,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          version: "0.12.7"
+          version: "0.12.23"
           enable-cache: true
       - run: uv sync --locked --all-groups
       # --skip-editable: uv installs the project itself into the venv, and
@@ -230,9 +230,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          version: "0.12.7"
+          version: "0.12.23"
           enable-cache: true
 
       # Run from an ephemeral tool environment rather than the project's
@@ -252,7 +252,7 @@ jobs:
           # would skip the report inspection below, which is the half that
           # decides whether the run meant anything.
           set +e
-          uvx semgrep==1.175.0 scan \
+          uvx semgrep==1.179.0 scan \
             --metrics=off --disable-version-check --oss-only \
             --config p/python \
             --config p/javascript \
@@ -559,7 +559,7 @@ jobs:
           podman run --rm --read-only --user 65532:65532 \
             --security-opt=no-new-privileges --cap-drop all --cap-add NET_BIND_SERVICE \
             --volume "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
-            docker.io/library/caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648 \
+            docker.io/library/caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f \
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
       # Generates the systemd units from the Quadlet sources and fails on a
@@ -601,7 +601,7 @@ jobs:
       - name: Export the tested image
         if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         run: podman save --format docker-archive --output "$RUNNER_TEMP/image.tar" sre-tab:ci
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         with:
           name: tested-image
@@ -674,7 +674,7 @@ jobs:
       - name: Install Podman
         run: sudo apt-get update && sudo apt-get install --yes podman
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
 
       # First, before anything is downloaded, loaded, or pushed. A tag can be
       # wrong in exactly three ways and all are knowable from the repository
@@ -736,7 +736,7 @@ jobs:
           fi
           echo "no existing Release for $GITHUB_REF_NAME"
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: tested-image
           path: ${{ runner.temp }}
@@ -921,7 +921,7 @@ jobs:
 
       # The attestation above is the copy that travels with the image. This
       # one is for the human who wants to read it without a registry client.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom-${{ github.sha }}
           path: ${{ runner.temp }}/sbom.spdx.json
