@@ -32,7 +32,7 @@ If a rule here blocks you, say so rather than working around it.
   `.github/scripts/check-doc-links.py` enforces this; CONTRIBUTING.md has
   the reasoning.
 - **`deploy/` is the self-hosting reference, not production.**
-  `sretab.mikepreston.org` runs from `wwff-tech/gitops`,
+  `sretab.mikepreston.org` runs from `Darkflib/gitops`,
   `quadlet/apps/sretab/`, which was ported from these units and differs
   (shared PostgreSQL, port 8081, its own backup and alert units). A unit,
   env, or vhost change meant for that instance is a pull request there. A

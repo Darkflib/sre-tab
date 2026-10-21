@@ -17,7 +17,7 @@ podman info --format '{{.Host.CgroupsVersion}}'
 
 This directory is the self-hosting reference, not what runs
 `sretab.mikepreston.org`. That instance is deployed from
-`wwff-tech/gitops`, `quadlet/apps/sretab/`, which was ported from these
+`Darkflib/gitops`, `quadlet/apps/sretab/`, which was ported from these
 units and has since diverged on purpose. A change to this directory does
 not reach it, and a change made there is not reflected here.
 
