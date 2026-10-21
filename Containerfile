@@ -66,7 +66,7 @@ RUN VITE_SRE_TAB_COMMIT="$SRE_TAB_COMMIT" \
 FROM ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 AS uv
 
 # --- Python build ---------------------------------------------------------
-FROM python:3.14-slim-trixie@sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9 AS builder
+FROM python:3.14-slim-trixie@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a AS builder
 
 COPY --from=uv /uv /bin/uv
 
@@ -95,7 +95,7 @@ COPY app ./app
 RUN uv sync --frozen --no-dev --no-editable
 
 # --- Runtime --------------------------------------------------------------
-FROM python:3.14-slim-trixie@sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9
+FROM python:3.14-slim-trixie@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
