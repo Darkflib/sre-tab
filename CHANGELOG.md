@@ -15,7 +15,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its own fetcher and API token. Links are published only when https on the
   source's own host, text is cleaned and capped again on the way out, and no
   reader state is reachable. A file is replaced atomically and only when it
-  changes; nothing publishable exits 1 and keeps the previous files.
+  changes; nothing publishable exits 1 and keeps the previous files, and an
+  unwritable `--out` exits 2 naming the file and the reason.
 
   KEV summaries now shorten an over-long description to keep the
   ransomware and remediation-deadline sentences, which come last, inside

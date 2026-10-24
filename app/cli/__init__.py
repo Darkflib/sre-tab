@@ -402,14 +402,30 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 1 if alerting or malformed else 0
 
 
+def _write_snapshot(out: Path, filename: str, data: bytes) -> bool:
+    """``write_atomic``, with a failure reported as the operator's to fix.
+
+    An unwritable ``--out`` (a read-only mount, the wrong owner, a full
+    disk) is a deployment problem, not "nothing to publish", so it exits 2
+    with the path and the reason rather than 1 with a traceback. The file
+    it was replacing is left as it was.
+    """
+    try:
+        return snapshots.write_atomic(out, filename, data)
+    except OSError as exc:
+        raise ops.OperatorError(
+            f"cannot write {out / filename}: {exc.strerror or exc}; that file is unchanged"
+        ) from exc
+
+
 def _cmd_export_public(args: argparse.Namespace) -> int:
     """Write the public snapshot, and optionally kev.json. What the export timer runs.
 
     Exit status follows ``kev-snapshot``'s, which this replaces: 0 when
     the files are current (written, or already identical), 1 when there
-    is nothing usable to publish, and 2 for an operator mistake. Every
-    failure leaves the previous files in place, so a page keeps showing
-    the last good data with its age.
+    is nothing usable to publish, and 2 for an operator mistake, an
+    unwritable ``--out`` included. A failure never leaves a half-written
+    file, so a page keeps showing the last good data with its age.
     """
     slugs = _split_topics(args.sources)
     if not slugs:
@@ -439,9 +455,10 @@ def _cmd_export_public(args: argparse.Namespace) -> int:
             print(f"error: {exc}; the previous snapshot is unchanged", file=sys.stderr)
             return 1
 
-    # Built in full before either file is touched, so a failure above
-    # never leaves one document updated and the other not.
-    written = snapshots.write_atomic(out, filename, snapshots.encode(document))
+    # Built in full before either file is touched, so a build failure never
+    # leaves one document updated and the other not. A write failure still
+    # can: each file is replaced atomically, but not the pair.
+    written = _write_snapshot(out, filename, snapshots.encode(document))
     print(f"{out / filename}: {'written' if written else 'unchanged'}")
     for source in sources:
         kept = stats.kept.get(source.slug, 0)
@@ -452,9 +469,7 @@ def _cmd_export_public(args: argparse.Namespace) -> int:
 
     if kev is not None:
         kev_document, kev_dropped = kev
-        written = snapshots.write_atomic(
-            out, snapshots.KEV_SNAPSHOT_NAME, snapshots.encode(kev_document)
-        )
+        written = _write_snapshot(out, snapshots.KEV_SNAPSHOT_NAME, snapshots.encode(kev_document))
         count = len(kev_document["entries"])
         note = f", dropped {kev_dropped}" if kev_dropped else ""
         print(

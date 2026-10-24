@@ -322,7 +322,7 @@ container needs no credential.
 - **Failure leaves the previous files alone.** Both documents are built
   before either is written, each is replaced atomically, and a file whose
   content has not changed is not rewritten. Nothing publishable exits 1, an
-  operator mistake (an unknown slug, say) exits 2.
+  operator mistake (an unknown slug, or an `--out` it cannot write) exits 2.
 
 The format is versioned (`version`, currently 1); a reader should refuse a
 version it does not know rather than guess.
