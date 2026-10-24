@@ -539,3 +539,25 @@ def test_a_kev_failure_writes_neither_file(database: str, tmp_path: pathlib.Path
         _run(database, "--out", str(tmp_path), "--sources", "uk-ncsc,kev-dark", "--kev-json") == 1
     )
     assert list(tmp_path.iterdir()) == []
+
+
+def test_an_unwritable_output_exits_2_with_the_reason(
+    database: str,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "public.json").write_bytes(b"previous\n")
+
+    def denied(*_: object, **__: object) -> tuple[int, str]:
+        raise PermissionError(13, "Permission denied")
+
+    # mkstemp is the first write; refusing it is what a read-only or
+    # wrongly owned volume does.
+    monkeypatch.setattr("tempfile.mkstemp", denied)
+    assert _run(database, "--out", str(tmp_path), "--sources", "uk-ncsc") == 2
+    err = capsys.readouterr().err
+    assert f"cannot write {tmp_path / 'public.json'}: Permission denied" in err
+    assert "Traceback" not in err
+    # Refused before the rename, so the previous file is still what readers get.
+    assert (tmp_path / "public.json").read_bytes() == b"previous\n"
