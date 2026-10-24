@@ -17,6 +17,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reader state is reachable. A file is replaced atomically and only when it
   changes; nothing publishable exits 1 and keeps the previous files.
 
+  KEV summaries now shorten an over-long description to keep the
+  ransomware and remediation-deadline sentences, which come last, inside
+  the 2,000-character summary cap; before, the normaliser's truncation
+  would have cut them off and the export read the entry as neither.
+
 - **Reading by language.** Each item's language is detected from its
   title and summary as it arrives, and `PATCH /api/v1/me/preferences`
   gains `languages`: the codes a reader reads. Settings gains a Languages

@@ -42,6 +42,7 @@ from datetime import UTC, date, datetime, time
 from typing import Any
 
 from app.ingest.errors import DocumentTooComplexError, ParseError
+from app.ingest.normalise import MAX_SUMMARY_LENGTH
 from app.ingest.parse import MAX_ENTRIES, ParsedEntry, ParsedFeed
 
 CISA_KEV_FEED_URL = (
@@ -151,17 +152,32 @@ def _summary(raw: dict[str, Any]) -> str | None:
     ``requiredAction`` is left out. It is overwhelmingly the same
     directive boilerplate on every entry, several hundred characters of
     it, and would crowd the description out of a card.
+
+    The facts go last, so the description is shortened to leave room for
+    them inside :data:`~app.ingest.normalise.MAX_SUMMARY_LENGTH`. Left to
+    the normaliser's truncation, an over-long description would cut them
+    off, and ``app.services.public_snapshot`` would publish a ransomware
+    entry as not one, with no deadline.
     """
+    facts: list[str] = []
+    if (_text(raw.get("knownRansomwareCampaignUse")) or "").strip().lower() == "known":
+        facts.append("Known to be used in ransomware campaigns.")
+    due = _date(raw.get("dueDate"))
+    if due is not None:
+        facts.append(f"Federal remediation due {due.isoformat()}.")
+
     parts: list[str] = []
     description = _text(raw.get("shortDescription"))
     if description:
         description = description.strip()
-        parts.append(description if description.endswith((".", "!", "?")) else f"{description}.")
-    if (_text(raw.get("knownRansomwareCampaignUse")) or "").strip().lower() == "known":
-        parts.append("Known to be used in ransomware campaigns.")
-    due = _date(raw.get("dueDate"))
-    if due is not None:
-        parts.append(f"Federal remediation due {due.isoformat()}.")
+        # One character for the full stop below, one per joining space.
+        room = MAX_SUMMARY_LENGTH - sum(len(fact) + 1 for fact in facts) - 1
+        if len(description) > room:
+            description = description[: room - 1].rstrip() + "…"
+        parts.append(
+            description if description.endswith((".", "!", "?", "…")) else f"{description}."
+        )
+    parts.extend(facts)
     return " ".join(parts) or None
 
 

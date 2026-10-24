@@ -23,7 +23,7 @@ from app.db.engine import create_db_engine
 from app.db.models import Bookmark, FeedItem, Source, SourceStatus, User, UserReadItem
 from app.db.session import build_session_factory
 from app.ingest.kev import CATALOGUE_PAGE_URL, CISA_KEV_FEED_URL, parse_kev_catalogue
-from app.ingest.normalise import normalise_entry
+from app.ingest.normalise import MAX_SUMMARY_LENGTH, normalise_entry
 from app.services import public_snapshot as snapshots
 from tests.cli.test_operations import _migrated
 from tests.ingest.test_kev import catalogue, vulnerability
@@ -146,6 +146,27 @@ def test_kev_fields_survive_the_round_trip_through_ingest(db_session: Session) -
     bare_fields = snapshots.parse_kev_item(bare.title, bare.summary)
     assert bare_fields is not None
     assert (bare_fields.cve, bare_fields.name) == ("CVE-2026-1003", "")
+
+
+def test_kev_facts_survive_a_description_longer_than_the_summary_cap(db_session: Session) -> None:
+    source = _kev_source(db_session)
+    (row,) = _ingest_kev(
+        db_session,
+        source,
+        vulnerability(
+            "CVE-2026-1006",
+            "2026-10-23",
+            shortDescription="word " * (MAX_SUMMARY_LENGTH // 2),
+            knownRansomwareCampaignUse="Known",
+        ),
+    )
+    assert row.summary is not None
+    assert len(row.summary) <= MAX_SUMMARY_LENGTH
+
+    fields = snapshots.parse_kev_item(row.title, row.summary)
+    assert fields is not None
+    assert (fields.due, fields.ransomware) == ("2026-10-07", True)
+    assert fields.description.endswith("…")
 
 
 def test_a_summary_in_an_unexpected_shape_is_kept_whole() -> None:
