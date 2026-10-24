@@ -8,6 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`sre-tab export-public`: a static snapshot of chosen sources for a
+  public page.** Writes `<name>.json` with the latest items of each source
+  named in `--sources`, and with `--kev-json` also `kev.json` in the format
+  darkflib.com's `kev-snapshot` writes, so that site can read it in place of
+  its own fetcher and API token. Links are published only when https on the
+  source's own host, text is cleaned and capped again on the way out, and no
+  reader state is reachable. A file is replaced atomically and only when it
+  changes; nothing publishable exits 1 and keeps the previous files.
+
 - **Reading by language.** Each item's language is detected from its
   title and summary as it arrives, and `PATCH /api/v1/me/preferences`
   gains `languages`: the codes a reader reads. Settings gains a Languages

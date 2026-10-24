@@ -24,6 +24,7 @@ import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -32,6 +33,7 @@ from app.cli import operations as ops
 from app.cli.catalogue import InvalidMediumTag
 from app.db.engine import create_db_engine
 from app.db.session import build_session_factory
+from app.services import public_snapshot as snapshots
 from app.settings import get_settings
 
 
@@ -75,6 +77,21 @@ def _failure_threshold(value: str) -> int:
     if threshold < 0:
         raise argparse.ArgumentTypeError("a failure threshold cannot be negative")
     return threshold
+
+
+def _per_source(value: str) -> int:
+    count = int(value)
+    if not 1 <= count <= 100:
+        raise argparse.ArgumentTypeError("must be between 1 and 100")
+    return count
+
+
+def _snapshot_name(value: str) -> str:
+    try:
+        snapshots.snapshot_filename(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return value
 
 
 def _stamp(value: datetime | None) -> str:
@@ -385,6 +402,68 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 1 if alerting or malformed else 0
 
 
+def _cmd_export_public(args: argparse.Namespace) -> int:
+    """Write the public snapshot, and optionally kev.json. What the export timer runs.
+
+    Exit status follows ``kev-snapshot``'s, which this replaces: 0 when
+    the files are current (written, or already identical), 1 when there
+    is nothing usable to publish, and 2 for an operator mistake. Every
+    failure leaves the previous files in place, so a page keeps showing
+    the last good data with its age.
+    """
+    slugs = _split_topics(args.sources)
+    if not slugs:
+        raise ops.OperatorError("--sources names no source")
+    out: Path = args.out
+    if not out.is_dir():
+        raise ops.OperatorError(f"--out {out} is not a directory")
+    filename = snapshots.snapshot_filename(args.name)
+    if args.kev_json and filename == snapshots.KEV_SNAPSHOT_NAME:
+        raise ops.OperatorError("--name kev would overwrite the file --kev-json writes")
+
+    with _session(args.database_url) as session:
+        sources = snapshots.load_sources(session, slugs)
+        missing = sorted(set(slugs) - {source.slug for source in sources})
+        if missing:
+            raise ops.OperatorError(f"unknown source(s): {', '.join(missing)}")
+        kev_sources = [source for source in sources if snapshots.is_kev_source(source)]
+        if args.kev_json and not kev_sources:
+            raise ops.OperatorError("--kev-json needs the CISA KEV source in --sources")
+
+        try:
+            document, stats = snapshots.build_public_snapshot(
+                session, sources, per_source=args.per_source
+            )
+            kev = snapshots.build_kev_snapshot(session, kev_sources[0]) if args.kev_json else None
+        except snapshots.ExportError as exc:
+            print(f"error: {exc}; the previous snapshot is unchanged", file=sys.stderr)
+            return 1
+
+    # Built in full before either file is touched, so a failure above
+    # never leaves one document updated and the other not.
+    written = snapshots.write_atomic(out, filename, snapshots.encode(document))
+    print(f"{out / filename}: {'written' if written else 'unchanged'}")
+    for source in sources:
+        kept = stats.kept.get(source.slug, 0)
+        dropped = stats.dropped.get(source.slug, 0)
+        note = f", dropped {dropped}" if dropped else ""
+        disabled = " (source disabled)" if not source.enabled else ""
+        print(f"  {source.slug}: {kept} item{'' if kept == 1 else 's'}{note}{disabled}")
+
+    if kev is not None:
+        kev_document, kev_dropped = kev
+        written = snapshots.write_atomic(
+            out, snapshots.KEV_SNAPSHOT_NAME, snapshots.encode(kev_document)
+        )
+        count = len(kev_document["entries"])
+        note = f", dropped {kev_dropped}" if kev_dropped else ""
+        print(
+            f"{out / snapshots.KEV_SNAPSHOT_NAME}: {'written' if written else 'unchanged'}"
+            f" ({count} entr{'y' if count == 1 else 'ies'}{note})"
+        )
+    return 0
+
+
 # --- parser -------------------------------------------------------------
 
 
@@ -472,6 +551,54 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     status.set_defaults(handler=_cmd_status)
+
+    export = commands.add_parser(
+        "export-public",
+        help="Write a static JSON snapshot of chosen sources for a public site.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Writes OUT/NAME.json: the latest items of each source named in --sources,\n"
+            "newest first, with each source's last successful refresh so a page can\n"
+            "age each one. Only the named sources are read, and nothing a reader did\n"
+            "(read marks, bookmarks, preferences) is reachable from the export.\n"
+            "\n"
+            "An item is published only if its link is https on its source's feed or\n"
+            "website host, so this suits sources that link to themselves (advisories,\n"
+            "news sites) and not aggregators such as Hacker News, whose items would\n"
+            "all be dropped.\n"
+            "\n"
+            "--kev-json also writes OUT/kev.json in the format darkflib.com's\n"
+            "kev-snapshot wrote, from every retained KEV entry.\n"
+            "\n"
+            "Files are replaced atomically and only when their content changes. With\n"
+            "nothing usable to publish it exits 1 and leaves the previous files alone."
+        ),
+    )
+    export.add_argument(
+        "--sources",
+        required=True,
+        help="Comma-separated source slugs to publish; nothing else is read.",
+    )
+    export.add_argument("--out", required=True, type=Path, help="Directory to write into.")
+    export.add_argument(
+        "--name",
+        type=_snapshot_name,
+        default="public",
+        help="File name, without .json (default: public).",
+    )
+    export.add_argument(
+        "--per-source",
+        type=_per_source,
+        default=20,
+        metavar="N",
+        help="Latest items to publish from each source (1-100, default: 20).",
+    )
+    export.add_argument(
+        "--kev-json",
+        action="store_true",
+        help="Also write kev.json for darkflib.com; needs the KEV source in --sources.",
+    )
+    export.set_defaults(handler=_cmd_export_public)
 
     sources = commands.add_parser("sources", help="Manage feed sources.").add_subparsers(
         dest="sources_command", required=True

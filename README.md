@@ -293,6 +293,40 @@ Four things to expect, none of which is a fault:
   privileged. That is what makes revoking a leaked token mean something: its
   holder could otherwise have issued themselves a replacement.
 
+## Publishing sources to a public page
+
+A public page cannot hold an API token, so sre-tab can instead write a
+static snapshot of chosen sources for a web server to serve:
+
+```sh
+sre-tab export-public --out /srv/public --name security \
+  --sources uk-ncsc,sans-isc,cisa-kev --kev-json
+```
+
+That writes `/srv/public/security.json`: the latest items of each named
+source (20 by default, `--per-source` to change it), newest first, with
+each source's last successful refresh so a page can age each one. A timer
+runs it; a visitor's request never reaches sre-tab, and the serving
+container needs no credential.
+
+- **Only the sources you name are read**, and nothing a reader did — read
+  marks, bookmarks, preferences — is reachable from the export.
+- **A link is published only if it is https on its source's feed or
+  website host.** That suits advisories and news sites, which link to
+  themselves, and not aggregators such as Hacker News, whose items would all
+  be dropped; the command reports how many it dropped per source.
+- **`--kev-json` also writes `kev.json`** in the format darkflib.com's
+  `kev-snapshot` wrote and its KEV panel reads, from every retained KEV
+  entry. Its `fetched_at` is the KEV source's last successful refresh, so a
+  stalled ingest shows on the page as stale data.
+- **Failure leaves the previous files alone.** Both documents are built
+  before either is written, each is replaced atomically, and a file whose
+  content has not changed is not rewritten. Nothing publishable exits 1, an
+  operator mistake (an unknown slug, say) exits 2.
+
+The format is versioned (`version`, currently 1); a reader should refuse a
+version it does not know rather than guess.
+
 ## Deploying
 
 A single Podman host with system Quadlets: PostgreSQL, a migration oneshot,
