@@ -559,4 +559,5 @@ def test_an_unwritable_output_exits_2_with_the_reason(
     err = capsys.readouterr().err
     assert f"cannot write {tmp_path / 'public.json'}: Permission denied" in err
     assert "Traceback" not in err
+    # Refused before the rename, so the previous file is still what readers get.
     assert (tmp_path / "public.json").read_bytes() == b"previous\n"

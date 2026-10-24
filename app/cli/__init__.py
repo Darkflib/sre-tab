@@ -407,15 +407,17 @@ def _write_snapshot(out: Path, filename: str, data: bytes) -> bool:
 
     An unwritable ``--out`` (a read-only mount, the wrong owner, a full
     disk) is a deployment problem, not "nothing to publish", so it exits 2
-    with the path and the reason rather than 1 with a traceback. The file
-    it was replacing is left as it was.
+    with the path and the reason rather than 1 with a traceback.
+
+    Nothing is promised about the file itself: an error before the rename
+    leaves the old one, but the directory fsync comes after it, so an error
+    there means the new file is already in place and only its durability is
+    unconfirmed. Either way readers never see a partial file.
     """
     try:
         return snapshots.write_atomic(out, filename, data)
     except OSError as exc:
-        raise ops.OperatorError(
-            f"cannot write {out / filename}: {exc.strerror or exc}; that file is unchanged"
-        ) from exc
+        raise ops.OperatorError(f"cannot write {out / filename}: {exc.strerror or exc}") from exc
 
 
 def _cmd_export_public(args: argparse.Namespace) -> int:
