@@ -74,7 +74,7 @@ EOF
 }
 
 engine=podman
-image=docker.io/library/postgres:18-trixie@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+image=docker.io/library/postgres:18-trixie@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
 network=systemd-sre-tab
 db_host=sre-tab-db
 database=sretab
