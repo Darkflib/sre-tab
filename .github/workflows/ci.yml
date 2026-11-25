@@ -483,7 +483,7 @@ jobs:
       - name: Pinned images agree across deploy/ and the workflows
         run: |
           set -euo pipefail
-          for image in postgres:18-trixie caddy:2.11.4-alpine; do
+          for image in postgres:18-trixie caddy:2.11.9-alpine; do
             count=$(grep -rho "$image@sha256:[0-9a-f]\{64\}" deploy .github/workflows | sort -u | wc -l)
             if [ "$count" -ne 1 ]; then
               echo "digest drift for $image:"
@@ -498,7 +498,7 @@ jobs:
           # a registry path (`.../caddy:tag`) or a YAML `image:` key — so that
           # prose mentioning a tag is not a build failure.
           if grep -rn --include='*.yml' --include='*.sh' --include='*.container' \
-              -E '(/|image: )(postgres:18-trixie|caddy:2\.11\.4-alpine)([^@]|$)' \
+              -E '(/|image: )(postgres:18-trixie|caddy:2\.11\.9-alpine)([^@]|$)' \
               deploy .github/workflows; then
             echo "the references above name a tag without pinning a digest"
             exit 1
