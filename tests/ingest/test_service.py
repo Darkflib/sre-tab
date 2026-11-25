@@ -121,6 +121,9 @@ def two_sources(db_session: Session, topic: Topic) -> tuple[SourceRef, SourceRef
     )
 
 
+# refresh_all takes no clock, and the fixture feed is dated around NOW: on the
+# real clock its items fall out of the retention window and nothing is stored.
+@time_machine.travel(NOW, tick=False)
 @respx.mock
 @pytest.mark.parametrize(
     ("label", "response"),
