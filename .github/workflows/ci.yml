@@ -87,9 +87,9 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
-          version: "0.13.9"
+          version: "0.13.10"
           enable-cache: true
       - run: uv sync --locked --all-groups
 
@@ -143,9 +143,9 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
-          version: "0.13.9"
+          version: "0.13.10"
           enable-cache: true
       - run: uv sync --locked --all-groups
       - name: pytest — PostgreSQL dialect paths, advisory locks, migrations
@@ -165,9 +165,9 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
-          version: "0.13.9"
+          version: "0.13.10"
           enable-cache: true
       - run: uv sync --locked --all-groups
       # --skip-editable: uv installs the project itself into the venv, and
@@ -230,9 +230,9 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
-          version: "0.13.9"
+          version: "0.13.10"
           enable-cache: true
 
       # Run from an ephemeral tool environment rather than the project's
@@ -252,7 +252,7 @@ jobs:
           # would skip the report inspection below, which is the half that
           # decides whether the run meant anything.
           set +e
-          uvx semgrep==1.186.0 scan \
+          uvx semgrep==1.187.0 scan \
             --metrics=off --disable-version-check --oss-only \
             --config p/python \
             --config p/javascript \
@@ -390,7 +390,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes podman
 
       # For the pinned-image verification below, not for the build.
-      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
 
       # Built with Podman here and with Docker on developer machines. Same
       # Containerfile, no engine-specific syntax; if that ever stops being
@@ -673,8 +673,8 @@ jobs:
 
       - name: Install Podman
         run: sudo apt-get update && sudo apt-get install --yes podman
-      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
-      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+      - uses: anchore/sbom-action/download-syft@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
 
       # First, before anything is downloaded, loaded, or pushed. A tag can be
       # wrong in exactly three ways and all are knowable from the repository
